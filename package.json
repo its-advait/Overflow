@@ -1,0 +1,22 @@
+{
+  "name": "overflow",
+  "private": true,
+  "version": "0.0.0",
+  "packageManager": "pnpm@12.15.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel --filter @overflow/web --filter @overflow/service dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r --if-present lint",
+    "test": "vitest run",
+    "contracts:build": "forge build --root contracts",
+    "contracts:test": "forge test --root contracts"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.0"
+  }
+}

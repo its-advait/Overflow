@@ -1,0 +1,27 @@
+# dependencies
+node_modules/
+
+# env
+.env
+.env.*
+!.env.example
+
+# build output
+dist/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+
+# foundry
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+
+# read-only reference code (cloned, never imported)
+reference/
+
+# misc
+.DS_Store
+*.log
+.vercel

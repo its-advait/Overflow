@@ -1,0 +1,24 @@
+{
+  "name": "@overflow/payment-client",
+  "version": "0.0.0",
+  "private": true,
+  "description": "x402 client: builds and signs USDC payment authorizations with viem",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5"
+  },
+  "dependencies": {
+    "@overflow/schemas": "workspace:*",
+    "viem": "^2.57.10",
+    "zod": "^4.6.7"
+  }
+}
