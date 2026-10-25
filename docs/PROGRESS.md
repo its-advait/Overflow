@@ -239,3 +239,44 @@
 ### Open issues
 - `pnpm start` sets the variable with POSIX `VAR=value cmd` syntax; on Windows use `cross-env` or set it in the shell.
 - Still no real Postgres server exercised; see the previous section.
+
+## 2026-10-24: REST API and purchase state machine
+
+### Built
+- `apps/service/src/orchestration/purchase-service.ts`: `createPurchaseService(db)` with `propose()` and `transition(purchaseId, to, evidence)`, the only code path that changes a purchase's status. One `db.transaction` per call: load, `assertTransition` (schemas), evidence rules, `purchases.transition`, store the digest / append the tx hash the evidence carries, write exactly one `activity_events` row whose message is `"<from> -> <to>: <reason> [<source.kind>:<source.reference>]"`. `TransitionEvidenceSchema` = `{ reason, source: { kind: api|adapter|chain|reconciliation|seller|oracle, reference }, txHash?, authorizationDigest?, decodedRevert?, agentId?, simulated }`. Event kinds: `RESERVED`/`PAYMENT_PENDING` → `payment.authorized`, `ESCROW_FUNDED` → `escrow.funded`, `SETTLED` → `escrow.settled`, `REFUNDED` → `escrow.refunded`, `REJECTED` → `policy.blocked`, else `purchase.status`.
+- Evidence rules (each refused with `TransitionEvidenceError`, nothing written): `ESCROW_FUNDED`/`SETTLED`/`REFUNDED` need a `txHash` and a `chain` or `reconciliation` source; `REJECTED` needs `decodedRevert`; `PAYMENT_PENDING` needs `authorizationDigest`; leaving `PAYMENT_UNKNOWN` needs a `reconciliation` source.
+- `apps/service/src/api/` (Hono 4.13.13 + `@hono/node-server` 2.1.5, both already in the lockfile): `POST /api/missions`, `POST /api/missions/:id/plan`, `GET /api/resources`, `POST /api/purchases/propose`, `POST /api/purchases/:id/authorize`, `GET /api/purchases/:id`, `GET /api/escrow/:id` (purchase id or escrow address), `GET /api/agents` (nested tree, `node: null` until the chain module fills it), `POST /api/agents/:id/pause`, `GET /api/activity`, `GET /api/ledger`, `GET /api/reconciliation`. Every body, query and param is Zod-parsed; every 2xx is parsed through its response schema before sending (`respond()`), so a shape drift is a 500 and never a wrong 200. One error envelope `{ error: { code, message, details?, requestId } }`; 400 validation, 404, 409 (`invalid_transition {from,to}`, `missing_evidence`, `quote_mismatch {field,expected,actual}`, `active_purchase_exists`, `no_root_node`, `no_node_yet`), 422 `idempotency_key_reused`, 501 `not_wired`.
+- `api/ports.ts`: `OrchestrationPort` (plan, propose; P4.1/P4.2), `PaymentAdapter` (spec's four methods plus `path`; `preparePayment` takes the branded `CheckedQuote`, so an adapter cannot sign an unchecked quote; P7.x), `PolicyPort.allowlistedPayees()` (chain), `ReconciliationPort.latest()` (P4.4). `defaultPorts()` throws `NotWiredError` → HTTP 501 naming the port and the prompt it lands in. No default returns success.
+- Authorize flow: `Idempotency-Key` required → load order (must be `PROPOSED`) and resource → adapter for `order.paymentPath` (501 if none) → `adapter.getPaymentRequirements` → `checkQuote` (payment-client) with the policy port's allowlist → on mismatch `FAILED_BEFORE_FUNDING` with the reason, 409, nothing signed → `preparePayment` → `RESERVED` (digest, reserve tx if any) → `PAYMENT_PENDING` **before** `submitPayment` → `rejected` → `REJECTED` + `decodedRevert`; `unknown` → `PAYMENT_UNKNOWN`; `submitted` → tx hash appended only. The route never sets `ESCROW_FUNDED`; that needs a confirmed chain event through the indexer.
+- Idempotency: `packages/database` gained `idempotency_keys` (`key` PK, `scope`, `request_hash`, `status_code`, `response jsonb`, `created_at`), migration `0001_idempotency_keys`, `IdempotencyRecordSchema`, repository `put()` (insert-if-absent, returns `{ inserted, row }`) / `get()`. `api/idempotency.ts` hashes the canonical `{scope, method, path, body}` (a cache key, not signed material) and replays the stored status and body on a repeat; same key with a different request → 422; the response carries `replayed: true|false`.
+- `POST /api/agents/:id/pause` inserts a `ControllerRequest { kind: "pause", nodeId }` (`requestedBy` = session principal), writes `controller.requested`, returns 202. 409 when the agent has no onchain node. There is no paused column, flag or cache anywhere; the treasury's `NodePaused` event is the only source.
+- `api/session.ts`: one demo session `{ organizationId: OVERFLOW_ORG_ID ?? "org-demo", principal: "owner", ownerAddress: OWNER_ADDRESS | null }`, no credentials; every query is scoped to the organization. Owner actions only create controller requests whose `txHash` is set after the Coinbase Wallet approval confirms (P4.5).
+- `apps/service/src/index.ts`: migrate → idempotent `seed()` (logs the SIMULATED company) → `createApp` → `serve()`. `GET /` keeps the status JSON (`scaffold: false`, real module states). CORS allows `content-type` and `idempotency-key`.
+- `.env.example`: `OVERFLOW_ORG_ID`.
+
+### Design choices
+- Hono over Express: `app.request()` lets the route tests run without a port, and both packages were already in the lockfile via `@modelcontextprotocol/sdk`, so no new network dependency.
+- The API never fakes a result for a port that is not built: 501 `not_wired` with the prompt number. `GET /api/reconciliation` returns 200 with `lastRun: null` and a note, because the UI polls it.
+- Quote mismatch ends the purchase (`FAILED_BEFORE_FUNDING`) rather than leaving it `PROPOSED`; the partial unique index then allows a fresh proposal for the same resource. Agreed with the user.
+- Idempotency results live in the database, not memory, so a repeat after a restart still replays the original result instead of hitting the state machine's 409.
+- There is no `/api/execute`, and no route accepts calldata, ABI data or raw transactions; the test asserts `/api/execute` is 404.
+
+### Stubbed or simulated
+- Oracle/Fusion (`plan`, `propose`), payment adapters, the policy allowlist reader and the reconciliation job are ports with 501 / empty defaults. The route tests use a labeled SIMULATED fake adapter.
+- `GET /api/agents` returns offchain records only; `node` is `null` (no fabricated cap/spent/paused).
+- Seeded agent keys are still the SIMULATED placeholders; `POST /api/missions` without `rootNodeId` answers 409 until the orchestrator node exists onchain.
+
+### Verified (real output, 2026-10-24)
+| Check | Result |
+|---|---|
+| `pnpm --filter @overflow/database db:generate` | "No schema changes, nothing to migrate" after `0001_idempotency_keys` |
+| `pnpm typecheck` | exit 0, all workspaces Done |
+| `pnpm test` | exit 0, 27 files / 253 tests passed (service: 2 files / 22 tests: validation 400s, non-JSON body, mission create + `no_root_node`, 501 for plan/propose, reconciliation `lastRun: null`, reads, `/api/execute` 404, missing key 400, authorize once + replay with adapter called once, reused key 422, second key 409 `{from: PAYMENT_PENDING, to: RESERVED}`, REJECTED purchase 409 with no new event, attacker `payTo` → `quote_mismatch` + `FAILED_BEFORE_FUNDING` + adapter never signs, no adapter → 501 and status unchanged, pause 409/202 with pending request and no "paused" anywhere; PurchaseService: propose event, legal move, illegal move writes nothing, evidence rules, decoded revert, duplicate active purchase; database: idempotency put/get/first-wins, 18 tables) |
+| `pnpm --filter @overflow/service build` | tsup ESM success; migrations copied |
+| `PGLITE_DATA_DIR=<scratch> tsx src/index.ts` + curl | `GET /` `scaffold: false`, `api: "ready"`; `GET /api/agents` 3 seeded agents; pause → 409 `no_node_yet`; `POST /api/execute` → 404; `POST /api/missions` → 201; `POST /api/purchases/propose` → 501 `not_wired (lands in P4.2)`; `GET /api/reconciliation` → `lastRun: null` with note |
+
+### Open issues
+- `GET /events` (SSE) from the spec's API table belongs to the facilitator module and is not here.
+- The `PaymentAdapter` signatures (`preparePayment(purchaseId, CheckedQuote)`, `submitPayment` outcome union) are the contract P7.x must implement; the chain indexer must drive `ESCROW_FUNDED`/`SETTLED`/`REFUNDED` through `PurchaseService.transition` with `source.kind: "chain"` and the tx hash.
+- `GET /api/resources?missionId=` is accepted but not yet filtered by Oracle's coverage check (`filtered: false` says so).
+- No authentication on the demo session; fine on localhost, not for exposure.

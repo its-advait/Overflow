@@ -229,3 +229,15 @@ export const SellerHistorySchema = z.object({
   updatedAt: IsoDateTimeSchema,
 });
 export type SellerHistory = z.infer<typeof SellerHistorySchema>;
+
+/** One stored result of an idempotent API call; see the idempotency_keys table. */
+export const IdempotencyRecordSchema = z.object({
+  key: z.string().min(1).max(200),
+  scope: z.string().min(1),
+  /** Hash of the canonical request (method, path, body); a cache key, not a signed digest. */
+  requestHash: Bytes32Schema,
+  statusCode: z.number().int().min(100).max(599),
+  response: z.unknown(),
+  createdAt: IsoDateTimeSchema,
+});
+export type IdempotencyRecord = z.infer<typeof IdempotencyRecordSchema>;

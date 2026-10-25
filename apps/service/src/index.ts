@@ -1,7 +1,6 @@
-import { createServer } from "node:http";
-import { createDatabase } from "@overflow/database";
-import { CHAIN_ID, PACKAGE_NAME as SCHEMAS } from "@overflow/schemas";
-import { API_STATUS } from "./api/index.js";
+import { serve } from "@hono/node-server";
+import { createDatabase, seed } from "@overflow/database";
+import { createApp } from "./api/index.js";
 import { CHAIN_STATUS } from "./chain/index.js";
 import { FACILITATOR_STATUS } from "./facilitator/index.js";
 import { ORCHESTRATION_STATUS } from "./orchestration/index.js";
@@ -15,32 +14,28 @@ const database = await createDatabase({ log: console.log });
 await database.migrate();
 console.log(`[database] migrations applied (dialect=${database.dialect}, from ${database.migrationsFolder})`);
 
-const status = {
-  service: "@overflow/service",
-  scaffold: true,
-  chainId: CHAIN_ID,
-  database: {
-    dialect: database.dialect,
-    migrationsFolder: database.migrationsFolder,
-    migrated: true,
-  },
-  modules: {
-    api: API_STATUS,
-    orchestration: ORCHESTRATION_STATUS,
-    facilitator: FACILITATOR_STATUS,
-    sellers: SELLERS_STATUS,
-    chain: CHAIN_STATUS,
-  },
-  dependsOn: [SCHEMAS],
-};
+// Idempotent seed of the SIMULATED demo company and its three agents (placeholder keys).
+const seeded = await seed(database.db);
+console.log(
+  `[seed] organization "${seeded.organization.name}" (SIMULATED) agents=${seeded.agents.length}`,
+);
 
-const server = createServer((_req, res) => {
-  res.setHeader("content-type", "application/json");
-  res.end(JSON.stringify(status));
+const { app } = createApp({
+  db: database.db,
+  status: {
+    database: { dialect: database.dialect, migrationsFolder: database.migrationsFolder, migrated: true },
+    modules: {
+      api: "ready",
+      orchestration: ORCHESTRATION_STATUS,
+      facilitator: FACILITATOR_STATUS,
+      sellers: SELLERS_STATUS,
+      chain: CHAIN_STATUS,
+    },
+  },
 });
 
-server.listen(port, () => {
-  console.log(`[scaffold] @overflow/service listening on http://localhost:${port}`);
+const server = serve({ fetch: app.fetch, port }, (info) => {
+  console.log(`[api] @overflow/service listening on http://localhost:${info.port}`);
 });
 
 const shutdown = (): void => {

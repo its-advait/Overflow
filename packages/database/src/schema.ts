@@ -386,6 +386,20 @@ export const controllerRequests = pgTable("controller_requests", {
   resolvedAt: ts("resolved_at"),
 });
 
+/**
+ * Stored results of idempotent API calls (Idempotency-Key header). A repeat
+ * with the same key and request hash replays `response`; a different hash is
+ * refused. `scope` names the operation, e.g. "purchases.authorize:<purchaseId>".
+ */
+export const idempotencyKeys = pgTable("idempotency_keys", {
+  key: text("key").primaryKey(),
+  scope: text("scope").notNull(),
+  requestHash: text("request_hash").notNull(),
+  statusCode: integer("status_code").notNull(),
+  response: jsonb("response").notNull(),
+  createdAt: ts("created_at").notNull().defaultNow(),
+});
+
 export const TABLE_NAMES = [
   "organizations",
   "missions",
@@ -404,4 +418,5 @@ export const TABLE_NAMES = [
   "seller_history",
   "exceptions",
   "controller_requests",
+  "idempotency_keys",
 ] as const;
