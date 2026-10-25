@@ -5,7 +5,7 @@ import { postForLog } from "../ledger/posting.js";
 import { createPurchaseService, TransitionEvidenceError } from "../orchestration/purchase-service.js";
 import { TRANSFER_TOPIC } from "./abi.js";
 import type { ActivityBus, IndexerStatus } from "./bus.js";
-import type { LogSource, RawLog } from "./client.js";
+import type { LogSource, RawLog } from "./log-source.js";
 import type { IndexerConfig } from "./config.js";
 import { decodeLog, type DecodedLog } from "./decode.js";
 import { handlerFor, type HandlerResult } from "./handlers.js";

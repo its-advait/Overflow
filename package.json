@@ -14,6 +14,18 @@
     "test": "vitest run",
     "contracts:build": "forge build --root contracts",
     "contracts:test": "forge test --root contracts",
+    "contracts:fork": "bash scripts/fork-test.sh",
+    "contracts:gas": "pnpm --filter @overflow/scripts gas",
+    "contracts:invariant": "forge test --root contracts --match-path 'test/invariant/*'",
+    "contracts:deploy": "bash scripts/deploy.sh",
+    "contracts:export": "pnpm --filter @overflow/scripts export",
+    "demo:adapters": "pnpm --filter @overflow/scripts demo-adapters",
+    "demo:facilitator": "pnpm --filter @overflow/scripts demo-facilitator",
+    "service": "pnpm --filter @overflow/service dev",
+    "spike:seller": "pnpm --filter @overflow/service spike:seller",
+    "spike:coinbase": "pnpm --filter @overflow/scripts coinbase-spike",
+    "status": "pnpm --filter @overflow/scripts status",
+    "dev:fund": "pnpm --filter @overflow/scripts dev-fund",
     "datasets:generate": "tsx scripts/generate-datasets.mts"
   },
   "devDependencies": {

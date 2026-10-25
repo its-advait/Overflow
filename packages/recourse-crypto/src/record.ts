@@ -8,33 +8,31 @@ import { MAX_UINT64, assertLength, bytesToUint64, concatBytes, toBytes, uint64By
 // Record format (see README "Record format"; this is a contract with Solidity).
 //
 //   chunk     = payload (95 bytes) || signature (65 bytes)         = 160 bytes
-//   payload   = version (1 byte, 0x01) || timestamp (uint64 BE, 8) || data (86)
+//   payload   = timestamp (uint64 BE, 8) || data (87)
 //   data      = one UTF-8 CSV row, right-padded with 0x00
+//   RecourseCrypto.sol reads the timestamp from payload bytes [0, 8); there is no version byte.
 //   signature = ECDSA over keccak256(payload), r || s || v, v in {27, 28},
 //               no EIP-191 prefix (viem sign({ hash })).
 // ---------------------------------------------------------------------------
 
-export const RECORD_VERSION = 0x01;
-export const VERSION_BYTES = 1;
 export const TIMESTAMP_BYTES = 8;
-export const DATA_BYTES = 86;
-export const PAYLOAD_BYTES = VERSION_BYTES + TIMESTAMP_BYTES + DATA_BYTES; // 95
+export const DATA_BYTES = 87;
+export const PAYLOAD_BYTES = TIMESTAMP_BYTES + DATA_BYTES; // 95
 export const SIGNATURE_BYTES = 65;
 export const CHUNK_BYTES = PAYLOAD_BYTES + SIGNATURE_BYTES; // 160
 
 export const RecordFieldsSchema = z.object({
   /** Unix seconds, uint64. */
   timestamp: z.bigint().nonnegative().max(MAX_UINT64),
-  /** One CSV row; at most 86 UTF-8 bytes; no NUL characters (NUL is the padding byte). */
+  /** One CSV row; at most 87 UTF-8 bytes; no NUL characters (NUL is the padding byte). */
   row: z.string().refine((r) => !r.includes("\u0000"), "row must not contain NUL"),
 });
 export type RecordFields = z.infer<typeof RecordFieldsSchema>;
 
 export interface DecodedPayload {
-  version: number;
   timestamp: bigint;
   row: string;
-  /** The raw 86 data bytes including padding. */
+  /** The raw 87 data bytes including padding. */
   data: Uint8Array;
 }
 
@@ -46,7 +44,7 @@ export interface ParsedRecord extends DecodedPayload {
 const utf8Encoder = new TextEncoder();
 const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
 
-/** version || timestamp || data(86, right-padded with 0x00). Rejects rows longer than 86 bytes. */
+/** timestamp || data(87, right-padded with 0x00). Rejects rows longer than 87 bytes. */
 export function encodePayload(fields: RecordFields): Uint8Array {
   const f = RecordFieldsSchema.parse(fields);
   const rowBytes = utf8Encoder.encode(f.row);
@@ -55,20 +53,18 @@ export function encodePayload(fields: RecordFields): Uint8Array {
   }
   const data = new Uint8Array(DATA_BYTES);
   data.set(rowBytes, 0);
-  return concatBytes(new Uint8Array([RECORD_VERSION]), uint64Bytes(f.timestamp), data);
+  return concatBytes(uint64Bytes(f.timestamp), data);
 }
 
 export function decodePayload(payloadInput: Hex | Uint8Array): DecodedPayload {
   const payload = toBytes(payloadInput);
   assertLength(payload, PAYLOAD_BYTES, "payload");
-  const version = payload[0] as number;
-  if (version !== RECORD_VERSION) throw new Error(`unsupported record version 0x${version.toString(16)}`);
-  const timestamp = bytesToUint64(payload.subarray(VERSION_BYTES, VERSION_BYTES + TIMESTAMP_BYTES));
-  const data = payload.subarray(VERSION_BYTES + TIMESTAMP_BYTES);
+  const timestamp = bytesToUint64(payload.subarray(0, TIMESTAMP_BYTES));
+  const data = payload.subarray(TIMESTAMP_BYTES);
   let end = data.length;
   while (end > 0 && data[end - 1] === 0) end--;
   const row = utf8Decoder.decode(data.subarray(0, end));
-  return { version, timestamp, row, data: new Uint8Array(data) };
+  return { timestamp, row, data: new Uint8Array(data) };
 }
 
 /** keccak256(payload): the digest the source signs. No EIP-191 prefix. */

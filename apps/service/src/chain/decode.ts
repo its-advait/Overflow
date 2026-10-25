@@ -1,6 +1,6 @@
 import { decodeErrorResult, decodeEventLog, isHex, type Hex } from "viem";
 import { EVENT_BY_TOPIC, REVERT_REASONS, treasuryAbi, type ContractKind, type IndexedEventName } from "./abi.js";
-import type { RawLog } from "./client.js";
+import type { RawLog } from "./log-source.js";
 
 // ---------------------------------------------------------------------------
 // Log and revert decoding. Args are serialized to JSON-safe values: bigints

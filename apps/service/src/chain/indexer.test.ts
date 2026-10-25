@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createPurchaseService } from "../orchestration/purchase-service.js";
 import { b32, fixtureMissionAndResource, purchaseInput, testDatabase } from "../test-db.js";
 import { createActivityBus, type BusMessage } from "./bus.js";
-import type { RawLog } from "./client.js";
+import type { RawLog } from "./log-source.js";
 import type { IndexerConfig } from "./config.js";
 import { fakeLogSource } from "./fake-source.js";
 import { FIXTURE } from "./fixtures/build-fixture.js";

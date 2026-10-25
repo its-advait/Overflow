@@ -10,7 +10,7 @@ import {
   GOLDEN_TEST_ONLY_PRIVATE_KEY,
   GOLDEN_VECTOR_RELATIVE_PATH,
   USDC_DOMAIN,
-  authorizationDigest,
+  transferAuthorizationDigest,
   authorizationFromJson,
   buildTransferTypedData,
   generateGoldenVector,
@@ -41,7 +41,7 @@ describe("golden vector (shared with contracts/test/PaymentClientGolden.t.sol)",
     expect(auth.from).toBe("0x1111111111111111111111111111111111111111"); // the treasury, not the signer
     expect(vector.domainSeparator).toBe(USDC.domainSeparator);
     expect(vector.usdc).toBe(USDC.address);
-    const digest = authorizationDigest(USDC_DOMAIN, auth);
+    const digest = transferAuthorizationDigest(USDC_DOMAIN, auth);
     expect(digest).toBe(vector.digest);
     expect(keccak256(concat(["0x1901", vector.domainSeparator, vector.structHash]))).toBe(vector.digest);
     expect(vector.digest).toBe(EXPECTED_DIGEST);

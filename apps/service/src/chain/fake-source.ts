@@ -1,5 +1,5 @@
 import type { Address, Hex } from "viem";
-import type { BalanceReader, GetLogsRequest, LogSource, RawLog } from "./client.js";
+import type { BalanceReader, GetLogsRequest, LogSource, RawLog } from "./log-source.js";
 
 /** Test-only LogSource serving a fixed (SIMULATED) log set; mutate `logs` / `head` / `balances` to model reorgs and differences. */
 export interface FakeLogSource extends LogSource, BalanceReader {

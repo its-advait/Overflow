@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { encodeAbiParameters, encodeEventTopics, type Abi, type AbiEvent, type Address, type Hex } from "viem";
 import { USDC } from "@overflow/schemas";
 import { escrowAbi, escrowFactoryAbi, treasuryAbi, usdcAbi } from "../abi.js";
-import type { RawLog } from "../client.js";
+import type { RawLog } from "../log-source.js";
 
 // ---------------------------------------------------------------------------
 // SIMULATED recorded log fixture. No Overflow contract is deployed yet, so the

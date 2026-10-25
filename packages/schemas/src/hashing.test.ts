@@ -26,6 +26,7 @@ const terms: TermsHashInput = {
   challengeWindow: "3600",
   sourceKey: addr(9),
   minTimestamp: "1704067200",
+  chunkCount: "5",
 };
 
 const order: OrderIdInput = {
@@ -59,7 +60,7 @@ describe("computeTermsHash", () => {
     const expected = keccak256(
       encodeAbiParameters(
         parseAbiParameters(
-          "address, uint256, uint256, bytes32, bytes32, bytes32, bytes32, uint64, uint64, address, uint64",
+          "address, uint256, uint256, bytes32, bytes32, bytes32, bytes32, uint64, uint64, address, uint64, uint32",
         ),
         [
           terms.token,
@@ -73,6 +74,7 @@ describe("computeTermsHash", () => {
           3600n,
           terms.sourceKey,
           1704067200n,
+          5,
         ],
       ),
     );
@@ -89,6 +91,7 @@ describe("computeTermsHash", () => {
       "uint64",
       "address",
       "uint64",
+      "uint32",
     ]);
   });
 
@@ -98,6 +101,7 @@ describe("computeTermsHash", () => {
       { ...terms, token: addr(7) },
       { ...terms, amountAtomic: "12000001" },
       { ...terms, bondAtomic: "0" },
+      { ...terms, chunkCount: "6" },
       { ...terms, manifestHash: b32(101) },
       { ...terms, rootPlain: b32(102) },
       { ...terms, rootCipher: b32(103) },

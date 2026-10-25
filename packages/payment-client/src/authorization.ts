@@ -156,7 +156,7 @@ export function authorizationStructHash(a: TransferAuthorization): Hex {
 }
 
 /** The digest USDC and the treasury compute: keccak256("\x19\x01" || DOMAIN_SEPARATOR || structHash). */
-export function authorizationDigest(domain: TokenDomain, authorization: TransferAuthorization): Hex {
+export function transferAuthorizationDigest(domain: TokenDomain, authorization: TransferAuthorization): Hex {
   return hashTypedData(buildTransferTypedData(domain, authorization));
 }
 

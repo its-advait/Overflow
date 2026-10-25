@@ -3,7 +3,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { CHAIN_ID, USDC } from "@overflow/schemas";
 import {
   TRANSFER_WITH_AUTHORIZATION_TYPEHASH,
-  authorizationDigest,
+  transferAuthorizationDigest,
   authorizationStructHash,
   authorizationToJson,
   buildTransferTypedData,
@@ -70,7 +70,7 @@ export async function generateGoldenVector(): Promise<GoldenVector> {
     signer: account.address,
     authorization: authorizationToJson(GOLDEN_AUTHORIZATION),
     structHash: authorizationStructHash(GOLDEN_AUTHORIZATION),
-    digest: authorizationDigest(USDC_DOMAIN, GOLDEN_AUTHORIZATION),
+    digest: transferAuthorizationDigest(USDC_DOMAIN, GOLDEN_AUTHORIZATION),
     signature,
   };
 }

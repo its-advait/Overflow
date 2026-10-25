@@ -13,13 +13,12 @@ One record per chunk. Sizes are fixed; anything else is rejected.
 | Field | Bytes | Content |
 | --- | --- | --- |
 | chunk | 160 | `payload (95) ‖ signature (65)` |
-| payload | 95 | `version (1) ‖ timestamp (8) ‖ data (86)` |
-| version | 1 | `0x01` |
-| timestamp | 8 | unix seconds, uint64 big-endian |
-| data | 86 | one UTF-8 CSV row, right-padded with `0x00`; rows longer than 86 bytes and rows containing NUL are rejected |
+| payload | 95 | `timestamp (8) ‖ data (87)` |
+| timestamp | 8 | unix seconds, uint64 big-endian, at payload offset 0 (`RecourseCrypto.recordTimestamp` reads `payload[:8]`) |
+| data | 87 | one UTF-8 CSV row, right-padded with `0x00`; rows longer than 87 bytes and rows containing NUL are rejected |
 | signature | 65 | `r ‖ s ‖ v`, `v ∈ {27, 28}`, ECDSA over `keccak256(payload)` with **no** EIP-191 prefix (viem `sign({ hash })`, RFC 6979 deterministic) |
 
-Solidity check for a record: `ecrecover(keccak256(payload), v, r, s) == sourceKey` and `uint64(bytes8(payload[1:9])) >= minTimestamp`.
+Solidity check for a record (`OverflowEscrow.complainPromise`): `ecrecover(keccak256(payload), v, r, s) == sourceKey` and `uint64(bytes8(payload[:8])) >= minTimestamp`. There is no version byte: the manifest's `recordFormat` field describes the layout instead.
 
 API: `encodePayload`, `decodePayload`, `payloadHash`, `signPayload`, `buildRecordChunk`, `splitChunk`, `parseChunk`, `recoverRecordSigner`, `verifyRecordPromise`, `splitDataset`, `joinChunks`.
 

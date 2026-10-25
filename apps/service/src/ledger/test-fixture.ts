@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import type { RawLog } from "../chain/client.js";
+import type { RawLog } from "../chain/log-source.js";
 import { fakeLogSource } from "../chain/fake-source.js";
 import { FIXTURE } from "../chain/fixtures/build-fixture.js";
 import { createIndexer } from "../chain/indexer.js";

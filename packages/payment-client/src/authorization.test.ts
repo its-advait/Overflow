@@ -9,7 +9,7 @@ import {
   TRANSFER_WITH_AUTHORIZATION_TYPE_STRING,
   USDC_DOMAIN,
   VALID_AFTER_SKEW_SECONDS,
-  authorizationDigest,
+  transferAuthorizationDigest,
   authorizationDigestFromSeparator,
   authorizationFromJson,
   authorizationStructHash,
@@ -111,13 +111,13 @@ describe("digest", () => {
   it("hashTypedData == keccak256(0x1901 || pinned DOMAIN_SEPARATOR || structHash)", () => {
     const a = buildAuthorization({ treasury: TREASURY, to: TO, value: 20000n, ttlSeconds: 120, nowSeconds: NOW, nonce: `0x${"ab".repeat(32)}` });
     const manual = keccak256(concat(["0x1901", USDC.domainSeparator, authorizationStructHash(a)]));
-    expect(authorizationDigest(USDC_DOMAIN, a)).toBe(manual);
+    expect(transferAuthorizationDigest(USDC_DOMAIN, a)).toBe(manual);
     expect(authorizationDigestFromSeparator(USDC.domainSeparator, a)).toBe(manual);
   });
   it("changes when from changes (the treasury is bound into the digest)", () => {
     const a = buildAuthorization({ treasury: TREASURY, to: TO, value: 1n, ttlSeconds: 60, nowSeconds: NOW, nonce: `0x${"01".repeat(32)}` });
     const b = { ...a, from: TO };
-    expect(authorizationDigest(USDC_DOMAIN, a)).not.toBe(authorizationDigest(USDC_DOMAIN, b));
+    expect(transferAuthorizationDigest(USDC_DOMAIN, a)).not.toBe(transferAuthorizationDigest(USDC_DOMAIN, b));
   });
 });
 
@@ -130,7 +130,7 @@ describe("signTransfer", () => {
     expect(signed.typedData.message.from).toBe(TREASURY);
     expect(signed.signer).toBe(nodeAccount.address);
     expect(signed.signature).toHaveLength(2 + 65 * 2);
-    expect(signed.digest).toBe(authorizationDigest(USDC_DOMAIN, signed.authorization));
+    expect(signed.digest).toBe(transferAuthorizationDigest(USDC_DOMAIN, signed.authorization));
     expect(await recoverTypedDataAddress({ ...signed.typedData, signature: signed.signature })).toBe(nodeAccount.address);
     expect(signed.authorization.validAfter).toBe(BigInt(NOW - 5));
     expect(signed.authorization.validBefore).toBe(BigInt(NOW + 60));

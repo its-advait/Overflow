@@ -2,142 +2,201 @@ import Anthropic from "@anthropic-ai/sdk";
 import { serve } from "@hono/node-server";
 import { createDatabase, seed } from "@overflow/database";
 import { oracleModelFromEnv } from "@overflow/oracle";
+import { resolveSigner } from "@overflow/payment-client/keystore";
+import { CHAIN_ID, loadDeployments, PACKAGE_NAME as SCHEMAS } from "@overflow/schemas";
 import { createApp } from "./api/index.js";
+import { verifyBoot } from "./chain/boot";
+import { viemChainClient } from "./chain/client";
 import { createActivityBus, createIndexer, createLogSource, resolveIndexerConfig, type Indexer } from "./chain/index.js";
-import { assertFacilitatorChain, facilitatorStatus, resolveFacilitatorConfig, type Facilitator } from "./facilitator/index.js";
-import { createReconciliation, LEDGER_STATUS, type Reconciliation } from "./ledger/index.js";
+import { loadEnv, readConfig } from "./config";
+import { createFacilitatorApp } from "./facilitator/app";
+import { createBus, createLogPoller } from "./facilitator/events";
+import { facilitatorViaApp } from "./facilitator/in-process.js";
+import { createRelayer } from "./facilitator/relayer";
+import { MemoryStore } from "./facilitator/store";
+import { createReconciliation, type Reconciliation } from "./ledger/index.js";
 import { orchestrationStatus, seedCatalog, type OracleModel } from "./orchestration/index.js";
+import { createSweepReconciler, MemoryExceptions, MemoryLedger, MemoryPurchaseIndex } from "./reconciliation/sweeps";
 import { createSellerApp, resolveSellerConfig, sellersStatus } from "./sellers/index.js";
 
-const port = Number(new URL(process.env["SERVICE_URL"] ?? "http://localhost:4000").port || 4000);
+const log = (line: string) => console.log(`${new Date().toISOString()} ${line}`);
 
-// Open the database and apply pending migrations before accepting requests.
-// DATABASE_URL selects Postgres; otherwise PGlite at PGLITE_DATA_DIR (or in-memory).
-const database = await createDatabase({ log: console.log });
-await database.migrate();
-console.log(`[database] migrations applied (dialect=${database.dialect}, from ${database.migrationsFolder})`);
+/**
+ * One process, three listeners' worth of modules:
+ *   - the facilitator HTTP app (settle/reserve/release/delegate) with the ONLY relayer broadcaster;
+ *   - the REST API + SSE activity feed over the database, fed by the read-only chain indexer and the ledger;
+ *   - the SIMULATED sellers on their own port, settling through the facilitator in-process.
+ * Boot fails loudly before anything is served: chain id, USDC domain, deployments file, treasury code and wiring.
+ */
+async function main(): Promise<void> {
+  loadEnv();
+  const config = readConfig();
+  const deployments = await loadDeployments(config.deploymentsPath);
 
-// Idempotent seed of the SIMULATED demo company and its three agents (placeholder keys).
-const seeded = await seed(database.db);
-console.log(
-  `[seed] organization "${seeded.organization.name}" (SIMULATED) agents=${seeded.agents.length}`,
-);
+  // Signer: a Foundry keystore decrypted in memory (RELAYER_ACCOUNT + RELAYER_PASSWORD_FILE) or a dev key. Never logged.
+  const signer = resolveSigner({ ...config.relayer, label: "RELAYER" });
+  const account = signer.account;
+  const client = viemChainClient(config.rpcUrl, account);
 
-// Idempotent seed of the SIMULATED seller catalog into `resources` (insert-if-missing by listing id).
-const catalog = await seedCatalog(database.db);
-console.log(
-  `[catalog] SIMULATED catalog: ${catalog.total} listings (${catalog.inserted} inserted, ${catalog.existing} existing) from ${catalog.catalogPath}`,
-);
+  const boot = await verifyBoot(client, deployments);
+  log(`[boot] chain ${boot.chainId}, USDC ${boot.token.address} "${boot.token.name}" v${boot.token.version} separator ${boot.token.domainSeparator}`);
+  log(`[boot] treasury ${boot.treasury}, escrowFactory ${boot.escrowFactory ?? "none"}, head block ${boot.blockNumber}`);
+  const ethWei = await client.getBalance(account.address);
+  log(`[boot] relayer ${account.address} (${signer.source}) holds ${ethWei} wei for gas (relayer never holds USDC)`);
+  if (ethWei === 0n) log("[boot] WARNING: relayer has no ETH; every relay will fail");
+  if (config.demoMode) log("[boot] DEMO_MODE=true: /demo/bypass and forceBroadcast enabled (x-demo-token required); SIMULATED flows are labeled");
 
-// Oracle extraction model: only with ANTHROPIC_API_KEY and CLAUDE_MODEL; otherwise plan answers 503.
-let oracle: OracleModel | null = null;
-if (process.env["ANTHROPIC_API_KEY"] && process.env["CLAUDE_MODEL"]?.trim()) {
-  oracle = { client: new Anthropic(), model: oracleModelFromEnv() };
-  console.log(`[oracle] extraction model ${oracle.model}`);
-} else {
-  console.warn("[oracle] idle: ANTHROPIC_API_KEY / CLAUDE_MODEL not set; POST /api/missions/:id/plan answers 503");
-}
+  // Database: DATABASE_URL selects Postgres; otherwise PGlite at PGLITE_DATA_DIR (or in-memory). Migrate, then seed
+  // the SIMULATED demo company and its agents (idempotent), then the SIMULATED seller catalog into `resources`.
+  const database = await createDatabase({ log: console.log });
+  await database.migrate();
+  log(`[database] migrations applied (dialect=${database.dialect}, from ${database.migrationsFolder})`);
+  const seeded = await seed(database.db);
+  log(`[seed] organization "${seeded.organization.name}" (SIMULATED) agents=${seeded.agents.length}`);
+  const catalog = await seedCatalog(database.db);
+  log(`[catalog] SIMULATED catalog: ${catalog.total} listings (${catalog.inserted} inserted, ${catalog.existing} existing) from ${catalog.catalogPath}`);
 
-// Chain indexer: runs only with BASE_SEPOLIA_RPC_URL and a deployments file.
-// Otherwise it stays idle and says why; no address or block is ever invented.
-const bus = createActivityBus();
-const indexerConfig = await resolveIndexerConfig();
-let indexer: Indexer | undefined;
-let reconciliation: Reconciliation | undefined;
-let chainStatus: string;
-let ledgerStatus: string = LEDGER_STATUS;
-if (indexerConfig.ok) {
-  const { config } = indexerConfig;
-  const source = createLogSource(config.rpcUrl);
-  await source.assertChain();
-  // Reconciliation reads balances at the indexer's cursor after every poll that stored new logs.
-  const materiality = process.env["RECONCILIATION_MATERIALITY_ATOMIC"];
-  const recon = createReconciliation({
-    db: database.db,
-    reader: source,
-    treasury: config.treasury,
-    usdc: config.usdc,
-    bus,
-    ...(materiality ? { materialityAtomic: BigInt(materiality) } : {}),
+  // Oracle extraction model: only with ANTHROPIC_API_KEY and CLAUDE_MODEL; otherwise plan answers 503.
+  let oracle: OracleModel | null = null;
+  if (process.env["ANTHROPIC_API_KEY"] && process.env["CLAUDE_MODEL"]?.trim()) {
+    oracle = { client: new Anthropic(), model: oracleModelFromEnv() };
+    log(`[oracle] extraction model ${oracle.model}`);
+  } else {
+    log("[oracle] idle: ANTHROPIC_API_KEY / CLAUDE_MODEL not set; POST /api/missions/:id/plan answers 503");
+  }
+
+  // Facilitator: the one relayer, the treasury log poller and the settle/reserve/release routes.
+  const facilitatorBus = createBus();
+  const poller = createLogPoller({ client, treasury: boot.treasury, bus: facilitatorBus, fromBlock: boot.blockNumber, intervalMs: config.eventsPollMs, log });
+  const facilitatorApp = createFacilitatorApp({
+    client,
+    relayer: createRelayer({ client, address: account.address, log }),
+    store: new MemoryStore(),
+    bus: facilitatorBus,
+    deployments,
+    treasury: boot.treasury,
+    usdc: deployments.usdc,
+    demoMode: config.demoMode,
+    ...(config.demoToken ? { demoToken: config.demoToken } : {}),
+    now: () => new Date(),
+    log,
   });
-  reconciliation = recon;
-  indexer = createIndexer({
+
+  // Chain indexer + ledger reconciliation: read-only, over the activity bus the API streams.
+  const activityBus = createActivityBus();
+  const indexerConfig = await resolveIndexerConfig();
+  let indexer: Indexer | undefined;
+  let reconciliation: Reconciliation | undefined;
+  let chainStatus: string;
+  let ledgerStatus: string;
+  if (indexerConfig.ok) {
+    const ic = indexerConfig.config;
+    const source = createLogSource(ic.rpcUrl);
+    await source.assertChain();
+    const materiality = process.env["RECONCILIATION_MATERIALITY_ATOMIC"];
+    const recon = createReconciliation({
+      db: database.db,
+      reader: source,
+      treasury: ic.treasury,
+      usdc: ic.usdc,
+      bus: activityBus,
+      ...(materiality ? { materialityAtomic: BigInt(materiality) } : {}),
+    });
+    reconciliation = recon;
+    indexer = createIndexer({
+      db: database.db,
+      source,
+      config: ic,
+      bus: activityBus,
+      afterTick: async (r) => {
+        if (r.logsInserted > 0) await recon.run("indexer", r.toBlock);
+      },
+    });
+    chainStatus = `indexing treasury ${ic.treasury} from block ${ic.deployBlock}`;
+    ledgerStatus = `journal posted from chain events; reconciliation after every poll with new logs (materiality ${materiality ?? "10000"} atomic)`;
+  } else {
+    chainStatus = `idle: ${indexerConfig.reason}`;
+    ledgerStatus = `idle: ${indexerConfig.reason}`;
+    log(`[chain] indexer idle: ${indexerConfig.reason}`);
+  }
+
+  // SIMULATED sellers on their own port (SELLER_URL). They settle through the facilitator app in-process, so the
+  // relayer key has one nonce manager. The attacker payee is never allowlisted.
+  const sellerConfig = resolveSellerConfig();
+  const sellerApp = createSellerApp({
+    config: sellerConfig,
+    facilitator: facilitatorViaApp(facilitatorApp, { demoToken: config.demoToken, log }),
+  });
+
+  const { app } = createApp({
     db: database.db,
-    source,
-    config,
-    bus,
-    afterTick: async (r) => {
-      if (r.logsInserted > 0) await recon.run("indexer", r.toBlock);
+    bus: activityBus,
+    ...(reconciliation ? { ports: { reconciliation: { run: (trigger) => reconciliation!.run(trigger) } } } : {}),
+    treasury: boot.treasury,
+    oracle,
+    indexerStatus: () => indexer?.status() ?? { state: "idle", reason: indexerConfig.ok ? "not started" : indexerConfig.reason },
+    status: {
+      treasury: boot.treasury,
+      escrowFactory: boot.escrowFactory,
+      database: { dialect: database.dialect, migrationsFolder: database.migrationsFolder, migrated: true },
+      modules: {
+        api: "ready",
+        orchestration: orchestrationStatus({ model: oracle?.model ?? null, treasury: boot.treasury, orderTermsWired: false }),
+        facilitator: `live: relayer ${account.address} (${signer.source}); routes at / and /facilitator`,
+        sellers: sellersStatus(sellerConfig, true),
+        chain: chainStatus,
+        ledger: ledgerStatus,
+        sweeps: boot.escrowFactory ? `reconciling late arrivals and sweeps for factory ${boot.escrowFactory}` : "disabled: no escrow factory in deployments",
+        exceptions: `controller requests target treasury ${boot.treasury}; done only on indexed AllowSet/CapRaised/NodePaused`,
+      },
+      dependsOn: [SCHEMAS],
     },
   });
-  chainStatus = `indexing treasury ${config.treasury} from block ${config.deployBlock}`;
-  ledgerStatus = `journal posted from chain events; reconciliation after every poll with new logs (materiality ${materiality ?? "10000"} atomic)`;
-} else {
-  chainStatus = `idle: ${indexerConfig.reason}`;
-  console.warn(`[chain] indexer idle: ${indexerConfig.reason}`);
+  // Facilitator routes at the root (/settle, /reserve, /release, /verify, /delegate, /health) for the adapters and
+  // scripts, and again under /facilitator so its own SSE feed (/facilitator/events) does not shadow the API's /events.
+  app.route("/", facilitatorApp);
+  app.route("/facilitator", facilitatorApp);
+
+  poller.start();
+  if (boot.escrowFactory) {
+    // Books late arrivals into closed escrows and their sweep() recoveries; in-memory ledger until Postgres lands.
+    createSweepReconciler({
+      client,
+      factory: boot.escrowFactory,
+      usdc: deployments.usdc,
+      treasury: boot.treasury,
+      bus: facilitatorBus,
+      purchases: new MemoryPurchaseIndex(),
+      ledger: new MemoryLedger(),
+      exceptions: new MemoryExceptions(),
+      fromBlock: deployments.deployBlock ? BigInt(deployments.deployBlock) : boot.blockNumber,
+      intervalMs: config.eventsPollMs * 2,
+      log,
+    }).start();
+  }
+
+  const server = serve({ fetch: app.fetch, port: config.port }, (info) =>
+    log(`[service] chain ${CHAIN_ID} API + facilitator listening on http://localhost:${info.port}`),
+  );
+  const sellerServer = serve({ fetch: sellerApp.fetch, port: sellerConfig.port }, (info) =>
+    log(`[sellers] SIMULATED sellers listening on http://localhost:${info.port} (${sellerConfig.sellerUrl})`),
+  );
+  await indexer?.start();
+
+  const shutdown = (): void => {
+    poller.stop();
+    sellerServer.close();
+    server.close(() => {
+      void (indexer ? indexer.stop() : Promise.resolve())
+        .then(() => database.close())
+        .finally(() => process.exit(0));
+    });
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 }
 
-// Facilitator: the settle() core. Runs only with BASE_SEPOLIA_RPC_URL, RELAYER_PRIVATE_KEY and a
-// deployments file; otherwise the sellers serve 402s but every paid retry answers 503.
-const facilitatorConfig = await resolveFacilitatorConfig();
-let facilitator: Facilitator | null = null;
-if (facilitatorConfig.ok) {
-  await assertFacilitatorChain(facilitatorConfig.rpcUrl);
-  facilitator = facilitatorConfig.create();
-} else {
-  console.warn(`[facilitator] idle: ${facilitatorConfig.reason}`);
-}
-
-// SIMULATED sellers on their own port (SELLER_URL). The attacker payee is never allowlisted.
-const sellerConfig = resolveSellerConfig();
-const sellerApp = createSellerApp({
-  config: sellerConfig,
-  facilitator,
-  facilitatorUnavailableReason: facilitatorConfig.ok ? undefined : facilitatorConfig.reason,
+main().catch((err) => {
+  console.error(`[service] fatal: ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
 });
-
-const { app } = createApp({
-  db: database.db,
-  bus,
-  ...(reconciliation ? { ports: { reconciliation: { run: (trigger) => reconciliation!.run(trigger) } } } : {}),
-  ...(indexerConfig.ok ? { treasury: indexerConfig.config.treasury } : {}),
-  oracle,
-  indexerStatus: () => indexer?.status() ?? { state: "idle", reason: indexerConfig.ok ? "not started" : indexerConfig.reason },
-  status: {
-    database: { dialect: database.dialect, migrationsFolder: database.migrationsFolder, migrated: true },
-    modules: {
-      api: "ready",
-      orchestration: orchestrationStatus({
-        model: oracle?.model ?? null,
-        treasury: indexerConfig.ok ? indexerConfig.config.treasury : null,
-        orderTermsWired: false,
-      }),
-      facilitator: facilitatorStatus(facilitatorConfig),
-      sellers: sellersStatus(sellerConfig, facilitatorConfig.ok),
-      chain: chainStatus,
-      ledger: ledgerStatus,
-      exceptions: indexerConfig.ok
-        ? `controller requests target treasury ${indexerConfig.config.treasury}; done only on indexed AllowSet/CapRaised/NodePaused`
-        : "offchain exceptions only: no treasury address (onchain requests answer 501 until a deployments file exists)",
-    },
-  },
-});
-
-const server = serve({ fetch: app.fetch, port }, (info) => {
-  console.log(`[api] @overflow/service listening on http://localhost:${info.port}`);
-});
-const sellerServer = serve({ fetch: sellerApp.fetch, port: sellerConfig.port }, (info) => {
-  console.log(`[sellers] SIMULATED sellers listening on http://localhost:${info.port} (${sellerConfig.sellerUrl})`);
-});
-await indexer?.start();
-
-const shutdown = (): void => {
-  sellerServer.close();
-  server.close(() => {
-    void (indexer ? indexer.stop() : Promise.resolve())
-      .then(() => database.close())
-      .finally(() => process.exit(0));
-  });
-};
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);

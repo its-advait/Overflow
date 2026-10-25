@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { NotWiredError } from "../api/ports.js";
 import { treasuryAbi } from "../chain/abi.js";
 import { createActivityBus, type BusMessage } from "../chain/bus.js";
-import type { RawLog } from "../chain/client.js";
+import type { RawLog } from "../chain/log-source.js";
 import { fakeLogSource } from "../chain/fake-source.js";
 import { FIXTURE } from "../chain/fixtures/build-fixture.js";
 import { createIndexer } from "../chain/indexer.js";

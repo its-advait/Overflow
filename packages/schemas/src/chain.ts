@@ -56,20 +56,29 @@ export function explorerUrl(kind: ExplorerKind, value: string | number | bigint)
 }
 
 // ---------------------------------------------------------------------------
-// deployments/base-sepolia.json (written by the deploy script, P1.2)
+// deployments/base-sepolia.json (written by pnpm contracts:deploy)
 // ---------------------------------------------------------------------------
 
 export const DEPLOYMENTS_RELATIVE_PATH = "deployments/base-sepolia.json" as const;
 
 export const DeploymentsSchema = z.object({
   chainId: z.literal(CHAIN_ID),
-  treasury: AddressSchema,
-  escrowFactory: AddressSchema,
+  /** USDC the treasury settles in. */
+  token: AddressSchema.default(USDC.address),
+  /** Alias of `token`, kept for earlier readers. */
   usdc: AddressSchema.default(USDC.address),
+  treasury: AddressSchema,
+  /** null until the escrow contracts are deployed (P1.6). */
+  escrowFactory: AddressSchema.nullable().default(null),
+  escrowImplementation: AddressSchema.nullable().default(null),
+  /** Treasury owner: the controller's Coinbase Wallet, or the deployer in local dev. */
+  owner: AddressSchema.optional(),
   deployer: AddressSchema.optional(),
   deployBlock: UintStringSchema.optional(),
   deployedAt: IsoDateTimeSchema.optional(),
-  /** Deploy tx hashes keyed by contract name. */
+  /** Tx hashes keyed by step: treasury, createRoot, escrowFactory, escrowImplementation, setEscrowFactory. */
+  txs: z.record(z.string(), Bytes32Schema).default({}),
+  /** Earlier name for `txs`; accepted for compatibility. */
   txHashes: z.record(z.string(), Bytes32Schema).optional(),
 });
 export type Deployments = z.infer<typeof DeploymentsSchema>;
@@ -80,8 +89,9 @@ export function parseDeployments(json: unknown): Deployments {
 }
 
 /**
- * Default location: `<repo root>/deployments/base-sepolia.json`, resolved from this file
- * (packages/schemas/src/chain.ts). Override with OVERFLOW_DEPLOYMENTS_PATH.
+ * Default location: `packages/schemas/deployments/base-sepolia.json`, resolved from this file
+ * (packages/schemas/src/chain.ts). Written by scripts/export-deployment.ts after a deploy.
+ * Override with OVERFLOW_DEPLOYMENTS_PATH.
  */
 export async function defaultDeploymentsPath(): Promise<string> {
   const env = globalThis.process?.env?.OVERFLOW_DEPLOYMENTS_PATH;
@@ -89,7 +99,7 @@ export async function defaultDeploymentsPath(): Promise<string> {
   const { fileURLToPath } = await import("node:url");
   const { resolve, dirname } = await import("node:path");
   const here = dirname(fileURLToPath(import.meta.url));
-  return resolve(here, "../../..", DEPLOYMENTS_RELATIVE_PATH);
+  return resolve(here, "..", DEPLOYMENTS_RELATIVE_PATH);
 }
 
 /**
@@ -104,7 +114,7 @@ export async function loadDeployments(path?: string): Promise<Deployments> {
     raw = await readFile(target, "utf8");
   } catch (err) {
     throw new Error(
-      `deployments file not found at ${target} (written by the deploy script, P1.2): ${
+      `deployments file not found at ${target} (written by pnpm contracts:deploy): ${
         err instanceof Error ? err.message : String(err)
       }`,
     );

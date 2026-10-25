@@ -11,7 +11,7 @@ import {
   type ReconciliationTrigger,
 } from "@overflow/schemas";
 import type { ActivityBus } from "../chain/bus.js";
-import type { BalanceReader, LogSource } from "../chain/client.js";
+import type { BalanceReader, LogSource } from "../chain/log-source.js";
 import { DEFAULT_CURSOR_NAME } from "../chain/indexer.js";
 import { eventKeyOf } from "./posting.js";
 
