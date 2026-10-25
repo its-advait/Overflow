@@ -8,3 +8,4 @@ export * from "./mission";
 export * from "./ledger";
 export * from "./hashing";
 export * from "./chain";
+export * from "./tables";
