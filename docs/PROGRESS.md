@@ -464,3 +464,37 @@
 - **Live beats not run.** `/api/search` paid on chain and the `PayeeNotAllowed` revert with a tx hash need the treasury from `origin/person1` deployed with `deployments/base-sepolia.json`, `AGENT_KEYS[0]` registered as a node, the search/scrape payees `setAllow`ed, the relayer funded with ETH and the treasury with USDC, and the seller started with `DEMO_MODE=true`. Then `pnpm --filter @overflow/service sellers:demo` and paste the three Basescan links here.
 - The facilitator is the settle core only: no `/verify`, `/settle`, `/delegate`, `/events` HTTP routes, no `reserve()` path, no persistence of settlements (the indexer's `Paid` logs remain the source of truth).
 - `PolicyPort.allowlistedPayees()` in the API still defaults to empty; the demo script's `treasury.allowlist()` read is the implementation it should get.
+
+## 2026-10-24: Oracle: requirements, coverage filter, ranking
+
+### Built
+- `packages/oracle` (`@overflow/oracle`, replaces the scaffold): the model proposes requirements, code decides everything else, nothing here can sign or pay.
+- `extract.ts` `extractRequirements({ mission, knownRegions, now }, { client, model, audit })`: Anthropic SDK `client.messages.parse` with `zodOutputFormat(ExtractionOutputSchema)` (structured output; no forced `tool_choice`, no `thinking`/`temperature` params, so it runs on every current model). `ExtractionOutputSchema` is a plain model-facing shape (`requests[]` with `regions` as codes, `dateRange`, `granularity`, `requiredFields`, `format[]`, `license`, `freshnessMaxAgeDays`, `maxPriceUsdc` as a decimal string; `assumptions[]`). Deterministic post-processing: `toAtomic` for the price (never a float), clamp to the mission budget, `clampToPresent` (end date capped at the last complete month before `now`, e.g. 2026-09-30 on 2026-10-24), lowercase-trim fields, dedupe regions; then `ResourceRequestSchema.parse`. On a parse/validation failure (or `parsed_output` null, or a stop reason other than `end_turn`) one retry carries the raw output plus the Zod issues as a second user turn; a second failure throws `ExtractionError` with both attempts' hashes. `oracleModelFromEnv()` reads `CLAUDE_MODEL` and throws when unset. The model id is never hardcoded.
+- Audit: every attempt inserts an `activity_events` row `kind: "oracle.model_call"` (new `ActivityKindSchema` member in `packages/schemas/src/ledger.ts`) with `message = "oracle extraction attempt=N model=<id> promptHash=0x… outputHash=0x… outcome=parsed|invalid"`. `hash.ts`: `promptHash = keccak256(abi.encode(string model, string system, string user, string schema))`, `outputHash = keccak256(bytes(rawText))`; fixed fields, never JSON.
+- `coverage.ts` `filterByCoverage(request, listings)`: pure; rejects on `region` (every requested code must be in `coverage.regions`), `dateRange` (listing must contain the request range), `granularity` (`GRANULARITY_ORDER`: finer rolls up, annual never rolls down to monthly), `field` (case-insensitive) and `format`; every failing check is reported per listing with the compared values.
+- `terms.ts` `filterByTerms(request, listings, now)`: pure; `price` (bigint compare against `maxPriceAtomic`), `freshness` (`asOf` age in days vs `freshness.maxAgeDays`; missing `asOf` rejected), `license` (company-use request needs a company-use listing; single-user accepts either; an `unclear` seller license is never bought).
+- `owned.ts` `skipOwned(listings, owned)` drops a listing whose id or `manifestHash` matches an owned resource (the seller-B duplicate of owned bytes is skipped too); `loadOwnedResources(repos, organizationId)` = SETTLED purchases across the organization's missions joined to `resources` for the hash. Uses existing repository methods only.
+- `rank.ts` `rank(listings, request)`: price per covered requirement (`regions + requiredFields + dates + granularity + format`), exact bigint cross-multiplication, tie-break newer `asOf` first (missing last), then listing id; returns `inputs { priceAtomic, coveredRequirements, pricePerCoveredAtomic, asOf }` per entry.
+- `explain.ts` `explain()` → `{ chosen, alternatives, rejected (grouped per listing, every reason), assumptions, summary, simulated }`; the summary ends with "This is a recommendation; it authorizes no payment." `recommend.ts` composes skipOwned → filterByCoverage → filterByTerms → rank → explain and takes no model client.
+
+### Design choices
+- Two schemas on purpose: the model fills a plain JSON shape (no refinements, no min/max, so the JSON Schema the API enforces is exact), and code converts and validates into `ResourceRequest`. The model's `assumptions` text is carried into the explanation but never read by any filter.
+- "Owned" means SETTLED. A funded but undelivered escrow is in flight, not an asset.
+- Price, freshness and license live in `filterByTerms`, separate from `filterByCoverage`, because the spec's coverage filter names fields, regions and dates; both are code.
+- Dependencies: `@anthropic-ai/sdk`, `@overflow/database` (types + `loadOwnedResources`), `viem` (hashing), `@overflow/datasets` (dev, catalog tests).
+
+### Stubbed or simulated
+- Tests use a fake model client (scripted outputs, no network) and the SIMULATED P5.1 catalog. `recommend()` marks `explanation.simulated = true` whenever a considered listing is simulated.
+
+### Verified (real output, 2026-10-24)
+| Check | Result |
+|---|---|
+| `pnpm install` | exit 0, oracle deps linked |
+| `pnpm typecheck` | exit 0, all workspaces Done |
+| `pnpm test` (root) | exit 0, 43 files / 367 tests passed, 1 skipped (new: oracle 30: on the P5.1 catalog the 2021-2022 set is rejected on `dateRange` even when the fake model's assumptions prefer it; California rejected on `region` for a national request; annual rejected on `granularity` for monthly and quarterly requests; monthly rolls up to quarterly; field/format reasons all reported; ranking identical across all 6 input permutations; freshness and id tie-breaks; `pricePerCoveredAtomic` 12 USDC / 7 = `1714285`; `recommend` chooses the 12 USDC national set and explains all five rejections; PGlite: `loadOwnedResources` returns only the SETTLED purchase and `skipOwned` drops all three listings sharing its `manifestHash`; extraction: parse + `toAtomic` + date clamp + budget clamp with assumptions, retry carries the Zod issues and both calls are audited with distinct hashes, two failures throw `ExtractionError` with two audit rows, `max_tokens` stop counts as a failed attempt, `CLAUDE_MODEL` required) |
+| `npx vitest run packages/oracle/src/extract.live.test.ts` | **skipped**: `ANTHROPIC_API_KEY` and `CLAUDE_MODEL` are not set in `.env` (checked as booleans only) |
+
+### Open issues
+- **Live extraction not run.** Set `ANTHROPIC_API_KEY` and `CLAUDE_MODEL` in `.env`, then `npx vitest run packages/oracle/src/extract.live.test.ts`; it prints the model id, the requests, the assumptions, both hashes and the catalog recommendation. Paste that output here.
+- `OrchestrationPort.planMission/propose` in the service still answer 501; wiring `extractRequirements` + `recommend` (and seeding `resources` from `catalog.json`) is P4.1/P4.2.
+- Sample judgment (buy/skip on the decrypted random sample), slow-reveal seller down-ranking and the `UNCLEAR_LICENSE` controller exception are later prompts; the filter only rejects.

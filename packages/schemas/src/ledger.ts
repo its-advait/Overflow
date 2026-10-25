@@ -116,6 +116,8 @@ export const ActivityKindSchema = z.enum([
   "escrow.bond-forfeited",
   // Reconciliation run that found at least one difference (each also opens an exception).
   "reconciliation.difference",
+  // Oracle audit: one per model call, carrying the prompt hash and output hash (SPEC "Oracle" guardrails).
+  "oracle.model_call",
 ]);
 export type ActivityKind = z.infer<typeof ActivityKindSchema>;
 

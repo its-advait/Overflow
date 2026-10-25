@@ -351,13 +351,25 @@ importers:
 
   packages/oracle:
     dependencies:
+      '@anthropic-ai/sdk':
+        specifier: ^1.2.0
+        version: 1.2.0(zod@4.6.7)
+      '@overflow/database':
+        specifier: workspace:*
+        version: link:../database
       '@overflow/schemas':
         specifier: workspace:*
         version: link:../schemas
+      viem:
+        specifier: ^2.57.10
+        version: 2.57.10(typescript@5.9.3)(zod@4.6.7)
       zod:
         specifier: ^4.6.7
         version: 4.6.7
     devDependencies:
+      '@overflow/datasets':
+        specifier: workspace:*
+        version: link:../datasets
       '@types/node':
         specifier: ^26.6.5
         version: 26.6.5
