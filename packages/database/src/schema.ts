@@ -412,6 +412,8 @@ export const controllerRequests = pgTable(
     summary: text("summary").notNull(),
     status: text("status").notNull(),
     txHash: text("tx_hash"),
+    /** ControllerSubmission (Wallet MCP request id + approval URL); set by the controller, never changes status. */
+    submission: jsonb("submission"),
     createdAt: ts("created_at").notNull().defaultNow(),
     resolvedAt: ts("resolved_at"),
   },

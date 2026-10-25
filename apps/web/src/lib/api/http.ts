@@ -13,20 +13,23 @@ import {
   MissionDetailResponseSchema,
   MissionResponseSchema,
   MissionsResponseSchema,
+  NodePaymentsResponseSchema,
   PauseAgentResponseSchema,
   PauseMissionAgentResponseSchema,
   PlanResponseSchema,
   ProposeResponseSchema,
   PurchaseResponseSchema,
+  RaiseExceptionResponseSchema,
   ReconciliationResponseSchema,
   ResourcesResponseSchema,
   RunMissionResponseSchema,
   RunReconciliationResponseSchema,
   ServiceStatusSchema,
+  TreasuryNodesResponseSchema,
   type SseMessage,
   type SseQuery,
 } from "./contracts";
-import { ActivityEventSchema } from "@overflow/schemas";
+import { ActivityEventSchema, ControllerRequestSchema } from "@overflow/schemas";
 import { API_BASE, ApiError, type OverflowApi } from "./client";
 
 export const IDEMPOTENCY_HEADER = "Idempotency-Key";
@@ -108,6 +111,10 @@ export function createHttpApi(base: string = API_BASE): OverflowApi {
 
     listAgents: () => request(base, AgentsResponseSchema, "/api/agents"),
     pauseAgent: (id, body) => request(base, PauseAgentResponseSchema, `/api/agents/${enc(id)}/pause`, { method: "POST", body }),
+    listTreasuryNodes: () => request(base, TreasuryNodesResponseSchema, "/api/treasury/nodes"),
+    listNodePayments: (nodeId) => request(base, NodePaymentsResponseSchema, `/api/treasury/nodes/${nodeId}/payments`),
+    raiseException: (body) => request(base, RaiseExceptionResponseSchema, "/api/exceptions", { method: "POST", body }),
+    getControllerRequest: (id) => request(base, ControllerRequestSchema, `/api/controller-requests/${enc(id)}`),
 
     listActivity: (query = {}) => request(base, ActivityResponseSchema, `/api/activity${qs(query)}`),
     listExceptions: (query = {}) => request(base, ExceptionsResponseSchema, `/api/exceptions${qs(query)}`),

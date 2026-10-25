@@ -7,6 +7,8 @@
 // Env (from the repo root .env): BASE_SEPOLIA_RPC_URL, AGENT_KEYS (first key signs),
 // RELAYER_PRIVATE_KEY (submits settle()), and deployments/base-sepolia.json for the treasury
 // address (override with --treasury 0x...). --dry-run stops after signing.
+// NODE_SIGNER=cdp signs with the CDP server account CDP_ACCOUNT_NAME (pinned to CDP_ACCOUNT_ADDRESS
+// when set) instead of AGENT_KEYS; the CDP SDK reads CDP_API_KEY_ID/SECRET and CDP_WALLET_SECRET itself.
 //
 // This script never calls USDC directly: only treasury.settle() moves funds.
 import { existsSync, readFileSync } from "node:fs";
@@ -27,7 +29,8 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
 import { AddressSchema, CHAIN_ID, USDC, UintStringSchema, explorerUrl, loadDeployments } from "@overflow/schemas";
-import { isAuthorizationLive, signTransfer, verifyTokenDomain } from "../src/index";
+import { isAuthorizationLive, signTransfer, verifyTokenDomain, type NodeSigner } from "../src/index";
+import { cdpSigner } from "../src/signers";
 
 const repoRoot = resolve(import.meta.dirname, "../../..");
 
@@ -52,6 +55,25 @@ function requireEnv(name: string): string {
   const v = process.env[name];
   if (!v) throw new Error(`${name} is not set (see .env.example)`);
   return v;
+}
+
+/** The node key: a CDP server account (NODE_SIGNER=cdp) or the first AGENT_KEYS entry. Never logged. */
+async function resolveNodeAccount(): Promise<NodeSigner> {
+  if (process.env["NODE_SIGNER"] === "cdp") {
+    process.env["DISABLE_CDP_USAGE_TRACKING"] ??= "true";
+    process.env["DISABLE_CDP_ERROR_REPORTING"] ??= "true";
+    const pin = process.env["CDP_ACCOUNT_ADDRESS"];
+    const resolved = await cdpSigner({
+      accountName: requireEnv("CDP_ACCOUNT_NAME"),
+      ...(pin ? { expectedAddress: getAddress(AddressSchema.parse(pin)) } : {}),
+    });
+    console.log(`node signer: ${resolved.source} (${resolved.kind})`);
+    return resolved.signer;
+  }
+  const agentKeys = requireEnv("AGENT_KEYS").split(",").map((k) => k.trim()).filter(Boolean);
+  const nodeKey = agentKeys[0];
+  if (!nodeKey) throw new Error("AGENT_KEYS is empty");
+  return privateKeyToAccount(nodeKey as Hex);
 }
 
 // From docs/SPEC.md "OverflowTreasury.sol" and the Leash ILeashWallet events/errors.
@@ -85,15 +107,13 @@ async function main(): Promise<void> {
       ttl: { type: "string", default: "120" },
       "dry-run": { type: "boolean", default: false },
     },
-    // pnpm forwards a literal "--"; tolerate it.
+    // pnpm forwards a literal "--"; drop it so the options after it are still parsed.
+    args: process.argv.slice(2).filter((a) => a !== "--"),
     allowPositionals: true,
   });
 
   const rpcUrl = requireEnv("BASE_SEPOLIA_RPC_URL");
-  const agentKeys = requireEnv("AGENT_KEYS").split(",").map((k) => k.trim()).filter(Boolean);
-  const nodeKey = agentKeys[0];
-  if (!nodeKey) throw new Error("AGENT_KEYS is empty");
-  const nodeAccount = privateKeyToAccount(nodeKey as Hex);
+  const nodeAccount = await resolveNodeAccount();
 
   const publicClient = createPublicClient({ chain: baseSepolia, transport: http(rpcUrl) });
   const chainId = await publicClient.getChainId();

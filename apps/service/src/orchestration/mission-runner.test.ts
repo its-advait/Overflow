@@ -203,7 +203,8 @@ describe("mission runner: signed delegation, tool loops, policy refusals", () =>
     await expect(runner.run(mission)).rejects.toThrow(/verification: ChildExceedsParent\(\)/);
     const events = await handle.repos.activityEvents.listByMission(mission.id);
     expect(events.find((e) => e.kind === "policy.blocked")?.decodedRevert).toBe("ChildExceedsParent()");
-    expect(events.at(-1)!.message).toMatch(/run failed/);
+    // Events written in the same millisecond tie-break on their random id, so "last" is not stable; the loud failure must exist.
+    expect(events.some((e) => /run failed/.test(e.message))).toBe(true);
   });
 
   it("the orchestrator pauses a sub-agent by signature through the relay; the in-process relay maps a 409", async () => {

@@ -100,7 +100,7 @@ export function createIndexer(deps: IndexerDeps): Indexer {
     state,
     chainId: config.chainId,
     treasury: config.treasury,
-    escrowFactory: config.escrowFactory,
+    ...(config.escrowFactory ? { escrowFactory: config.escrowFactory } : {}),
     ...(cursor !== undefined ? { cursor: cursor.toString() } : {}),
     ...(head !== undefined ? { head: head.toString() } : {}),
     ...(cursor !== undefined && head !== undefined ? { lagBlocks: maxBig(head - cursor, 0n).toString() } : {}),
@@ -111,7 +111,7 @@ export function createIndexer(deps: IndexerDeps): Indexer {
   });
   const publishStatus = (): void => deps.bus?.publishStatus(status());
 
-  const addresses = (): Address[] => [config.treasury, config.escrowFactory, ...escrows.values()];
+  const addresses = (): Address[] => [config.treasury, ...(config.escrowFactory ? [config.escrowFactory] : []), ...escrows.values()];
   const track = (escrow: Address): boolean => {
     const k = escrow.toLowerCase();
     if (escrows.has(k)) return false;
@@ -171,6 +171,7 @@ export function createIndexer(deps: IndexerDeps): Indexer {
               decoded,
               txHash: raw.transactionHash,
               treasury: config.treasury,
+              owner: config.owner ?? null,
               blockTimestamp: async () =>
                 raw.blockTimestamp !== undefined ? BigInt(raw.blockTimestamp) : source.getBlockTimestamp(BigInt(raw.blockNumber)),
               warn,

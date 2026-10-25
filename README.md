@@ -39,6 +39,19 @@ pnpm dev:fund 5                   # DEV ONLY: move 5 USDC deployer -> treasury (
 
 `contracts/script/Deploy.s.sol` deploys `OverflowTreasury(TOKEN_ADDRESS, OWNER_ADDRESS)`. When the owner is the deployer it also calls `createRoot(AGENT_ROOT_ADDRESS, ROOT_CAP, ROOT_MAX_PER_CALL, ROOT_EXPIRY)`; otherwise it prints the `createRoot` calldata for the controller to approve. Addresses land in `packages/schemas/deployments/base-sepolia.json` (`BASE_SEPOLIA_DEPLOYMENT`, `loadDeployments()`) and ABIs in `packages/schemas/src/abi/` (`overflowTreasuryAbi`). No private key is ever read: signing goes through a Foundry keystore.
 
+## The controller (Coinbase Wallet MCP)
+
+The treasury owner is the controller's Coinbase smart wallet; the owner key is on no server. A Claude Code session
+with Wallet MCP connected (`claude mcp add --transport http --scope user base-mcp https://wallet-mcp.coinbase.com`)
+runs the `overflow-controller` skill: it lists `GET /api/controller-requests`, sends each prepared call with
+`send_calls` on `base-sepolia`, records `{requestId, approvalUrl}` at `POST /api/controller-requests/:id/submission`,
+shows the approval URL, and checks `get_request_status` once the human approved. A request becomes DONE only when
+the indexer stores the treasury event. Details: `docs/controller.md`; live results: `docs/coinbase-feedback.md`.
+UI: `pnpm --filter @overflow/web dev` then `/agents` (the delegation tree: live budgets from the treasury's view calls, the
+per-agent menu that opens controller requests, a side panel of payments and refusals; `NEXT_PUBLIC_USE_MOCKS=1` swaps in a
+labelled SIMULATED treasury) and `/controller` (every request and its approval state). The typed client reads
+`NEXT_PUBLIC_API_URL` (see `apps/web/.env.example`); the older `/controller` page still reads `NEXT_PUBLIC_SERVICE_URL`.
+
 ## Run the facilitator (service)
 
 ```bash
@@ -62,6 +75,13 @@ through the controller.
 see a `PaymentStatus`. One authorization per purchase, ever; `reconcilePayment` is the only retry path and reads USDC's
 `authorizationState` before anything else. `pnpm demo:adapters` runs one purchase through each on Base Sepolia
 (`--probe-coinbase` only asks the Coinbase facilitator's `/verify` about a treasury-as-payer authorization).
+
+## MCP server for any agent (`@overflow/overflow-mcp`)
+
+`packages/overflow-mcp` is a stdio MCP server with `overflow_budget`, `overflow_quote` (402 + the facilitator's `/verify`
+simulation) and `overflow_pay` (one EIP-3009 authorization, `from = treasury`, settled only by `settle()`). Install:
+`pnpm mcp:build && claude mcp add --transport stdio overflow -- node "$(pwd)/packages/overflow-mcp/dist/server.js"`.
+The package README has the Claude Desktop config, a 5-minute walkthrough and the refusal table.
 
 ## Layout
 

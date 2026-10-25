@@ -122,22 +122,5 @@ export const EVENT_BY_TOPIC: ReadonlyMap<`0x${string}`, { kind: ContractKind; ev
   return m;
 })();
 
-/** What the Blocked lane says for each treasury revert (docs/SPEC.md). */
-export const REVERT_REASONS: Readonly<Record<string, string>> = {
-  UnknownAgent: "Signed by a key that isn't a registered agent",
-  PayeeNotAllowed: "Recipient isn't approved for this agent",
-  OverPerCall: "Single payment above this agent's limit",
-  OverBudget: "This agent or an ancestor would pass its cap",
-  Expired: "This agent's authority expired",
-  Paused: "This agent (or an ancestor) is paused",
-  BelowFloor: "Payment would drop the treasury under its floor",
-  TooDeep: "Delegation tree is too deep (max depth 2)",
-  ChildExceedsParent: "Child limits exceed the parent's limits",
-  BadDelegation: "Delegation is invalid, expired, replayed or signed by the wrong key",
-  KeyInUse: "That key already belongs to a node (or is a reserved address)",
-  NotAncestor: "Signer is not an ancestor of the target node",
-  NotOwner: "Only the treasury owner can do that",
-  PayeeFlagged: "Seller has a proven cheat on record",
-  ReservationTooLong: "Reservation validity exceeds the treasury's window",
-  ReservationActive: "That digest is already reserved",
-};
+/** One copy of the revert reason table lives in @overflow/schemas; the decoder keeps its old name. */
+export { TREASURY_REVERT_REASONS as REVERT_REASONS } from "@overflow/schemas";

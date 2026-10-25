@@ -48,3 +48,16 @@ export function useApiQuery<T>(fn: () => Promise<T>, deps: DependencyList): ApiQ
     reload,
   };
 }
+
+/**
+ * Keeps the last defined value for a key while a refetch is in flight, so a list refreshed on every
+ * feed event does not flash back to its skeleton. A new key drops the kept value (a different node's
+ * panel starts empty). Only real results are ever kept: an error or a pending query leaves `undefined`.
+ */
+export function useLastGood<T>(value: T | undefined, key: unknown = null): T | undefined {
+  const [kept, setKept] = useState<{ key: unknown; value: T | undefined }>({ key, value });
+  // "Storing information from previous renders" (react.dev): a guarded setState during render, no effect.
+  if (value !== undefined && (kept.value !== value || kept.key !== key)) setKept({ key, value });
+  if (value !== undefined) return value;
+  return kept.key === key ? kept.value : undefined;
+}

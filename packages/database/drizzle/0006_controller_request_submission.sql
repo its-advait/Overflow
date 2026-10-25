@@ -1,0 +1,1 @@
+ALTER TABLE "controller_requests" ADD COLUMN "submission" jsonb;

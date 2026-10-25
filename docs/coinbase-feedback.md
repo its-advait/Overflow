@@ -167,3 +167,151 @@ Decoded PAYMENT-REQUIRED (402): error = `invalid_exact_evm_payload_authorization
 - (a) reserve unavailable: HTTP 402, body {} error=invalid_payload: contract call failed: unable to call contract: execution reverted
 - (b) without reserve: HTTP 402, body {} error=invalid_payload: contract call failed: unable to call contract: execution reverted
 - (c) expired: HTTP 402, body {} error=invalid_exact_evm_payload_authorization_valid_before: valid before expired: 1792901015
+
+
+## Wallet MCP controller (not yet run, 2026-10-24)
+
+The controller flow (`docs/controller.md`, skill `.claude/skills/overflow-controller`) is built and tested against a
+SIMULATED fixture only. No `get_wallets`, `send`, `send_calls` or `get_request_status` call has been made yet: this
+session had no Wallet MCP server connected. The live spike (smart wallet address, Base Sepolia support, one harmless
+`send_calls`, treasury funding, setAllow + raiseCap approvals with tx hashes) is recorded here once it runs.
+
+## CDP server accounts as agent keys (2026-10-25: live sign check passed; settle pending the new treasury)
+
+Goal: an Overflow agent node key that never exists as a raw private key. A CDP EVM **server account** (EOA, key
+in Coinbase's TEE) signs the two EIP-712 payloads the treasury verifies: USDC's `TransferWithAuthorization`
+(`from` = treasury, `_twaDigest`) and Overflow's `CreateChild` / `PauseChild` (delegation domain). Both need a
+plain 65-byte `r || s || v` signature with `v in {27, 28}` because the contracts use `ecrecover` / OpenZeppelin
+`ECDSA`; an ERC-1271 or ERC-6492 wrapped signature would not do.
+
+### What the SDK says (`@coinbase/cdp-sdk` 1.60.0, read from the installed types)
+- `EvmServerAccount.signTypedData(parameters: TypedDataDefinition) => Promise<Hex>`: the exact viem shape our
+  `NodeSigner` / `TypedDataSigner` already pass (`{domain, types, primaryType, message}`); the SDK adds
+  `EIP712Domain` to `types` and converts `bigint`s to strings in its auth interceptor. Arbitrary domains and
+  structs are accepted at the type level; nothing restricts `verifyingContract`.
+- Smart accounts (`EvmSmartAccount`) differ: their `signTypedData` needs a `network` and returns an ERC-6492
+  signature. Not usable as a node key; we use server accounts only.
+- The REST response type is `{ signature: string }`. Byte length and the `v` encoding (27/28 vs 0/1) are not
+  documented, so `@overflow/payment-client/signers` normalizes `v` and rejects anything that is not 65 bytes
+  with a low `s`, then checks recovery before using a signature.
+- Credentials: `CDP_API_KEY_ID`, `CDP_API_KEY_SECRET` (Secret API key) and `CDP_WALLET_SECRET` (needed for every
+  signing `POST`). The SDK reads them itself; Overflow checks presence by name and never logs values.
+- Undocumented surprise: the SDK posts usage and error telemetry to Coinbase on every action unless
+  `DISABLE_CDP_USAGE_TRACKING=true` and `DISABLE_CDP_ERROR_REPORTING=true`. Our scripts set both when unset.
+- `getOrCreateAccount` by a mistyped name silently creates a fresh (unregistered) key; node paths therefore use
+  `getAccount` and only the check script creates.
+
+### Built
+`resolveNodeSigner` (`NODE_SIGNER=env|cdp`), `envKeySigner`, `cdpSigner`, `normalizeEcdsaSignature`; overflow-mcp
+and `settle:live` honour the flag; `pnpm --filter @overflow/payment-client cdp:sign-check -- --json` signs the
+three payloads with a CDP account and prints length, raw `v`, low-`s`, recovery from the typed data and from the
+EIP-712 digest, and latency. Nothing is broadcast. 26 unit tests run against a fake CDP client.
+
+### Live check (run 2026-10-25, `pnpm --filter @overflow/payment-client cdp:sign-check -- --name overflow-node-root --json`)
+
+Verdict: **yes**. CDP EVM server accounts sign arbitrary EIP-712 typed data and return a plain 65-byte
+`r || s || v` ECDSA signature with `v` already 27/28 and a low `s`; no normalization was needed, and every
+signature recovers to the account both through viem's typed-data recovery and through `ecrecover` over the
+EIP-712 digest (so it is a raw ECDSA signature, not an ERC-1271/6492 wrapper). Nothing was broadcast.
+
+Account `overflow-node-root` -> `0x646F2bb89286aD517E0cc5420589a65dDe30A415` (lookup 1424 ms, created on first run).
+Domains: USDC `{"USDC","2",84532,0x036CbD53842c5426634e7929541eC2318f3dCF7e}`; Overflow delegation
+`{"Overflow","1",84532,<treasury>}` with the retired treasury `0xd3A7…8291` as `verifyingContract` (any address works).
+
+| Payload | bytes | raw v | low s | recovers to | matches | ms |
+|---|---|---|---|---|---|---|
+| TransferWithAuthorization (USDC domain, from = treasury, 60 s probe) | 65 | 27 | true | 0x646F2bb89286aD517E0cc5420589a65dDe30A415 | true | 431 |
+| CreateChild (Overflow delegation domain) | 65 | 28 | true | 0x646F2bb89286aD517E0cc5420589a65dDe30A415 | true | 225 |
+| PauseChild (Overflow delegation domain) | 65 | 27 | true | 0x646F2bb89286aD517E0cc5420589a65dDe30A415 | true | 317 |
+
+Full `--json` output:
+
+```json
+{
+  "checkedAt": "2026-10-25T08:06:41.624Z",
+  "chainId": 84532,
+  "broadcast": false,
+  "account": {
+    "name": "overflow-node-root",
+    "address": "0x646F2bb89286aD517E0cc5420589a65dDe30A415",
+    "source": "cdp:overflow-node-root",
+    "lookupMs": 1424
+  },
+  "treasury": "0xd3A74fA991CA0B5627d30EF27dC699C134848291",
+  "verdict": "yes: CDP EVM server accounts sign arbitrary EIP-712 typed data with a plain 65-byte ECDSA signature",
+  "checks": [
+    {
+      "payload": "TransferWithAuthorization (USDC domain, from = treasury, 60 s probe)",
+      "domain": {
+        "name": "USDC",
+        "version": "2",
+        "chainId": 84532,
+        "verifyingContract": "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
+      },
+      "primaryType": "TransferWithAuthorization",
+      "rawSignatureBytes": 65,
+      "rawVByte": 27,
+      "lowS": true,
+      "normalized": false,
+      "signature": "0x9e463b2e74b062cfd0da74e0c804f0058e9cd50d343e2bb9269c99abc9a44921666770a07dae316e1c836a74c647b928c47833e35995297fa97b17b49bb4db731b",
+      "recoveredFromTypedData": "0x646F2bb89286aD517E0cc5420589a65dDe30A415",
+      "recoveredFromDigest": "0x646F2bb89286aD517E0cc5420589a65dDe30A415",
+      "matchesAccount": true,
+      "ms": 431
+    },
+    {
+      "payload": "CreateChild (Overflow delegation domain)",
+      "domain": {
+        "name": "Overflow",
+        "version": "1",
+        "chainId": 84532,
+        "verifyingContract": "0xd3A74fA991CA0B5627d30EF27dC699C134848291"
+      },
+      "primaryType": "CreateChild",
+      "rawSignatureBytes": 65,
+      "rawVByte": 28,
+      "lowS": true,
+      "normalized": false,
+      "signature": "0x2b215d6cf3342919ff2215231075c4986f13a27e065f20dfde17906cba7cc286511d8035481025eb8d803047ca6891d25c4c9a5c09a92d10a93733cb1e75cdc51c",
+      "recoveredFromTypedData": "0x646F2bb89286aD517E0cc5420589a65dDe30A415",
+      "recoveredFromDigest": "0x646F2bb89286aD517E0cc5420589a65dDe30A415",
+      "matchesAccount": true,
+      "ms": 225
+    },
+    {
+      "payload": "PauseChild (Overflow delegation domain)",
+      "domain": {
+        "name": "Overflow",
+        "version": "1",
+        "chainId": 84532,
+        "verifyingContract": "0xd3A74fA991CA0B5627d30EF27dC699C134848291"
+      },
+      "primaryType": "PauseChild",
+      "rawSignatureBytes": 65,
+      "rawVByte": 27,
+      "lowS": true,
+      "normalized": false,
+      "signature": "0xbc84a853a81e787f49895bca36b35bdf0247ad0c266f253c40138304c24e52971ebfb363bf35ccf754d05fc6733a800aad26f0c3e20c5b61493a4a51e7c828431b",
+      "recoveredFromTypedData": "0x646F2bb89286aD517E0cc5420589a65dDe30A415",
+      "recoveredFromDigest": "0x646F2bb89286aD517E0cc5420589a65dDe30A415",
+      "matchesAccount": true,
+      "ms": 317
+    }
+  ]
+}
+```
+
+Also run: `NODE_SIGNER=cdp ... settle:live -- --to 0x2222…2222 --amount 1 --dry-run` signs a real
+TransferWithAuthorization (`from` = treasury) with the CDP account after verifying USDC's live domain over RPC and
+stops before `settle()`; see docs/PROGRESS.md for the output.
+
+Two things Coinbase could document better: the signature encoding of `signTypedData` (65 bytes, `v` 27/28) is
+nowhere in the docs or the response type (`{ signature: string }`), and the SDK's usage/error telemetry is on by
+default (`DISABLE_CDP_USAGE_TRACKING`, `DISABLE_CDP_ERROR_REPORTING`). One hazard: `getOrCreateAccount` with a
+mistyped name silently creates a new key; look up by name (`getAccount`) in production paths.
+
+### First settle() signed by a CDP account
+Pending the new treasury (controller plan Stage B with `AGENT_ROOT_ADDRESS=0x646F2bb89286aD517E0cc5420589a65dDe30A415`
+so the root key is CDP-held), `setAllow` of the payee and USDC in the treasury. Command:
+`NODE_SIGNER=cdp pnpm --filter @overflow/payment-client settle:live -- --to <payee> --amount 10000 [--dry-run]`.
+Tx hash goes here.

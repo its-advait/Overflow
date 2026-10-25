@@ -12,6 +12,7 @@ import type {
 import type { Hex } from "viem";
 import type { ProposeResult } from "../orchestration/oracle-port.js";
 import type { MissionRunResult, RunOptions } from "../orchestration/mission-runner.js";
+import type { TreasuryNode } from "../orchestration/delegation-plan.js";
 
 // ---------------------------------------------------------------------------
 // Ports: what the API needs from parts of the system that later prompts build.
@@ -88,11 +89,27 @@ export interface ReconciliationPort {
   run(trigger: ReconciliationTrigger): Promise<ReconciliationRun>;
 }
 
+/**
+ * Read side of the treasury's delegation tree (chain/treasury-read.ts). Pure view calls:
+ * nothing here signs, broadcasts or caches. The default refuses, so a service without an
+ * RPC answers 501 instead of inventing node state.
+ */
+export interface TreasuryReadPort {
+  blockNumber(): Promise<bigint>;
+  nodeCount(): Promise<bigint>;
+  getNode(id: bigint): Promise<TreasuryNode>;
+  /** The contract's remaining(id): smallest cap - spent over the node and its ancestors. */
+  remaining(id: bigint): Promise<bigint>;
+  allowlist(payee: Address): Promise<boolean>;
+  nodeAllow(id: bigint, payee: Address): Promise<boolean>;
+}
+
 export interface Ports {
   orchestration: OrchestrationPort;
   adapters: Partial<Record<PaymentPath, PaymentAdapter>>;
   policy: PolicyPort;
   reconciliation: ReconciliationPort;
+  treasuryRead: TreasuryReadPort;
 }
 
 /** Defaults for the ports later prompts build. The orchestration port is always real (createApp builds createOraclePort). */
@@ -106,5 +123,13 @@ export function defaultPorts(): Omit<Ports, "orchestration"> {
         throw new NotWiredError("ReconciliationPort.run (chain balance reads)", "BASE_SEPOLIA_RPC_URL + deployments/base-sepolia.json");
       },
     },
+    treasuryRead: notWiredTreasuryRead(),
   };
+}
+
+function notWiredTreasuryRead(): TreasuryReadPort {
+  const refuse = async (): Promise<never> => {
+    throw new NotWiredError("TreasuryReadPort (treasury view calls)", "BASE_SEPOLIA_RPC_URL + deployments/base-sepolia.json");
+  };
+  return { blockNumber: refuse, nodeCount: refuse, getNode: refuse, remaining: refuse, allowlist: refuse, nodeAllow: refuse };
 }

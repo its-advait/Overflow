@@ -25,6 +25,7 @@
     "spike:seller": "pnpm --filter @overflow/service spike:seller",
     "spike:coinbase": "pnpm --filter @overflow/scripts coinbase-spike",
     "status": "pnpm --filter @overflow/scripts status",
+    "mcp:build": "pnpm --filter @overflow/overflow-mcp build",
     "dev:fund": "pnpm --filter @overflow/scripts dev-fund",
     "datasets:generate": "tsx scripts/generate-datasets.mts"
   },

@@ -9,19 +9,22 @@
   "exports": {
     ".": "./src/index.ts",
     "./keystore": "./src/keystore.ts",
-    "./adapters": "./src/adapters/index.ts"
+    "./adapters": "./src/adapters/index.ts",
+    "./signers": "./src/signers/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "golden": "tsx scripts/gen-golden.ts",
-    "settle:live": "tsx scripts/settle-live.ts"
+    "settle:live": "tsx scripts/settle-live.ts",
+    "cdp:sign-check": "tsx scripts/cdp-sign-check.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
     "tsx": "^4.23.15"
   },
   "dependencies": {
+    "@coinbase/cdp-sdk": "^1.60.0",
     "@overflow/schemas": "workspace:*",
     "viem": "^2.57.10",
     "zod": "^4.6.7"

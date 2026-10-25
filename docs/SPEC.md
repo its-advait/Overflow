@@ -229,7 +229,7 @@ Verified offline against Circle's compiled FiatTokenV2\_2 behind its real proxy:
 | Coinbase Wallet MCP (`wallet-mcp.coinbase.com`) | Controller: funds the treasury (`send`), approves owner actions (`send_calls`), signs EIP-712 (`sign`). Every write needs the human's approval in Coinbase Wallet | That `send_calls` works on Base Sepolia |
 | Coinbase x402 facilitator | Settles purchases from third-party x402 sellers after `reserve()` | That it accepts a contract wallet as payer |
 | `@x402` seller middleware | Sellers' 402 responses and payment checks | — |
-| CDP server wallets (CDP MCP or SDK) | Optional: hold agent node keys so no raw private keys exist | That CDP accounts sign arbitrary EIP-712 |
+| CDP server wallets (CDP MCP or SDK) | Optional: hold agent node keys so no raw private keys exist (`NODE_SIGNER=cdp`, `@overflow/payment-client/signers`) | That CDP accounts sign arbitrary EIP-712: SDK types say yes (`EvmServerAccount.signTypedData`); live result in docs/coinbase-feedback.md |
 | Bazaar discovery | Oracle's live resource discovery | V2 cites `search_resources` and `proxy_tool_call`; unverified here |
 | Coinbase MCP (`agents.coinbase.com/mcp`) | Not core; trading-focused | Coinbase's docs page said x402 is "coming soon"; V2 cites a Sep 22, 2026 launch. Ask at the booth |
 
@@ -807,7 +807,7 @@ The biggest risk is Coinbase's facilitator refusing a contract-wallet payer; the
 - Recourse proves delivery against commitments and promises, not truth.
 - A revealed key makes that ciphertext readable, so the demo uses synthetic data.
 - Agent trees stop at two levels below the root.
-- Agent keys sit in server secrets for the demo; CDP server wallets would fix this.
+- Agent keys sit in server secrets by default; `NODE_SIGNER=cdp` moves a node key into a CDP server account (optional, see docs/coinbase-feedback.md for what was verified live).
 - Refunds don't restore allowance.
 - Unaudited and testnet-only; about 144k gas per `settle()` (AUSD measurement), plus one transaction for each reservation.
 

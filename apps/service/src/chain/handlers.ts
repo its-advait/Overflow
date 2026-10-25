@@ -31,6 +31,8 @@ export interface HandlerContext {
   txHash: Hex;
   /** The treasury being indexed; tells a USDC Transfer's direction. */
   treasury: Address;
+  /** Treasury owner from the deployments file; null when unknown. Only the owner's NodePaused completes a pause request. */
+  owner: Address | null;
   /** Unix seconds of the log's block (fetched lazily; only KeyRevealed needs it). */
   blockTimestamp: () => Promise<bigint>;
   warn: (message: string) => void;
@@ -80,7 +82,7 @@ async function unmatched(ctx: HandlerContext, kind: ActivityKind, what: string, 
 }
 
 const completed = (ctx: HandlerContext): Promise<ActivityEvent[]> =>
-  completeControllerRequests(ctx.repos, { eventName: ctx.decoded.eventName, args: ctx.decoded.args, txHash: ctx.txHash });
+  completeControllerRequests(ctx.repos, { eventName: ctx.decoded.eventName, args: ctx.decoded.args, txHash: ctx.txHash, owner: ctx.owner });
 
 type Handler = (ctx: HandlerContext) => Promise<HandlerResult>;
 

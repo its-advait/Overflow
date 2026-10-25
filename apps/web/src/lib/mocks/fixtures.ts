@@ -105,6 +105,28 @@ export const agents: AgentRecord[] = parseAll(AgentRecordSchema, [
     parentAgentId: "agent-orchestrator",
     createdAt: T0,
   },
+  {
+    id: "agent-research-scraper",
+    organizationId: ORGANIZATION_ID,
+    name: "Web scraper",
+    department: "research",
+    role: "tool-runner",
+    nodeId: 4,
+    key: addr("a9e0004"),
+    parentAgentId: "agent-research",
+    createdAt: T1,
+  },
+  {
+    id: "agent-finance-ledger",
+    organizationId: ORGANIZATION_ID,
+    name: "Ledger clerk",
+    department: "finance",
+    role: "tool-runner",
+    nodeId: 5,
+    key: addr("a9e0005"),
+    parentAgentId: "agent-finance",
+    createdAt: T1,
+  },
 ]);
 
 // Mission ------------------------------------------------------------------

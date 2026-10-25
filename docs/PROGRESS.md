@@ -1091,6 +1091,95 @@ Required: `BASE_SEPOLIA_RPC_URL`, `SERVICE_URL=http://localhost:4000`, `SELLER_U
 ### Open issues
 - The live deployment waits for the operator (funding + password entry). Phase 3 (Recourse sellers) proceeds in code and unit tests; its on-chain DONE WHEN runs after the deploy and funding.
 
+## 2026-10-24: controller approvals through Coinbase Wallet MCP (code; live run pending)
+
+### Built
+- **Submission record.** `ControllerRequest.submission?` = `{requestId, approvalUrl, chain: "base-sepolia", submittedBy, submittedAt}` (`packages/schemas/src/ledger.ts`, `ControllerSubmissionSchema`); column `controller_requests.submission jsonb` (migration `0005_controller_request_submission`); `controllerRequests.recordSubmission(id, submission)`: only while `pending`, idempotent for the same Wallet MCP request id, `AlreadySubmittedError` for a different one (a second `send_calls` is never recorded silently), `RequestNotPendingError` once done or rejected. Status is untouched: `done` still comes from the indexer alone. Activity kind `controller.submitted`.
+- **API.** `GET /api/controller-requests/:id`; `POST /api/controller-requests/:id/submission` → `{request, recorded}` (409 `already_submitted` with the existing submission, 409 `not_pending`); `POST /api/exceptions` raises an exception (onchain types get their pending `ControllerRequest`) → 202, or 200 with `created: false` when the subject is already open.
+- **Owner-gated pause completion.** `NodePaused` completes a `pause` request only when `by` is the treasury owner (`exceptions/matching.ts`, owner from the deployments file through `IndexerConfig.owner` and `HandlerContext.owner`); `pauseChild` relayed by an ancestor key no longer completes an owner request. Unknown owner keeps the old behaviour.
+- **UI.** `apps/web` `/controller` (`src/app/controller/page.tsx`, `src/components/controller-requests.tsx`): polls `GET /api/controller-requests?status=all` every 5 s; badges `pending`, `awaiting approval` (Coinbase Wallet link), `DONE (indexed event)` with the Basescan tx link, `rejected`. No success is shown without `status === "done"`. `NEXT_PUBLIC_SERVICE_URL` in `.env.example`; link from the home page.
+- **Skill.** `.claude/skills/overflow-controller/SKILL.md`: read the live tool schemas first, list pending requests one line each, `send_calls({chain: "base-sepolia", calls: [{to, data, value: "0x0"}]})`, record the submission, show/open the approval URL, wait for the human, `get_request_status` once, never say DONE; "never twice" rule; reject path; fund-the-treasury (`send` USDC) and deploy-wiring (`setEscrowFactory` + `createRoot` batch) recipes. No credentials anywhere in the repo; Wallet MCP OAuth lives in Claude Code's user config.
+- **Docs.** `docs/controller.md` (request / submission / done kept apart, API, Wallet MCP specifics, deploy with owner = smart wallet, fallback), README controller section, `.env.example` owner comment.
+
+### Design choices
+- The owner is the controller's Coinbase smart wallet (decided 2026-10-24); `Deploy.s.sol` already handles `owner != deployer` by printing the wiring calldata for the controller's `send_calls`. One deploy, after a harmless `send_calls` probe proves the mechanism on Base Sepolia.
+- Submission ≠ done. The approval URL, the Wallet MCP request id and `get_request_status` are evidence the controller acted, not that the chain did. The only writer of `done` is still `completeControllerRequests` from an indexed event.
+- Wallet MCP tool shapes (`chain` string, hex `value`, `{approvalUrl, requestId}`) come from docs.cdp.coinbase.com; the skill tells the controller to read the server's own schemas before calling.
+
+### Verified (real output, 2026-10-24)
+| Check | Result |
+|---|---|
+| `pnpm -r typecheck` (incl. `next typegen`) | exit 0 |
+| `pnpm lint` | exit 0 |
+| `pnpm test` | 56 files passed, 1 skipped (live-key oracle test); 521 tests passed, 1 skipped |
+| `pnpm --filter @overflow/web build` | ok: routes `/`, `/_not-found`, `/controller` |
+| `drizzle-kit generate --name controller_request_submission` | `0005_controller_request_submission.sql`: `ALTER TABLE "controller_requests" ADD COLUMN "submission" jsonb;` |
+
+### Open issues / live run pending
+- Nothing has been sent through Wallet MCP yet. Stage A (probe: `get_wallets`, harmless `send_calls` on base-sepolia), Stage B (deploy with `OWNER_ADDRESS` = smart wallet, wiring batch, `send` 1 USDC) and Stage D (setAllow + raiseCap approved, indexer marks both done) need a Claude Code session started after `claude mcp add --transport http --scope user base-mcp https://wallet-mcp.coinbase.com`, test funds in the smart wallet, the deployer funded, and the service running (`RELAYER_ACCOUNT` + `RELAYER_PASSWORD_FILE`). Results and tx hashes go to `docs/coinbase-feedback.md`.
+- `apps/service/src/chain/abi.ts` still declares `ReservationReleased(bytes32,uint256,uint256,bool)` while the contract emits `ReservationReleased(bytes32 indexed digest, bool refunded)` and lacks `ReservationWindowSet`; release logs on the new treasury will not decode. Separate fix.
+- `setFloor` and `withdraw` emit no treasury event, so requests of those kinds can never reach `done` under the current rule; they have no calldata builder either.
+
+## 2026-10-25: `packages/overflow-mcp`, the overflow_pay MCP server for any agent
+
+### Built
+- **Package** `@overflow/overflow-mcp` (stdio MCP server on `@modelcontextprotocol/server` 2.4.0, zod 4, viem; bundled by tsup into one `dist/server.js` so clients launch it with a bare `node <abs path>`; `pnpm start`'s banner would corrupt the JSON-RPC stream). `pnpm mcp:build` at the root.
+- **Tools.** `overflow_budget()`: chain reads `nodeOfKey` → `getNode` up to parent 0 → `remaining`; per-call = min `maxPerCall` over the walk (settle() checks every ancestor); `blocked` for paused/expired. `overflow_quote(url)`: GET → 402 (header, or JSON body fallback) → chain reads (allowlist, policy) → one 60 s probe authorization `from = treasury` → facilitator `POST /verify` (eth_call simulation of settle(); the probe goes to SERVICE_URL only) → `{price, payTo, allowlisted, withinPerCall, withinRemaining, policy: {allowed, refusal, digest, validBefore, simulated: true, broadcast: false}}`. `overflow_pay(url, maxAmount)`: `wrapFetch` from `@overflow/payment-client` with an adapter whose `resolveOrder` refuses before signing on `maxAmount`, the node's limits and the owner allowlist (chain reads mirrored from `_authorize`), whose `approvedDirectSellers` is the chain allowlist, and whose `onAuthorized` runs `/verify` and throws `PolicyRefusedError` so the seller never receives `PAYMENT-SIGNATURE` when the treasury would revert. One paid request; `paid: true` only with the facilitator's settle receipt in `PAYMENT-RESPONSE`; 402 `payment_blocked` → decoded refusal (+ txHash when broadcast); anything else → `kind: "unknown"` with the digest and "never re-sign".
+- **Refusals** are `{name, args, decoded, reason, source}` and say who spoke: `client (maxAmount)`, `client-precheck (chain read: …)`, `treasury (facilitator POST /verify …)`, `treasury (seller's settle …)`.
+- **Config** from env (`SERVICE_URL`, `NODE_PRIVATE_KEY` or `NODE_ACCOUNT` + `NODE_PASSWORD_FILE` via `resolveSigner`, `BASE_SEPOLIA_RPC_URL` with a warned public fallback, optional `TREASURY` pin, `CHAIN_ID` must be 84532). Boot refuses a service that is not Base Sepolia USDC or disagrees with the pin. `NODE_CDP_ACCOUNT` refuses to start with the reason (CDP signing of arbitrary EIP-712 is unconfirmed; `NodeSigner` is the extension point). Repo `.env` is loaded from the bundle's location; `OVERFLOW_ENV_FILE` overrides; values are never logged; stdout is reserved for JSON-RPC (console.log is redirected to stderr).
+- **Moved** `directApiOrder` into `@overflow/payment-client` (`src/direct-order.ts`); `apps/service/src/sellers/direct-order.ts` re-exports it.
+- **README** (`packages/overflow-mcp/README.md`): prerequisites, env table, `claude mcp add --transport stdio overflow -- node "$(pwd)/packages/overflow-mcp/dist/server.js"`, Claude Desktop JSON with absolute paths and no secrets, 5-minute walkthrough (`/api/search` pays, `/premium-intel` → `PayeeNotAllowed(0)`), the refusal table, the unknown-outcome rule, security notes. Root README pointer; `.env.example` gains `NODE_PRIVATE_KEY`, `NODE_ACCOUNT`, `NODE_PASSWORD_FILE`, `TREASURY`.
+
+### Verified (real output, 2026-10-25)
+| Check | Result |
+|---|---|
+| `pnpm -r typecheck` | exit 0 |
+| `pnpm lint` | exit 0 |
+| `pnpm test` | 60 files passed, 1 skipped; 540 tests passed, 1 skipped (19 new in overflow-mcp: chain walk, quote, pay gates, MCP round trip over `InMemoryTransport`) |
+| `pnpm --filter @overflow/overflow-mcp build` | `dist/server.js` 100.27 KB ESM, shebang, `dist/` gitignored |
+| stdout discipline | bundle run against an unreachable service: exit 1, **0 bytes** on stdout, fatal on stderr |
+| stdio handshake | against a stub `/health` (chain 84532, USDC): `initialize` → `{name: "overflow"}` protocol 2025-06-18; `tools/list` → `overflow_budget` (readOnly), `overflow_quote` (readOnly), `overflow_pay` (destructiveHint true); exactly two stdout lines, both JSON-RPC |
+
+### Not yet done (needs the live stack)
+- The DONE WHEN on Base Sepolia (fresh clone pays `/api/search`, `/premium-intel` refused with `PayeeNotAllowed`) needs the new treasury (Stage B of the controller plan), `setAllow(PAYEE_SEARCH_ADDRESS)` by the controller, USDC in the treasury, a registered node key and the service running. Nothing in the package has been run against a live seller yet; the README describes only what the tests prove and what the live run will show. Results go here when it runs.
+- `/verify` needs a real signature even for a quote; the probe is 60 s and goes only to SERVICE_URL, but it is a signature a malicious facilitator could relay. Acceptable for the operator's own service; documented in the README.
+
+## 2026-10-25: optional CDP-held agent keys (`NODE_SIGNER=cdp`)
+
+### Built
+- **`@overflow/payment-client/signers`** (Node-only subpath): `ResolvedNodeSigner {signer, address, kind: env-key | keystore | cdp, source}`; `envKeySigner` wraps the existing `resolveSigner` (keystore module untouched; the service's RELAYER path is unchanged); `cdpSigner({accountName, expectedAddress?, create?, client?, inspect?})` wraps a CDP EVM server account (EOA): lookup by name with `getAccount` (create only on request), address pin, every signature normalized by `normalizeEcdsaSignature` (65 bytes, `v` 0/1 lifted to 27/28, high-`s` rejected) and checked to recover to the account before use, for TransferWithAuthorization and CreateChild/PauseChild alike; `@coinbase/cdp-sdk` is imported lazily, so env-key users never load it. `resolveNodeSigner(env, {label, cdp?})` switches on `<LABEL>_SIGNER=env|cdp`; in `cdp` mode the three CDP credentials are required **by name** (the error names the missing one and never echoes a value), `CDP_ACCOUNT_NAME` must match CDP's name rule before any network call, `CDP_ACCOUNT_ADDRESS` pins the address.
+- **Check script** `pnpm --filter @overflow/payment-client cdp:sign-check -- [--name] [--treasury] [--json]`: `getOrCreateAccount`, then signs (1) a TransferWithAuthorization through the real `signTransfer` (USDC domain, 60 s probe), (2) `signCreateChild`, (3) `signPauseChild` (Overflow delegation domain), and reports raw byte length, raw `v`, low-`s`, whether normalization was needed, recovery from the typed data and from `hashTypedData` (proves a raw ECDSA over the EIP-712 digest), latency. Broadcasts nothing, writes nothing; sets `DISABLE_CDP_USAGE_TRACKING`/`DISABLE_CDP_ERROR_REPORTING` when unset.
+- **overflow-mcp**: `NODE_CDP_ACCOUNT` (refuse-to-start stub) removed; `readConfig` is async and uses `resolveNodeSigner` (fake CDP client injectable); boot log shows signer kind + source. `@coinbase/cdp-sdk` is a declared dependency so tsup keeps it external (`dist/server.js` holds exactly one dynamic `import("@coinbase/cdp-sdk")`, no Solana/axios inlined; 105.91 KB).
+- **`settle:live`**: `NODE_SIGNER=cdp` swaps only the node signer (CDP account `CDP_ACCOUNT_NAME`, pinned to `CDP_ACCOUNT_ADDRESS`); relayer, `nodeOfKey` precheck, `--dry-run` and the direct `treasury.settle()` call unchanged.
+- **Docs/env**: `.env.example` (`NODE_SIGNER`, `CDP_ACCOUNT_NAME`, `CDP_ACCOUNT_ADDRESS`, `CDP_WALLET_SECRET`, the two `DISABLE_CDP_*` flags, `AGENT_ROOT_ADDRESS` comment for a CDP-held root); overflow-mcp README section; `docs/coinbase-feedback.md` "CDP server accounts as agent keys" (SDK findings incl. the telemetry surprise and the create-by-typo hazard); SPEC l.232 and the Known-limitations bullet.
+
+### Verified (real output, 2026-10-25)
+| Check | Result |
+|---|---|
+| `pnpm install` | lockfile gains the `@coinbase/cdp-sdk@1.60.0` snapshot for both packages; no new build scripts |
+| `pnpm -r typecheck` | exit 0 |
+| `pnpm lint` | exit 0 |
+| `pnpm test` | 64 files passed, 1 skipped; 566 tests passed, 1 skipped (26 new: `signers/signature`, `signers/cdp`, `signers/resolve`, overflow-mcp `config`) |
+| `pnpm --filter @overflow/overflow-mcp build` | `dist/server.js` 105.91 KB; `grep -c cdp-sdk` = 1 (the dynamic import); `@solana/kit` not inlined |
+| env-key boot of the bundle | unreachable service → exit 1, 0 bytes on stdout, `NODE_DEBUG=module` shows no `cdp-sdk` resolution |
+| `cdp:sign-check` without credentials | exits 1 with `missing in the environment: CDP_API_KEY_ID or CDP_API_KEY_NAME, CDP_API_KEY_SECRET, CDP_WALLET_SECRET`; no network call |
+
+### Live sign check (run 2026-10-25, after the user added `CDP_WALLET_SECRET`; nothing broadcast)
+| Check | Result |
+|---|---|
+| `cdp:sign-check -- --name overflow-node-root --json` | exit 0, verdict **yes**. Account `overflow-node-root` → `0x646F2bb89286aD517E0cc5420589a65dDe30A415` (lookup 1424 ms) |
+| TransferWithAuthorization (USDC domain, from = treasury) | 65 bytes, raw v = 27, low s, no normalization, recovers to the account from the typed data and from the EIP-712 digest, 431 ms |
+| CreateChild (Overflow delegation domain) | 65 bytes, raw v = 28, low s, recovers to the account, 225 ms |
+| PauseChild (Overflow delegation domain) | 65 bytes, raw v = 27, low s, recovers to the account, 317 ms |
+| `NODE_SIGNER=cdp CDP_ACCOUNT_NAME=overflow-node-root CDP_ACCOUNT_ADDRESS=0x646F…A415 settle:live -- --to 0x2222…2222 --amount 1 --dry-run` | exit 0: live USDC domain verified over RPC, one authorization `from = 0xd3A7…8291` signed by `0x646F2bb89286aD517E0cc5420589a65dDe30A415`, digest `0x98d1660f…caad28`, "dry run: not submitting settle()" |
+| Fix found by the run | pnpm 12 forwards the literal `--` to the script and `parseArgs` stopped reading options at it (`--json` was ignored, the default account name hid it). `cdp-sign-check.ts` and `settle-live.ts` now drop that token before parsing. |
+
+Full JSON in `docs/coinbase-feedback.md`, "CDP server accounts as agent keys". BUILD 1 answered **yes**; BUILD 2 is the code above.
+
+### Not yet done
+- **DONE WHEN** (one `settle()` on Base Sepolia signed by a CDP account): the node key exists and signs; it is not registered on any treasury yet (the current deployments file points at the retired treasury). Order: `.env` `AGENT_ROOT_ADDRESS=0x646F2bb89286aD517E0cc5420589a65dDe30A415`, `NODE_SIGNER=cdp`, `CDP_ACCOUNT_NAME=overflow-node-root`, `CDP_ACCOUNT_ADDRESS=0x646F2bb89286aD517E0cc5420589a65dDe30A415` (user); Stage B deploy with `OWNER_ADDRESS` = the controller smart wallet (user); controller batch `[setEscrowFactory, createRoot(0x646F…A415, 50e6, 15e6, expiry), setAllow(payee, true)]`; USDC into the treasury; then `NODE_SIGNER=cdp ... settle:live -- --to <payee> --amount 10000` (dry run first, live on the user's go). Tx hash into feedback + here.
+- With a CDP-held root, `scripts/facilitator-demo.ts`, `adapter-demo.ts` and `coinbase-spike.ts` (which read `AGENT_ROOT_KEY`) sign with a key that is not a node until a child is delegated to it; follow-up: one `/delegate` signed by the CDP root.
+
 ## 2026-10-25: web design system, shell, typed API client and mocks
 
 ### Built
@@ -1134,6 +1223,18 @@ Confirmed, no change needed: `apps/service/src/orchestration/oracle-port.ts` `pr
 - Pages: `/purchases` (mission picker from `GET /api/missions` with `?missionId=`, purchases table from `GET /api/missions/:id`, "Propose purchases" running Oracle + Fusion and rendering every decision and merge, merged and refused) and `/purchases/[id]` (authorization, timeline, Fusion and Oracle evidence from the session's proposal or the stored summaries, SSE-driven refetch). Both client views sit in Suspense (cacheComponents); the sidebar's `usePathname` highlight now sits in Suspense too so the dynamic route prerenders a static shell.
 - Fixtures: refused-to-merge case (two single-user requests for the weekly California basket; `license` fails with `1 seat(s) for 2 agents`; finance keeps `pur-california-weekly`, research waits), merged case made arithmetically true (caps 15 / 7 USDC as in the service test; research alone has no affordable listing; price evidence `12.00 vs 24.00 separately`), all evidence, rejection and payer strings in the exact wording of `rules.ts`, `coverage.ts`, `terms.ts` and `payer.ts`, chain event `KeyRevealed`, expiry moved to 2027.
 - `apps/web` is now a vitest project (`vitest.config.mts`, root `projects`), tests for the pure modules and the fixtures.
+## 2026-10-25: agents and delegation tree (`/agents`)
+
+### Step 0: merge
+`origin/main` 4d7cc90 (web design system, shell, typed API client, mocks; mission runner; ops scripts) merged into `person1` as `35d28ea`. Conflicts: both import sets in `apps/service/src/api/http.ts`, both env blocks in `.env.example`, main's shell `Overview` page, both PROGRESS sections in date order. Typecheck, lint and 619 tests passed on the merge before any new code.
+
+### Built
+- **Service: treasury reads.** `TreasuryReadPort` (`api/ports.ts`: `blockNumber`, `nodeCount`, `getNode`, `remaining`, `allowlist`, `nodeAllow`; default refuses with 501) implemented by `chain/treasury-read.ts` over the existing viem client (view calls only, the relayer key is never used) and wired in `index.ts`. `GET /api/treasury/nodes` (`api/routes/treasury.ts`): `nodeCount`, then `getNode` + `remaining` for ids 1..n in one pass; agents joined by `nodeId`, falling back to a case-insensitive key match; the global allowlist replayed from indexed `AllowSet` logs (last write wins); restricted nodes probe `nodeAllow` over that set and are marked `complete: false` (per-node payees are a mapping onchain and cannot be enumerated); `status` / `pausedBy` / `expiredBy` derived by walking `parent` exactly as `settle()` does, so a grandchild under a paused child reads Paused with `pausedBy` = the child. `GET /api/treasury/nodes/:id/payments`: indexed `Paid` logs with `args.id` = the node, newest first (`observedAt` is indexer time, labelled). `GET /api/activity?agentId=` + `activityEvents.listByAgent`. `GET /api/agents` is unchanged (`node: null`).
+- **Schemas.** `TreasuryNodeViewSchema`, `TreasuryNodesResponseSchema`, `NodePaymentSchema`, `NodePaymentsResponseSchema`, `NodeStatusSchema` (`packages/schemas/src/mission.ts`); `TREASURY_REVERT_REASONS` + `parseDecodedRevert` (`reasons.ts`), re-exported by the service's `chain/abi.ts` as `REVERT_REASONS` so web and service share one table.
+- **Web `/agents`.** `components/agents/`: `agent-hierarchy.tsx` (loads the tree and all controller requests through the typed client; subscribes to `/events` and re-reads both after a 300 ms debounce on `treasury.paid|node|policy`, `controller.*`, `policy.blocked`, with a 15 s poll fallback; keeps the last successful read while a refetch is in flight so bars animate instead of flashing; header with treasury, block, as-of, `SimulatedBadge` when `simulated`), `agent-tree.tsx` (root → children → grandchildren, connector lines), `agent-card.tsx` (role, name or "Unlabeled node #id", `Address` key, `Pill` Running / Paused / Expired with the cause in its tooltip, `BudgetBar`, `Money` for spent / cap / `remaining()` / per call, expiry countdown, payees line, open-request badge; a paused node and its subtree render `opacity-60 grayscale`), `budget-bar.tsx` (bigint `barPercent`; a tick where an ancestor's budget binds), `agent-menu.tsx` (kebab: Pause, Raise cap, Add payee (treasury allowlist)), `request-dialog.tsx` (builds the `POST /api/exceptions` body; `toAtomic` for the new cap, must exceed the current cap; `AddressSchema` for the payee; shows exactly the service's answer: PENDING + request id, or "already requested" when `created: false`; never DONE), `agent-panel.tsx` (Sheet: payments with tx links, refusals with `decodedRevert` + reason text, requests with phase pill, approval link, tx hash when done). `lib/tree.ts` (pure: `buildNodeTree`, `barPercent`, `ancestorsOf`, `deriveStatus`, `remainingOf`, `expiryCountdown`, `nodeRequests`, `bindingNodeOf`, `refusalsFor`), `lib/controller-phase.ts` (one `phaseOf` for `/controller` and `/agents`), `useLastGood` in `lib/use-api.ts`. Typed client: `listTreasuryNodes`, `listNodePayments`, `raiseException`, `getControllerRequest`; `ActivityQuery.agentId`. shadcn base-nova `dropdown-menu`, `dialog`, `input` added through the local CLI.
+- **Mock mode (labelled).** `lib/mocks/treasury-sim.ts`: a browser-local SIMULATED treasury (root 100 USDC → finance 25 / research 25 → ledger clerk 10 / web scraper 10, the scraper restricted to one payee; two new grandchild agent fixtures). Every 3 s one scripted payment attempt runs the `_authorize` walk (Paused / Expired / PayeeNotAllowed / OverPerCall / OverBudget with the binding node id); a success charges the node and every ancestor and emits `treasury.paid`; a refusal emits `policy.blocked` with `decodedRevert`. `raise()` opens one exception per subject and a pending request; a SIMULATED owner approves 4 s later: only then does the node pause / cap change / allowlist grow, and only then is the request `done` (fake `0x51a0…` hash, `SimulatedBadge` on the row). Every event, payment, request and response carries `simulated: true`; the page shows the MOCK badge and a SIMULATED badge on the tree header.
+- **Fix found on the way.** `IndexerConfigSchema.escrowFactory` demanded an address while the deployments file has `escrowFactory: null`, so the service refused to boot against the current (retired) treasury with `expected 0x-prefixed 20-byte hex address`. Now nullable; the indexer watches the treasury and USDC only until a factory exists.
+- `apps/web` joined the vitest projects (`apps/web/vitest.config.mts`, node environment, pure logic only).
 
 ### Verified (real output, 2026-10-25)
 | Check | Result |
@@ -1174,4 +1275,44 @@ Confirmed, no change needed: `apps/service/src/orchestration/oracle-port.ts` `pr
 - Deciding a `RECONCILIATION_DIFF` records the decision but posts no correcting journal entry yet (SPEC: "the ledger is corrected to match with a stated reason"); corrections are the next ledger prompt.
 - `ReconciliationResponse.openExceptions` carries no `request`; the exceptions tab uses `GET /api/exceptions` for that.
 - `next dev` keeps writing `apps/web/AGENTS.md` (deleted again here).
+
+| `pnpm -r typecheck` | exit 0 (11 workspaces) |
+| `pnpm lint` | exit 0 |
+| `pnpm test` | 77 files passed, 1 skipped; 642 tests passed, 1 skipped (23 new: `routes/treasury.test.ts` 7 incl. `?agentId=`, `lib/tree.test.ts` 9, `lib/mocks/treasury-sim.test.ts` 7) |
+| `NEXT_PUBLIC_USE_MOCKS=1 pnpm --filter @overflow/web build` | exit 0, 11 static routes incl. `/agents` |
+
+**Mocks, headless Chrome (CDP driver, `next dev -p 3100` with `NEXT_PUBLIC_USE_MOCKS=1`), console errors: none.**
+| Step | Observed |
+|---|---|
+| load `/agents` | h1 "Agents", MOCK badge ×2, SIMULATED badge on the tree header; header `treasury 0xd3a74…48291 block 49900000 · 5 nodes · allowlist 2` |
+| cards at t0 | node 1 7.5 % (7.50 / 100), node 2 12 %, node 5 20 %, node 3 18 %, node 4 25 %; node 3 shows "1 PENDING" (the fixture's pause(3) request) |
+| cards after 7 s | two ticks landed: node 4 2.50 → 3.00 and node 5 2.00 → 2.90, so node 3 4.50 → 5.00, node 2 3.00 → 3.90 and the root 7.50 → 8.90; bars 8.9 / 15.6 / 29 / 20 / 30 % |
+| kebab on node 2 | items `Pause`, `Raise cap`, `Add payee (treasury allowlist)`; dialog "Pause this node" with the PAUSE_REQUEST text |
+| submit | result row `PENDING Request created. Nothing has changed onchain. SIMULATED pause(2) … request cr-sim-7`; node 2 and 5 still `running` |
+| panel, node 2 | request `cr-sim-7` phase `pending`; ~4 s later phase `done` ("DONE Pause node 2 SIMULATED …") |
+| cards after the simulated NodePaused | node 2 `paused` (Paused pill), node 5 `paused` with `pausedBy` 2 (greyed with its parent); nodes 1, 3, 4 running |
+| refusals | `Paused(2) · This agent (or an ancestor) is paused · SIMULATED` for node 5's 2.00 USDC and node 2's 0.50 USDC attempts, "no transaction (refused before broadcast)" |
+
+**Live, local service against `deployments/base-sepolia.json` (retired treasury `0xd3a74fa991ca0b5627d30ef27dc699c134848291`), `next dev` with `NEXT_PUBLIC_USE_MOCKS=0`, console errors: none.**
+| Step | Observed |
+|---|---|
+| service boot | `SERVICE_URL=http://localhost:4000` passed on the command line (the local `.env` leaves it empty, which `z.url()` rejects); chain 84532, USDC domain verified, relayer 0 wei (no relay attempted); indexer from block 49849422 caught up to 49986053: 3 logs (`NodeCreated` node 1, `AllowSet` ×2), reconciliation ok |
+| `GET /api/treasury/nodes` | `blockNumber 49984269`, one node: `{id 1, key 0x390CF9aA0230728dB7E185782F2288E41892Ea89, cap 50000000, spent 0, maxPerCall 15000000, expiry 1793496518, paused false, remaining 50000000, status running, agent null, payees global}`; after catch-up `allowlist` = `0x918917ed990014659ab8C8B35075C9d53f05B41a`, `0x7dd254f347F0b50B50A2a6044466ba489ef83c7c`; `simulated: false` |
+| `GET /api/treasury/nodes/1/payments` | `payments: []` (no `Paid` log on this treasury) |
+| `/agents` in Chrome | no MOCK / SIMULATED badge, `data-simulated="false"`; header `block 49986176 · 1 node · allowlist 2`; card "Unlabeled node #1 · no agent record for this key · key 0x390CF9…92Ea89 · spent 0.00 · cap 50.00 · remaining() 50.00 · per call 15.00 · expires in 6d 16h · payees: treasury allowlist (2)", bar 0 % |
+| kebab → Raise cap 80 USDC | real `POST /api/exceptions` → 202: result row `PENDING Request created. Nothing has changed onchain. raiseCap(1, 80000000) … request 2fc4f276-0f03-41b8-9d1a-460bff1b8fa0`; panel lists it as `pending` with "Raise cap of node 1 · 80.00 USDC"; card shows "1 PENDING"; `GET /api/controller-requests?status=all` returns the same request, status `pending`; no DONE anywhere (no owner transaction exists) |
+
+### Merge checklist follow-up (2026-10-25)
+- `pnpm contracts:test` on the merged tree: 19 suites, 194 passed, 0 failed, 1 skipped (the live-key fork test). The merge touched no Solidity.
+- `git diff --check` clean (an extra trailing newline in this file removed).
+- The HEAD scaffold's link to `/controller` was lost when main's shell Overview won the page.tsx conflict; the shell nav (`shell/nav.ts`) now lists Controller, so both teams' navigation survives.
+
+### Not yet done
+- The live PENDING → DONE pause transition needs an owner `pause(id)` transaction: it is proven here with the labelled simulation and will be recorded live after controller Stage B/D (deploy with `OWNER_ADDRESS` = the Coinbase smart wallet, `createRoot` for the CDP key, Wallet MCP approval). The code path is the one already exercised by `completeControllerRequests` (owner-gated `NodePaused`) and the web's `phaseOf`.
+- The retired treasury has one node, so the live view shows one card; three levels appear once the mission runner's `/delegate` children exist on the new treasury.
+- The raise-cap request created above lives in the service's in-memory PGlite and is gone when the service stops; nothing was broadcast.
+
+## 2026-10-25: merge `person1` into `main`
+
+Second merge of the day, the other direction: `person1` (controller approvals, CDP-held keys, overflow-mcp, agents tree, treasury reads) into `main` (web shell, purchases/Oracle/Fusion views, ledger and reconciliation, mission runner). Eight conflicts, all resolved by keeping both sides: the web typed-client files (disjoint imports; the mock's controller-request list is now the request store plus the SIMULATED treasury's requests), `vitest.config.mts` (main's body, merged comment), this file (sections in date order), and two different `0005_*` drizzle migrations. The migrations keep main's `0005_reconciliation_escrow_checks` and regenerate person1's column as `0006_controller_request_submission` from the merged schema (`drizzle-kit generate` produced exactly `ALTER TABLE controller_requests ADD COLUMN submission jsonb`). One test fix: `mission-runner.test.ts` asserted that the "run failed" event is the last by time, but events written in the same millisecond tie-break on a random id (1 failure in 4 runs on the merged tree); the assertion now checks that the loud failure exists. Verified: `pnpm -r typecheck` 0 errors, `pnpm lint` clean, `pnpm test` all green, `pnpm contracts:test` 194 passed / 1 skipped, `git diff --cached --check` clean. `person1` fast-forwarded to `main` afterwards.
 

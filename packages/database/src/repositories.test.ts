@@ -14,7 +14,7 @@ import {
   SellerHistorySchema,
 } from "@overflow/schemas";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { UniqueViolationError } from "./errors";
+import { AlreadySubmittedError, NotFoundError, RequestNotPendingError, UniqueViolationError } from "./errors";
 import { InvalidEscrowTransitionError } from "./repositories";
 import { ADDR, ADDR2, B32, b32, freshDatabase, purchaseInput, seedFixture } from "./test-helpers";
 
@@ -171,7 +171,17 @@ describe("repositories return Zod-validated rows", () => {
     });
     expect(ControllerRequestSchema.safeParse(cr).success).toBe(true);
     await expect(controllerRequests.resolve(cr.id, "done")).rejects.toThrow(/txHash/);
+    // Wallet MCP submission: recorded once, idempotent for the same request id, never a second one, never a status change.
+    const sub = { requestId: "wmcp-1", approvalUrl: "https://wallet.coinbase.com/approve/wmcp-1", chain: "base-sepolia" as const, submittedBy: "controller:0xabc", submittedAt: "2026-10-24T17:00:00.000Z" };
+    const submitted = await controllerRequests.recordSubmission(cr.id, sub);
+    expect(submitted).toMatchObject({ status: "pending", submission: sub });
+    expect(submitted.txHash).toBeUndefined();
+    expect((await controllerRequests.recordSubmission(cr.id, sub)).submission).toEqual(sub);
+    await expect(controllerRequests.recordSubmission(cr.id, { ...sub, requestId: "wmcp-2" })).rejects.toBeInstanceOf(AlreadySubmittedError);
+    await expect(controllerRequests.recordSubmission("missing", sub)).rejects.toBeInstanceOf(NotFoundError);
     expect((await controllerRequests.resolve(cr.id, "done", b32(900))).txHash).toBe(b32(900));
+    expect((await controllerRequests.getById(cr.id))!.submission).toEqual(sub); // survives resolution
+    await expect(controllerRequests.recordSubmission(cr.id, { ...sub, requestId: "wmcp-3" })).rejects.toBeInstanceOf(RequestNotPendingError);
     expect((await controllerRequests.listPending()).length).toBe(0);
 
     const ev = await activityEvents.insert({

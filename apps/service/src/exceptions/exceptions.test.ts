@@ -10,6 +10,7 @@ import { FIXTURE } from "../chain/fixtures/build-fixture.js";
 import { createIndexer } from "../chain/indexer.js";
 import { ATTACKER, fixtureMissionAndResource, testDatabase } from "../test-db.js";
 import { buildControllerCall } from "./calldata.js";
+import { requestMatchesLog } from "./matching.js";
 import { createExceptionService, OnchainApprovalRequiredError, SelfResolutionError, type ExceptionService } from "./service.js";
 
 const fixture = JSON.parse(readFileSync(new URL("../chain/fixtures/base-sepolia-logs.json", import.meta.url), "utf8")) as { logs: RawLog[] };
@@ -99,6 +100,19 @@ describe("exceptions and controller requests (SIMULATED fixture)", () => {
     });
   });
 
+  describe("NodePaused matching honours the owner", () => {
+    it("completes a pause request only when the owner sent it (pauseChild by an ancestor key does not)", () => {
+      const req = { action: { kind: "pause" as const, nodeId: 2 } } as unknown as Parameters<typeof requestMatchesLog>[0];
+      const owner = "0xB6F4162192F753C9998B63893CBb48FA046906C3";
+      expect(requestMatchesLog(req, "NodePaused", { id: "2", by: owner.toLowerCase() }, { owner })).toBe(true);
+      expect(requestMatchesLog(req, "NodePaused", { id: "2", by: ATTACKER }, { owner })).toBe(false);
+      expect(requestMatchesLog(req, "NodePaused", { id: "3", by: owner }, { owner })).toBe(false);
+      // Unknown owner: the historical behaviour (id match only).
+      expect(requestMatchesLog(req, "NodePaused", { id: "2", by: ATTACKER })).toBe(true);
+      expect(requestMatchesLog(req, "NodePaused", { id: "2", by: ATTACKER }, { owner: null })).toBe(true);
+    });
+  });
+
   describe("a request completes only when its event is indexed", () => {
     it("approving an onchain exception offchain is refused; the fixture's AllowSet/CapRaised/NodePaused mark the matching requests done", async () => {
       // One request whose event never comes: the attacker payee.
@@ -108,6 +122,14 @@ describe("exceptions and controller requests (SIMULATED fixture)", () => {
       await expect(svc.decide(payee.id, { decidedBy: "owner", decision: "approve", reason: "ok" })).rejects.toBeInstanceOf(OnchainApprovalRequiredError);
       expect((await handle.repos.controllerRequests.getById(payee.request!.id))!.status).toBe("pending");
       expect((await handle.repos.exceptions.getById(payee.id))!.status).toBe("open");
+
+      // The controller submitted it through Wallet MCP: recorded, still pending, one activity event.
+      const sub = await svc.submit(payee.request!.id, { requestId: "wmcp-allow", approvalUrl: "https://wallet.coinbase.com/approve/wmcp-allow", submittedBy: "controller:0xW" });
+      expect(sub.recorded).toBe(true);
+      expect(sub.request.status).toBe("pending");
+      expect(sub.request.submission).toMatchObject({ requestId: "wmcp-allow", chain: "base-sepolia" });
+      expect(sub.events.map((e) => e.kind)).toEqual(["controller.submitted"]);
+      expect((await svc.submit(payee.request!.id, { requestId: "wmcp-allow", approvalUrl: "https://wallet.coinbase.com/approve/wmcp-allow", submittedBy: "controller:0xW" })).recorded).toBe(false);
 
       const source = fakeLogSource(fixture.logs, BigInt(FIXTURE.head));
       const indexer = createIndexer({
@@ -126,6 +148,7 @@ describe("exceptions and controller requests (SIMULATED fixture)", () => {
       const allowLog = fixture.logs.find((l) => l.blockNumber === "102" && l.logIndex === 0)!;
       const ownerLog = fixture.logs.find((l) => l.blockNumber === "110" && l.logIndex === 1)!;
       expect(done.find((r) => r.action.kind === "set-allow")!.txHash).toBe(allowLog.transactionHash);
+      expect(done.find((r) => r.action.kind === "set-allow")!.submission?.requestId).toBe("wmcp-allow"); // the submission survives
       expect(done.find((r) => r.action.kind === "raise-cap")!.txHash).toBe(ownerLog.transactionHash);
       expect(done.find((r) => r.action.kind === "pause")!.txHash).toBe(ownerLog.transactionHash);
       for (const r of done) {
