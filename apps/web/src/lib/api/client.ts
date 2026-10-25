@@ -32,6 +32,9 @@ import type {
   ServiceStatus,
   SseMessage,
   SseQuery,
+  ConfirmMissionResponse,
+  UpdateRequestBody,
+  UpdateRequestResponse,
 } from "./contracts";
 
 export type { ActivityEvent, AgentRecord, PurchaseRecord };
@@ -65,6 +68,10 @@ export interface OverflowApi {
   getMission(id: string): Promise<MissionDetailResponse>;
   createMission(body: CreateMissionBody): Promise<MissionResponse>;
   planMission(id: string): Promise<PlanResponse>;
+  /** The owner edits one extracted requirement; allowed only while the mission is planning and the request is open. */
+  updateRequest(missionId: string, requestId: string, body: UpdateRequestBody): Promise<UpdateRequestResponse>;
+  /** planning -> confirmed; only then may purchases be proposed or the run start. Nothing is bought. */
+  confirmMission(id: string): Promise<ConfirmMissionResponse>;
   runMission(id: string, body?: RunMissionBody): Promise<RunMissionResponse>;
   pauseMissionAgent(missionId: string, agentId: string): Promise<PauseMissionAgentResponse>;
 

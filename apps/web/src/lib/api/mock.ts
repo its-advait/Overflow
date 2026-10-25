@@ -1,8 +1,26 @@
-import { isOnchainExceptionType, type ControllerRequest, type ExceptionRecord, type Hex, type LedgerAccount, type PurchaseRecord, type ReconciliationRun } from "@overflow/schemas";
+import {
+  ActivityEventSchema,
+  MissionRecordSchema,
+  ResourceRequestRecordSchema,
+  ResourceRequestSchema,
+  atomicToBigInt,
+  formatUsdc,
+  isOnchainExceptionType,
+  type ActivityEvent,
+  type ActivityKind,
+  type ControllerRequest,
+  type ExceptionRecord,
+  type Hex,
+  type LedgerAccount,
+  type MissionRecord,
+  type PurchaseRecord,
+  type ReconciliationRun,
+  type ResourceRequestRecord,
+} from "@overflow/schemas";
 import { filterEntries } from "../ledger/journal";
 import * as fx from "../mocks/fixtures";
 import { ApiError, type OverflowApi } from "./client";
-import type { AllocationBreakdown, Balance, DepartmentBalance } from "./contracts";
+import type { AllocationBreakdown, Balance, DepartmentBalance, SseMessage } from "./contracts";
 
 // ---------------------------------------------------------------------------
 // MOCK client: serves the fixtures with a short delay so loading states show.
@@ -31,9 +49,57 @@ const notFound = (what: string, id: string) => new ApiError(404, "not_found", `$
  * planted run and opens its exception (once); decisions update the stored row. In memory only; a reload resets it.
  */
 const exceptionStore = new Map<string, ExceptionRecord>([[fx.exception.id, fx.exception], ...([] as [string, ExceptionRecord][])]);
-const requestStore = new Map<string, ControllerRequest>([[fx.controllerRequest.id, fx.controllerRequest]]);
+const controllerRequestStore = new Map<string, ControllerRequest>([[fx.controllerRequest.id, fx.controllerRequest]]);
 const reconState: { lastRun: ReconciliationRun } = { lastRun: fx.reconciliationRun };
-const requestFor = (exceptionId: string): ControllerRequest | null => [...requestStore.values()].find((r) => r.exceptionId === exceptionId) ?? null;
+const requestFor = (exceptionId: string): ControllerRequest | null => [...controllerRequestStore.values()].find((r) => r.exceptionId === exceptionId) ?? null;
+
+/**
+ * Missions, their requests and the activity the mock has handed out this session: the fixtures plus whatever
+ * createMission / planMission / updateRequest / confirmMission / runMission wrote, so the detail page can follow
+ * the service's state machine (draft -> planning -> confirmed -> active) without a service. In memory only; a
+ * reload goes back to the fixtures. The mock plan derives requests locally and says so: no model is called.
+ */
+const missionStore = new Map<string, MissionRecord>([[fx.mission.id, fx.mission]]);
+const missionRequestStore = new Map<string, ResourceRequestRecord>(fx.requests.map((r) => [r.id, r]));
+const activityStore: ActivityEvent[] = [...fx.activity];
+const listeners = new Set<(m: SseMessage) => void>();
+let seq = 0;
+const missionRequests = (missionId: string): ResourceRequestRecord[] => [...missionRequestStore.values()].filter((r) => r.missionId === missionId);
+function record(kind: ActivityKind, message: string, extra: { missionId?: string; agentId?: string }): ActivityEvent {
+  const event = ActivityEventSchema.parse({ id: `ev-mock-${++seq}`, at: new Date().toISOString(), kind, message: `${fx.MOCK_LABEL}: ${message}`, ...extra, simulated: true });
+  activityStore.push(event);
+  for (const l of listeners) l({ type: "activity", id: event.id, event });
+  return event;
+}
+const MOCK_PRICE_CAP = 15_000_000n; // 15 USDC
+/** Last day of the last complete month (UTC), as the Oracle's clampToPresent computes it. */
+function lastCompleteMonthEnd(now: Date): string {
+  const first = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  return new Date(first.getTime() - 86_400_000).toISOString().slice(0, 10);
+}
+/** MOCK plan: one request derived from the mission's own fields (goal, horizon, allowed formats, budget). No model, no listing chosen. */
+function mockPlan(mission: MissionRecord): ResourceRequestRecord {
+  const end = lastCompleteMonthEnd(new Date());
+  const defaultStart = `${Number(end.slice(0, 4)) - 1}${end.slice(4, 8)}01`;
+  const horizon = mission.horizon ?? { start: defaultStart, end };
+  const budget = atomicToBigInt(mission.budgetAtomic);
+  return ResourceRequestRecordSchema.parse({
+    id: `req-mock-${++seq}`,
+    missionId: mission.id,
+    agentId: mission.ownerAgentId ?? "agent-orchestrator",
+    status: "open",
+    topic: mission.goal.slice(0, 80),
+    regions: ["US"],
+    dateRange: horizon.end <= end ? horizon : { start: horizon.start <= end ? horizon.start : end, end },
+    granularity: "monthly",
+    requiredFields: ["date", "region", "value"],
+    format: mission.allowedFormats,
+    license: "company-use",
+    freshness: { maxAgeDays: 90 },
+    maxPriceAtomic: (budget < MOCK_PRICE_CAP ? budget : MOCK_PRICE_CAP).toString(),
+    createdAt: new Date().toISOString(),
+  });
+}
 const openExceptions = (): ExceptionRecord[] => [...exceptionStore.values()].filter((e) => e.status === "open");
 
 /** The service's allocation breakdown over the fixture books: booked data-expense per (purchase, department) beside the plan. */
@@ -103,32 +169,91 @@ export function createMockApi(): OverflowApi {
     source: "mock",
     status: () => delay(fx.serviceStatus),
 
-    listMissions: () => delay({ missions: [fx.mission] }),
+    listMissions: () => delay({ missions: [...missionStore.values()] }),
     getMission: (id) => {
-      if (id !== fx.mission.id) return Promise.reject(notFound("mission", id));
-      return delay({ mission: fx.mission, requests: fx.requests, purchases: missionPurchases(id), groups: [fx.purchaseGroup] });
+      const mission = missionStore.get(id);
+      if (!mission) return Promise.reject(notFound("mission", id));
+      return delay({ mission, requests: missionRequests(id), purchases: missionPurchases(id), groups: id === fx.mission.id ? [fx.purchaseGroup] : [] });
     },
 
-    createMission: (body) =>
-      delay({
-        mission: {
-          ...fx.mission,
-          id: `mission-mock-${Date.now()}`,
-          goal: body.goal,
-          budgetAtomic: body.budgetAtomic,
-          rootNodeId: body.rootNodeId ?? fx.mission.rootNodeId,
-          ownerAgentId: body.ownerAgentId,
-          status: "draft",
-          createdAt: new Date().toISOString(),
-        },
-      }),
-    planMission: (id) => {
-      if (id !== fx.mission.id) return Promise.reject(notFound("mission", id));
-      return delay({ mission: { ...fx.mission, status: "planning" }, requests: fx.requests });
+    createMission: (body) => {
+      const mission = MissionRecordSchema.parse({
+        id: `mission-mock-${Date.now()}`,
+        organizationId: fx.mission.organizationId,
+        goal: body.goal,
+        budgetAtomic: body.budgetAtomic,
+        rootNodeId: body.rootNodeId ?? fx.mission.rootNodeId,
+        ownerAgentId: body.ownerAgentId ?? "agent-orchestrator",
+        ...(body.horizon ? { horizon: body.horizon } : {}),
+        ...(body.allowedFormats ? { allowedFormats: body.allowedFormats } : {}),
+        status: "draft",
+        createdAt: new Date().toISOString(),
+      });
+      missionStore.set(mission.id, mission);
+      record("mission.created", `mission created: ${mission.goal} (budget ${formatUsdc(mission.budgetAtomic)} USDC)`, { missionId: mission.id, agentId: mission.ownerAgentId });
+      return delay({ mission });
     },
+    // The service's plan: withdraw the earlier open requests, insert the new set, mission -> planning. Here the set is
+    // derived locally from the mission's fields and labelled MOCK; no model is called and no listing is chosen.
+    planMission: (id) => {
+      const mission = missionStore.get(id);
+      if (!mission) return Promise.reject(notFound("mission", id));
+      for (const r of missionRequests(id)) if (r.status === "open") missionRequestStore.set(r.id, { ...r, status: "withdrawn" });
+      const request = mockPlan(mission);
+      missionRequestStore.set(request.id, request);
+      const updated: MissionRecord = { ...mission, status: "planning" };
+      missionStore.set(id, updated);
+      record("oracle.model_call", `no model call; one request derived from the goal, horizon and allowed formats. It chooses no listing and authorizes nothing`, { missionId: id, agentId: request.agentId });
+      return delay({ mission: updated, requests: [request] });
+    },
+    // The service's PUT rules and codes: 404, 409 not_editable (mission not planning or request not open), 409 over_budget.
+    updateRequest: (missionId, requestId, body) => {
+      const mission = missionStore.get(missionId);
+      if (!mission) return Promise.reject(notFound("mission", missionId));
+      const current = missionRequestStore.get(requestId);
+      if (!current || current.missionId !== missionId) return Promise.reject(notFound("request", requestId));
+      if (mission.status !== "planning" || current.status !== "open") {
+        return Promise.reject(
+          new ApiError(409, "not_editable", `request ${requestId} is ${current.status} and mission ${missionId} is ${mission.status}; requirements are editable only while the mission is planning and the request is open (${fx.MOCK_LABEL})`, {
+            missionStatus: mission.status,
+            requestStatus: current.status,
+          }),
+        );
+      }
+      const fields = ResourceRequestSchema.parse(body);
+      if (atomicToBigInt(fields.maxPriceAtomic) > atomicToBigInt(mission.budgetAtomic)) {
+        return Promise.reject(new ApiError(409, "over_budget", `maxPrice ${formatUsdc(fields.maxPriceAtomic)} USDC exceeds the mission budget ${formatUsdc(mission.budgetAtomic)} USDC (${fx.MOCK_LABEL})`));
+      }
+      const request: ResourceRequestRecord = { ...current, ...fields };
+      missionRequestStore.set(requestId, request);
+      record("mission.requirement_edited", `owner edited requirement ${requestId}: ${request.topic} (${request.regions.join(", ")}; ${request.dateRange.start}..${request.dateRange.end}; ${request.granularity}; max ${formatUsdc(request.maxPriceAtomic)} USDC). Nothing bought.`, { missionId, agentId: request.agentId });
+      return delay({ request });
+    },
+    confirmMission: (id) => {
+      const mission = missionStore.get(id);
+      if (!mission) return Promise.reject(notFound("mission", id));
+      if (mission.status !== "planning") {
+        return Promise.reject(new ApiError(409, "not_planning", `mission ${id} is ${mission.status}; only a planning mission's requirements can be confirmed (${fx.MOCK_LABEL})`, { status: mission.status }));
+      }
+      const requests = missionRequests(id);
+      const open = requests.filter((r) => r.status === "open");
+      if (open.length === 0) return Promise.reject(new ApiError(409, "no_open_requests", `mission ${id} has no open requirements to confirm (${fx.MOCK_LABEL})`, { missionId: id }));
+      const updated: MissionRecord = { ...mission, status: "confirmed" };
+      missionStore.set(id, updated);
+      record("mission.confirmed", `owner confirmed ${open.length} requirement(s) for ${open.map((r) => r.topic).join("; ")}. Purchases may now be proposed; nothing bought yet.`, { missionId: id, agentId: mission.ownerAgentId });
+      return delay({ mission: updated, requests });
+    },
+    // Accepting a run changes only the stored status. No agent runs, no tool call, no payment: the one event says so.
     runMission: (id) => {
-      if (id !== fx.mission.id) return Promise.reject(notFound("mission", id));
-      return delay({ mission: fx.mission, runId: "run-mock-1", note: `${fx.MOCK_LABEL}: no agents ran; nothing was paid` });
+      const mission = missionStore.get(id);
+      if (!mission) return Promise.reject(notFound("mission", id));
+      if (mission.status === "planning") {
+        return Promise.reject(new ApiError(409, "requirements_unconfirmed", `mission ${id} has extracted requirements awaiting the owner's confirmation; confirm first (${fx.MOCK_LABEL})`, { missionId: id }));
+      }
+      const updated: MissionRecord = { ...mission, status: "active" };
+      missionStore.set(id, updated);
+      record("mission.run", `run accepted; no agents ran and nothing was paid`, { missionId: id, agentId: mission.ownerAgentId });
+      return delay({ mission: updated, runId: `run-mock-${++seq}`, note: `${fx.MOCK_LABEL}: no agents ran; nothing was paid` });
     },
     pauseMissionAgent: () =>
       Promise.reject(new ApiError(501, "not_wired", `${fx.MOCK_LABEL}: pausing changes contract state and the mock has no chain`)),
@@ -136,7 +261,12 @@ export function createMockApi(): OverflowApi {
     listResources: (missionId) => delay({ resources: fx.resources, filtered: false, missionId }),
 
     proposePurchases: (missionId) => {
-      if (missionId !== fx.mission.id) return Promise.reject(notFound("mission", missionId));
+      const mission = missionStore.get(missionId);
+      if (!mission) return Promise.reject(notFound("mission", missionId));
+      if (mission.status === "planning") {
+        return Promise.reject(new ApiError(409, "requirements_unconfirmed", `mission ${missionId} has extracted requirements awaiting the owner's confirmation; confirm first (${fx.MOCK_LABEL})`, { missionId }));
+      }
+      if (missionId !== fx.mission.id) return Promise.reject(new ApiError(409, "no_open_requests", `${fx.MOCK_LABEL}: Oracle + Fusion run only over the fixture mission's requests; nothing proposed for ${missionId}`, { missionId }));
       const merged = fx.purchaseById("pur-merged-national");
       if (!merged) return Promise.reject(notFound("purchase", "pur-merged-national"));
       // A proposal is a PROPOSED row: no digest, no transactions, no funding. Replaying keeps the same row (idempotent).
@@ -209,7 +339,7 @@ export function createMockApi(): OverflowApi {
     },
 
     listActivity: (query = {}) => {
-      let events = [...fx.activity].reverse();
+      let events = [...activityStore].reverse();
       if (query.purchaseId) events = events.filter((e) => e.purchaseId === query.purchaseId);
       if (query.missionId) events = events.filter((e) => e.missionId === query.missionId);
       return delay({ events: events.slice(0, query.limit ?? 100) });
@@ -249,13 +379,13 @@ export function createMockApi(): OverflowApi {
       let updated: ControllerRequest | null = null;
       if (request && request.status === "pending") {
         updated = { ...request, status: "rejected", resolvedAt };
-        requestStore.set(request.id, updated);
+        controllerRequestStore.set(request.id, updated);
       }
       return delay({ exception, request: updated ?? request });
     },
     listControllerRequests: (query = {}) => {
       const status = query.status ?? "pending";
-      const rows = [...requestStore.values()].filter((r) => status === "all" || r.status === status);
+      const rows = [...controllerRequestStore.values()].filter((r) => status === "all" || r.status === status);
       return delay({ requests: rows, treasury: fx.TREASURY_ADDRESS });
     },
 
@@ -281,9 +411,11 @@ export function createMockApi(): OverflowApi {
         timers.push(setTimeout(() => onMessage({ type: "activity", id: event.id, event }), 200 + i * 120));
       });
       const heartbeat = setInterval(() => onMessage({ type: "heartbeat" }), 15_000);
+      listeners.add(onMessage); // mock writes publish their event here, as the service's /events would
       return () => {
         timers.forEach(clearTimeout);
         clearInterval(heartbeat);
+        listeners.delete(onMessage);
       };
     },
   };

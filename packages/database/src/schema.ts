@@ -75,6 +75,9 @@ export const missions = pgTable(
     budget: money("budget").notNull(),
     rootNodeId: integer("root_node_id").notNull(),
     ownerAgentId: text("owner_agent_id").references(() => agents.id),
+    /** Data date range {start,end} the mission's data must cover; null when the owner set none. */
+    horizon: jsonb("horizon"),
+    allowedFormats: text("allowed_formats").array().notNull().default(["csv", "json", "parquet"]),
     status: text("status").notNull(),
     createdAt: ts("created_at").notNull().defaultNow(),
   },

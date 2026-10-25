@@ -626,7 +626,8 @@ Amounts are integer atomic units. `idempotencyKey` is unique.
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /api/missions`, `POST /api/missions/:id/plan` | Create a mission; extract requirements |
+| `POST /api/missions`, `POST /api/missions/:id/plan` | Create a mission (goal, budget, data horizon, allowed formats); extract requirements (mission → `planning`) |
+| `PUT /api/missions/:id/requests/:requestId`, `POST /api/missions/:id/confirm` | The owner edits one extracted requirement (only while `planning` and `open`); confirms the set (`planning` → `confirmed`). Propose and run answer 409 `requirements_unconfirmed` while a mission is `planning` |
 | `GET /api/missions`, `GET /api/missions/:id` | List missions; a mission with its requests, purchases and Fusion groups |
 | `GET /api/resources` | Candidates with coverage |
 | `POST /api/purchases/propose` | Oracle plus Fusion proposal |

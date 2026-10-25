@@ -93,7 +93,7 @@ export function createApp(opts: CreateAppOptions) {
   };
 
   const app = new Hono<ApiEnv>();
-  app.use("*", cors({ origin: "*", allowHeaders: ["content-type", "idempotency-key"], allowMethods: ["GET", "POST", "OPTIONS"] }));
+  app.use("*", cors({ origin: "*", allowHeaders: ["content-type", "idempotency-key"], allowMethods: ["GET", "POST", "PUT", "OPTIONS"] }));
   app.use("*", async (c, next) => {
     c.set("requestId", c.req.header("x-request-id") ?? randomUUID());
     c.set("session", deps.session);

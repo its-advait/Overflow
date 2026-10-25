@@ -95,6 +95,9 @@ export type JournalEntry = z.infer<typeof JournalEntrySchema>;
 
 export const ActivityKindSchema = z.enum([
   "mission.created",
+  // The owner edited one extracted requirement / confirmed the requirements. Nothing bought.
+  "mission.requirement_edited",
+  "mission.confirmed",
   "purchase.proposed",
   "purchase.status",
   "payment.authorized",

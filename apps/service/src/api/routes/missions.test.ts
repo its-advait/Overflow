@@ -75,6 +75,33 @@ describe("GET /api/missions and GET /api/missions/:id", () => {
     expect(body.groups[0]).toMatchObject({ id: "pg-1", requestIds: ["mission-1-req-0"], payingNodeId: 1 });
   });
 
+  it("POST /api/missions stores the owner's horizon and allowed formats; defaults apply when omitted", async () => {
+    const { app } = createApp({ db: handle.db, session, treasury: TREASURY });
+    const post = (body: unknown) => app.request("/api/missions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const res = await post({ goal: "Q3 grocery inflation inputs", budgetAtomic: "12500000", rootNodeId: 1, horizon: { start: "2025-01-01", end: "2025-09-30" }, allowedFormats: ["csv"] });
+    expect(res.status).toBe(201);
+    const { mission } = await json(res);
+    expect(mission).toMatchObject({ status: "draft", budgetAtomic: "12500000", horizon: { start: "2025-01-01", end: "2025-09-30" }, allowedFormats: ["csv"] });
+    const detail = await json(await get(`/api/missions/${mission.id}`));
+    expect(detail.mission.horizon).toEqual({ start: "2025-01-01", end: "2025-09-30" });
+
+    const plain = await json(await post({ goal: "no constraints", budgetAtomic: "1000000", rootNodeId: 1 }));
+    expect(plain.mission.horizon).toBeUndefined();
+    expect(plain.mission.allowedFormats).toEqual(["csv", "json", "parquet"]);
+
+    const bad = await post({ goal: "bad horizon", budgetAtomic: "1000000", rootNodeId: 1, horizon: { start: "2025-09-30", end: "2025-01-01" } });
+    expect(bad.status).toBe(400);
+    expect((await json(await post({ goal: "draft confirm", budgetAtomic: "1000000", rootNodeId: 1 }))).mission.status).toBe("draft");
+  });
+
+  it("confirm on a draft mission answers 409 not_planning", async () => {
+    const { app } = createApp({ db: handle.db, session, treasury: TREASURY });
+    const created = await json(await app.request("/api/missions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ goal: "never planned", budgetAtomic: "1000000", rootNodeId: 1 }) }));
+    const res = await app.request(`/api/missions/${created.mission.id}/confirm`, { method: "POST" });
+    expect(res.status).toBe(409);
+    expect((await json(res)).error.code).toBe("not_planning");
+  });
+
   it("answers 404 for an unknown mission and for another organization's mission", async () => {
     for (const id of ["mission-nope", "mission-other-org"]) {
       const res = await get(`/api/missions/${id}`);

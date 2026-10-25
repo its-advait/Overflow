@@ -7,11 +7,13 @@ import {
   ChainTransactionSchema,
   ControllerRequestSchema,
   ControllerRequestStatusSchema,
+  DateRangeSchema,
   EscrowOrderSchema,
   ExceptionDecisionSchema,
   ExceptionRecordSchema,
   ExceptionStatusSchema,
   FinancialEntrySchema,
+  FormatSchema,
   IdSchema,
   IsoDateTimeSchema,
   LedgerAccountSchema,
@@ -21,6 +23,7 @@ import {
   ReconciliationRunSchema,
   ResourceRecordSchema,
   ResourceRequestRecordSchema,
+  ResourceRequestSchema,
   SignedAtomicSchema,
   type AgentRecord,
 } from "@overflow/schemas";
@@ -82,6 +85,10 @@ export const CreateMissionBodySchema = z.object({
   budgetAtomic: AtomicAmountSchema,
   rootNodeId: z.number().int().positive().optional(),
   ownerAgentId: IdSchema.optional(),
+  /** MissionComposer "time horizon": the data date range; extracted requests are clamped inside it. */
+  horizon: DateRangeSchema.optional(),
+  /** MissionComposer "allowed resource types": the formats the buyer can read. */
+  allowedFormats: z.array(FormatSchema).min(1).optional(),
 });
 export type CreateMissionBody = z.infer<typeof CreateMissionBodySchema>;
 export const MissionResponseSchema = z.object({ mission: MissionRecordSchema });
@@ -102,6 +109,18 @@ export const PlanResponseSchema = z.object({
   requests: z.array(ResourceRequestRecordSchema),
 });
 export type PlanResponse = z.infer<typeof PlanResponseSchema>;
+// PUT /api/missions/:id/requests/:requestId: the owner's edit of one extracted requirement (SPEC "Oracle": editable
+// before any purchase). Only while the mission is planning and the request is open; 409 not_editable / over_budget otherwise.
+export const UpdateRequestBodySchema = ResourceRequestSchema;
+export type UpdateRequestBody = z.infer<typeof UpdateRequestBodySchema>;
+export const UpdateRequestResponseSchema = z.object({ request: ResourceRequestRecordSchema });
+export type UpdateRequestResponse = z.infer<typeof UpdateRequestResponseSchema>;
+// POST /api/missions/:id/confirm: planning -> confirmed. Propose and run answer 409 requirements_unconfirmed until then.
+export const ConfirmMissionResponseSchema = z.object({
+  mission: MissionRecordSchema,
+  requests: z.array(ResourceRequestRecordSchema),
+});
+export type ConfirmMissionResponse = z.infer<typeof ConfirmMissionResponseSchema>;
 export const RunMissionBodySchema = z.object({ forceInjectionBeat: z.boolean().optional() });
 export type RunMissionBody = z.infer<typeof RunMissionBodySchema>;
 export const RunMissionResponseSchema = z.object({
