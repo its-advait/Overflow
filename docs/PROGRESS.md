@@ -1369,3 +1369,29 @@ Confirmed, no change needed: `apps/service/src/orchestration/oracle-port.ts` `pr
 ### Open issues
 - The :4000 service is stale; restart it after funding so the new keys load, then `demo:reset`, then `demo:preflight`.
 - Stale reservations are released only from the stopped-service path (printed commands), not automatically.
+
+## 2026-10-25: live escrow purchase end to end from the UI; boot, sample, extraction and dev:fund fixes
+
+### Fixed
+- `POST /api/missions` answered 409 `no_root_node` after every boot: the seed's orchestrator row holds a SIMULATED placeholder key, so the indexer's `NodeCreated` never matched it and `nodeId` stayed null. `apps/service/src/index.ts` now swaps in the real agent keys (`ensureAgentRows`) before the indexer starts and links the orchestrator to `nodeOfKey(root)`; boot logs `[agents] orchestrator <addr>: root node 1`.
+- Agent `request_sample` failed with ENOENT: it read `apps/service/data/…` (process cwd). It now resolves `<repo>/data` like the Recourse sellers (`defaultCatalogPath()`).
+- Requirement extraction invented column names (`ev_registrations`, `registrations`, `make`) that coverage matches exactly against listing fields, so Oracle rejected every listing. `extractRequirements` takes an optional `knownFields` (the catalog's columns) and the prompt asks for those exact names. The model can still add an extra vocabulary field (seen: `year`), so the owner's edit before Confirm stays part of the flow.
+- `pnpm dev:fund <amount>` without `--to` always printed usage (the amount at index 0 was skipped when `toIndex` was -1).
+- Web: journal memos render through `formatMemo` (atomic USDC to `5.00 USDC`, hex shortened, full memo on hover) with fixed column widths; the ledger header labels the books "Fictional company books"; the Escrow placeholder left the sidebar (`/escrow` redirects to `/purchases`, where each order's escrow timeline lives).
+
+### Verified (real output, 2026-10-25, Base Sepolia)
+| Check | Result |
+|---|---|
+| Funding (DEV ONLY scripts, from the deployer) | relayer 0.005 ETH `0x715c0031fb2f05331a301b905ee4a845301bf383752b1f896516e02a71a05c88`; seller A/B gas 0.0003 ETH each `0xf72988186821136227ed543ace52b076c7f97bd41112e8b5c9e27eb49ec5cb0b` / `0x707192ae7cda4f6cf3425502f5daefd937f1aa65c1de9787b952800647a50bd6`; seller bonds 2.4 / 0.8 / 4 USDC `0xd126d9237de80f1814f256e668f7c4a9cac252193e09c1fe42c6014028edc2c9` / `0x8ddacce217f3cd5cc7f18143777c5e0bbfc697c311866d42a413d7696952f7c5` / `0x2c7567e55fec1dce1da1381d73a8e1a53b2728bb40a1083541f748f2f7eb0be9`; treasury +10 USDC `0xacf80138df7a0cf90f739e5e86567b17c0cf1afddc6203eb2cdb9930e47506f8` |
+| Test case: mission "Monthly California EV registrations by brand, January 2024 to September 2026", budget 5, horizon 2024-01-01..2026-09-30; owner edits fields to `month, state, brand, units`; Propose; Sign authorization | Oracle chose `listing-california-monthly-2024-2026` (sim-seller-a, 5.00 USDC, payer node 1); sample judged buy 0.82; seller bond `0x87ea8ba7f4f278d720057e75b840823ad717804f7d34d7841358f166c7670c77`, `settle()` `0xe654ba4b8f8522a7c2b146d8916963920f1eacd56da1b7297d06871f9f7f79a4`, `markFunded` `0x74e2ecbe2d7faca4199fe3db1a98a9ed481142cdd0af10d3841b29210464e1fd`, `revealKey` `0x172601d750d31e180d04046b25cb074fd369726c7ab31817fab413333c3973fe`, all 66 chunks verified, accept by node 1, PaidOut 5 USDC (bond returned): SETTLED. These hashes are from the first run, driven through the API routes the UI calls; the same flow was then clicked through the UI three times (twice by Claude in Chrome, once by the owner), each SETTLED. |
+| Mission run (3 sub-agents) | nodes 2/3/4 created by relayed CreateChild, samples read, paid search calls (0.02 USDC), reports and orchestrator recommendation; one `PayeeNotAllowed(3)` refusal |
+| `apps/service` `pnpm test` | 37 files, 325 tests passed (with the :3001 dev server stopped; under load some `beforeAll` hooks hit the 10 s timeout) |
+| `packages/oracle` (`vitest run packages/oracle` from the root) | 5 files, 34 tests passed |
+| `apps/web` typecheck, lint, `vitest run apps/web` | exit 0, exit 0, 7 files / 47 tests |
+
+### Open issues
+- PGlite runs `:memory:`: every restart wipes missions, purchases and the journal, and the indexer re-reads from deployBlock (about a minute). Oracle rejects a listing the organization already owns, so restart between takes of the test case.
+- Sub-agent nodes from the first run keep cap 2 / 2 / 1 USDC and maxPerCall 1 / 2 / 0.5 USDC (reused while their keys own live nodes; expiry about 24 h); they cannot buy a 4-13 USDC listing. Proposals they file still make the seller create an order and lock its bond.
+- `reconciliation/sweeps.ts` asks for deployBlock..head in one `eth_getLogs` (the RPC caps at 200 blocks) and fails every tick after a restart.
+- x402 paid API calls (0.02 USDC search) post no journal entry, so reconciliation opens an exception for each.
+- Escrow has no page of its own in this branch (main has one).
