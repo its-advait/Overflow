@@ -25,7 +25,7 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const toIndex = args.indexOf("--to");
   const toOverride = toIndex >= 0 ? args[toIndex + 1] : undefined;
-  const human = args.find((a, i) => !a.startsWith("--") && i !== toIndex + 1);
+  const human = args.find((a, i) => !a.startsWith("--") && (toIndex < 0 || i !== toIndex + 1));
   if (!human) {
     console.error("usage: pnpm dev:fund <usdc amount> [--to <address>]");
     process.exit(2);
