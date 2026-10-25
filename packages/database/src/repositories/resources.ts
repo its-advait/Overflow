@@ -77,6 +77,32 @@ export function resourcesRepository(db: Executor) {
       return toResource(inserted!);
     },
 
+    /** Insert unless the id exists; returns the stored row either way (catalog seeding is idempotent). */
+    async upsertById(input: ResourceRecord): Promise<ResourceRecord> {
+      const row = ResourceRecordSchema.parse(input);
+      await withDbErrors(() =>
+        db
+          .insert(resources)
+          .values({
+            id: row.id,
+            title: row.title,
+            url: nul(row.url),
+            sellerId: row.sellerId,
+            productId: row.productId,
+            coverage: row.coverage,
+            license: row.license,
+            price: row.priceAtomic,
+            manifestHash: row.manifestHash,
+            seats: row.seats,
+            simulated: row.simulated,
+            createdAt: new Date(row.createdAt),
+          })
+          .onConflictDoNothing({ target: resources.id }),
+      );
+      const found = await this.getById(row.id);
+      return found!;
+    },
+
     async getById(id: string): Promise<ResourceRecord | undefined> {
       const [r] = await db.select().from(resources).where(eq(resources.id, id));
       return r ? toResource(r) : undefined;

@@ -10,7 +10,7 @@ import type {
   ResourceRequestRecord,
 } from "@overflow/schemas";
 import type { Hex } from "viem";
-import type { ProposeInput } from "../orchestration/purchase-service.js";
+import type { ProposeResult } from "../orchestration/oracle-port.js";
 
 // ---------------------------------------------------------------------------
 // Ports: what the API needs from parts of the system that later prompts build.
@@ -28,12 +28,12 @@ export class NotWiredError extends Error {
   }
 }
 
-/** Oracle + Fusion (P4.1 / P4.2). */
+/** Oracle (wired: orchestration/oracle-port.ts) + Fusion (P6.2). */
 export interface OrchestrationPort {
   /** Extracts structured requirements for a mission and persists them as resource_requests. */
   planMission(mission: MissionRecord): Promise<ResourceRequestRecord[]>;
-  /** Oracle ranks, Fusion merges; returns proposals the PurchaseService persists as PROPOSED. */
-  propose(mission: MissionRecord): Promise<ProposeInput[]>;
+  /** Oracle recommends per open request (Fusion merges at P6.2); returns proposals the PurchaseService persists as PROPOSED plus the decisions. */
+  propose(mission: MissionRecord): Promise<ProposeResult>;
 }
 
 export interface PreparedPayment {
@@ -86,16 +86,9 @@ export interface Ports {
   reconciliation: ReconciliationPort;
 }
 
-export function defaultPorts(): Ports {
+/** Defaults for the ports later prompts build. The orchestration port is always real (createApp builds createOraclePort). */
+export function defaultPorts(): Omit<Ports, "orchestration"> {
   return {
-    orchestration: {
-      planMission: async () => {
-        throw new NotWiredError("OrchestrationPort.planMission (Oracle)", "P4.1");
-      },
-      propose: async () => {
-        throw new NotWiredError("OrchestrationPort.propose (Oracle + Fusion)", "P4.2");
-      },
-    },
     adapters: {},
     // No chain reader yet: only escrow payTo passes checkQuote.
     policy: { allowlistedPayees: async () => [] },

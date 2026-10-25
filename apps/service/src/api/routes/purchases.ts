@@ -14,12 +14,17 @@ import { z } from "zod";
 import type { ApiDeps } from "../deps.js";
 import { ApiError, parseBody, parseParams, respond, type ApiEnv } from "../http.js";
 import { IDEMPOTENCY_HEADER, withIdempotency } from "../idempotency.js";
+import { OracleDecisionSchema } from "../../orchestration/oracle-port.js";
 import { loadMission } from "./missions.js";
 
 const IdParams = z.object({ id: IdSchema });
 
 const ProposeBody = z.object({ missionId: IdSchema });
-const ProposeResponse = z.object({ purchases: z.array(PurchaseRecordSchema) });
+const ProposeResponse = z.object({
+  purchases: z.array(PurchaseRecordSchema),
+  /** One per open request: what Oracle chose, what it rejected and why. A decision authorizes no payment. */
+  decisions: z.array(OracleDecisionSchema),
+});
 
 const PurchaseResponse = z.object({
   purchase: PurchaseRecordSchema,
@@ -48,14 +53,14 @@ export const AuthorizeResponse = z.object({
 export function purchaseRoutes(deps: ApiDeps) {
   const app = new Hono<ApiEnv>();
 
-  /** Oracle + Fusion proposal (P4.2) persisted as PROPOSED rows by the PurchaseService. */
+  /** Oracle recommendation per open request (Fusion merges at P6.2), persisted as PROPOSED rows by the PurchaseService. */
   app.post("/propose", async (c) => {
     const { missionId } = await parseBody(c, ProposeBody);
     const mission = await loadMission(deps, c.get("session").organizationId, missionId);
-    const proposals = await deps.ports.orchestration.propose(mission);
+    const { proposals, decisions } = await deps.ports.orchestration.propose(mission);
     const purchases: PurchaseRecord[] = [];
     for (const p of proposals) purchases.push((await deps.purchases.propose(p)).purchase);
-    return respond(c, ProposeResponse, { purchases }, 201);
+    return respond(c, ProposeResponse, { purchases, decisions }, 201);
   });
 
   /**

@@ -87,14 +87,15 @@ describe("REST API", () => {
     });
   });
 
-  describe("not wired ports answer 501, never success", () => {
-    it("plan, propose", async () => {
+  describe("unconfigured ports refuse, never fake success", () => {
+    it("plan without a model is 503; propose without requests is 409", async () => {
       const plan = await post("/api/missions/mission-1/plan", {});
-      expect(plan.status).toBe(501);
-      expect((await json(plan)).error.code).toBe("not_wired");
+      expect(plan.status).toBe(503);
+      expect((await json(plan)).error.code).toBe("oracle_unavailable");
       expect((await handle.repos.missions.getById("mission-1"))!.status).toBe("active");
       const propose = await post("/api/purchases/propose", { missionId: "mission-1" });
-      expect(propose.status).toBe(501);
+      expect(propose.status).toBe(409);
+      expect((await json(propose)).error.code).toBe("no_open_requests");
     });
 
     it("reconciliation reports no run, and an on-demand run without a chain reader is 501", async () => {

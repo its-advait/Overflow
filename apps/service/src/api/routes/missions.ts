@@ -69,7 +69,7 @@ export function missionRoutes(deps: ApiDeps) {
   app.post("/:id/plan", async (c) => {
     const { id } = parseParams(c, IdParams);
     const mission = await loadMission(deps, c.get("session").organizationId, id);
-    // Oracle extracts and persists the requests (P4.1); 501 until wired.
+    // Oracle extracts and persists the requests (orchestration/oracle-port.ts); 503 when no model is configured.
     const requests = await deps.ports.orchestration.planMission(mission);
     const updated = (await deps.repos.missions.setStatus(mission.id, "planning")) ?? mission;
     return respond(c, PlanResponse, { mission: updated, requests });

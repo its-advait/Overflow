@@ -1,7 +1,9 @@
 /**
  * Orchestration module: missions, Oracle, Fusion and the purchase state machine.
- * Only the state machine (PurchaseService) is implemented here; Oracle and
- * Fusion arrive through the OrchestrationPort in ../api/ports.ts.
+ * PurchaseService is the state machine; createOraclePort wires @overflow/oracle
+ * into the API's OrchestrationPort; seedCatalog loads the SIMULATED catalog.
+ * Fusion arrives at P6.2.
  */
 export * from "./purchase-service";
-export const ORCHESTRATION_STATUS = "purchase state machine ready; Oracle/Fusion not wired" as const;
+export * from "./catalog";
+export * from "./oracle-port";

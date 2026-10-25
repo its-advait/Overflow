@@ -1,10 +1,12 @@
+import Anthropic from "@anthropic-ai/sdk";
 import { serve } from "@hono/node-server";
 import { createDatabase, seed } from "@overflow/database";
+import { oracleModelFromEnv } from "@overflow/oracle";
 import { createApp } from "./api/index.js";
 import { createActivityBus, createIndexer, createLogSource, resolveIndexerConfig, type Indexer } from "./chain/index.js";
 import { assertFacilitatorChain, facilitatorStatus, resolveFacilitatorConfig, type Facilitator } from "./facilitator/index.js";
 import { createReconciliation, LEDGER_STATUS, type Reconciliation } from "./ledger/index.js";
-import { ORCHESTRATION_STATUS } from "./orchestration/index.js";
+import { orchestrationStatus, seedCatalog, type OracleModel } from "./orchestration/index.js";
 import { createSellerApp, resolveSellerConfig, sellersStatus } from "./sellers/index.js";
 
 const port = Number(new URL(process.env["SERVICE_URL"] ?? "http://localhost:4000").port || 4000);
@@ -20,6 +22,21 @@ const seeded = await seed(database.db);
 console.log(
   `[seed] organization "${seeded.organization.name}" (SIMULATED) agents=${seeded.agents.length}`,
 );
+
+// Idempotent seed of the SIMULATED seller catalog into `resources` (insert-if-missing by listing id).
+const catalog = await seedCatalog(database.db);
+console.log(
+  `[catalog] SIMULATED catalog: ${catalog.total} listings (${catalog.inserted} inserted, ${catalog.existing} existing) from ${catalog.catalogPath}`,
+);
+
+// Oracle extraction model: only with ANTHROPIC_API_KEY and CLAUDE_MODEL; otherwise plan answers 503.
+let oracle: OracleModel | null = null;
+if (process.env["ANTHROPIC_API_KEY"] && process.env["CLAUDE_MODEL"]?.trim()) {
+  oracle = { client: new Anthropic(), model: oracleModelFromEnv() };
+  console.log(`[oracle] extraction model ${oracle.model}`);
+} else {
+  console.warn("[oracle] idle: ANTHROPIC_API_KEY / CLAUDE_MODEL not set; POST /api/missions/:id/plan answers 503");
+}
 
 // Chain indexer: runs only with BASE_SEPOLIA_RPC_URL and a deployments file.
 // Otherwise it stays idle and says why; no address or block is ever invented.
@@ -84,12 +101,17 @@ const { app } = createApp({
   bus,
   ...(reconciliation ? { ports: { reconciliation: { run: (trigger) => reconciliation!.run(trigger) } } } : {}),
   ...(indexerConfig.ok ? { treasury: indexerConfig.config.treasury } : {}),
+  oracle,
   indexerStatus: () => indexer?.status() ?? { state: "idle", reason: indexerConfig.ok ? "not started" : indexerConfig.reason },
   status: {
     database: { dialect: database.dialect, migrationsFolder: database.migrationsFolder, migrated: true },
     modules: {
       api: "ready",
-      orchestration: ORCHESTRATION_STATUS,
+      orchestration: orchestrationStatus({
+        model: oracle?.model ?? null,
+        treasury: indexerConfig.ok ? indexerConfig.config.treasury : null,
+        orderTermsWired: false,
+      }),
       facilitator: facilitatorStatus(facilitatorConfig),
       sellers: sellersStatus(sellerConfig, facilitatorConfig.ok),
       chain: chainStatus,

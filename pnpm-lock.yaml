@@ -190,6 +190,9 @@ importers:
       '@overflow/database':
         specifier: workspace:*
         version: link:../../packages/database
+      '@overflow/datasets':
+        specifier: workspace:*
+        version: link:../../packages/datasets
       '@overflow/fusion':
         specifier: workspace:*
         version: link:../../packages/fusion

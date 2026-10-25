@@ -21,6 +21,7 @@
     "@electric-sql/pglite": "^0.5.11",
     "@hono/node-server": "2.1.5",
     "@overflow/database": "workspace:*",
+    "@overflow/datasets": "workspace:*",
     "@overflow/fusion": "workspace:*",
     "@overflow/oracle": "workspace:*",
     "@overflow/payment-client": "workspace:*",

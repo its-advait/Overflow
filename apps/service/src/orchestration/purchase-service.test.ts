@@ -25,6 +25,17 @@ describe("PurchaseService", () => {
     expect(event.purchaseId).toBe("p1");
     expect(event.message).toContain("[oracle:test]");
     expect(await handle.repos.activityEvents.listByPurchase("p1")).toHaveLength(1);
+
+    // Same idempotencyKey again: the stored purchase and its original event come back, nothing is written.
+    const replay = await service.propose({
+      purchase: purchaseInput({ id: "p1-again", idempotencyKey: "mission-1:resource-1:p1" }),
+      reason: "repeat",
+      source: { kind: "oracle", reference: "test-2" },
+    });
+    expect(replay.replayed).toBe(true);
+    expect(replay.purchase.id).toBe("p1");
+    expect(replay.event.id).toBe(event.id);
+    expect(await handle.repos.activityEvents.listByPurchase("p1")).toHaveLength(1);
   });
 
   it("a legal move writes exactly one event carrying the reason and source", async () => {

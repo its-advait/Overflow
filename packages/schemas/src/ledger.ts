@@ -118,6 +118,8 @@ export const ActivityKindSchema = z.enum([
   "reconciliation.difference",
   // Oracle audit: one per model call, carrying the prompt hash and output hash (SPEC "Oracle" guardrails).
   "oracle.model_call",
+  // Oracle decision per resource request: chosen listing, rejections and summary. It authorizes no payment.
+  "oracle.recommendation",
 ]);
 export type ActivityKind = z.infer<typeof ActivityKindSchema>;
 

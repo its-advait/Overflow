@@ -123,6 +123,8 @@ export interface TransitionResult {
   event: ActivityEvent;
   /** The escrow_orders row after `evidence.escrow` was applied; undefined when no row exists yet or none was requested. */
   escrow?: EscrowOrder | undefined;
+  /** propose() only: the idempotencyKey already had a purchase; nothing was written and `event` is the original one. */
+  replayed?: boolean | undefined;
 }
 
 export interface PurchaseServiceOptions {
@@ -149,8 +151,10 @@ export function createPurchaseService(db: Executor, options: PurchaseServiceOpti
   return {
     /**
      * Records a PROPOSED purchase (idempotent on idempotencyKey) and its
-     * `purchase.proposed` event. A second active purchase for the same
-     * (mission, resource) throws ActivePurchaseExistsError.
+     * `purchase.proposed` event. A repeat of the same key returns the stored
+     * purchase and its original event without writing anything. A second
+     * active purchase for the same (mission, resource) throws
+     * ActivePurchaseExistsError.
      */
     async propose(input: ProposeInput): Promise<TransitionResult> {
       const source = TransitionSourceSchema.parse(input.source);
@@ -158,6 +162,13 @@ export function createPurchaseService(db: Executor, options: PurchaseServiceOpti
       try {
         result = await db.transaction(async (tx) => {
           const repos = createRepositories(tx);
+          const existing = await repos.purchases.getByIdempotencyKey(input.purchase.idempotencyKey);
+          if (existing) {
+            const events = await repos.activityEvents.listByPurchase(existing.id);
+            const event = events.find((e) => e.kind === "purchase.proposed") ?? events[0];
+            if (!event) throw new NotFoundError("activity_events", existing.id);
+            return { purchase: existing, event, replayed: true };
+          }
           const purchase = await repos.purchases.create(input.purchase);
           const event = await repos.activityEvents.insert({
             kind: "purchase.proposed",
@@ -175,7 +186,7 @@ export function createPurchaseService(db: Executor, options: PurchaseServiceOpti
         }
         throw e;
       }
-      publish(result.event);
+      if (!result.replayed) publish(result.event);
       return result;
     },
 

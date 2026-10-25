@@ -5,6 +5,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { createActivityBus, type ActivityBus, type IndexerStatus } from "../chain/bus.js";
 import { createExceptionService } from "../exceptions/service.js";
+import { createOraclePort, notWiredOrderTerms, type OracleModel, type OrderTermsPort } from "../orchestration/oracle-port.js";
 import { createPurchaseService } from "../orchestration/purchase-service.js";
 import type { ApiDeps } from "./deps.js";
 import { ApiError, errorResponse, type ApiEnv } from "./http.js";
@@ -31,8 +32,12 @@ export interface CreateAppOptions {
   bus?: ActivityBus | undefined;
   /** Real indexer state. Default: idle, "no indexer attached". */
   indexerStatus?: (() => IndexerStatus) | undefined;
-  /** The deployed treasury (from deployments/base-sepolia.json). Without it, onchain exceptions answer 501: no address is invented. */
+  /** The deployed treasury (from deployments/base-sepolia.json). Without it, onchain exceptions and propose answer 501: no address is invented. */
   treasury?: Address | undefined;
+  /** Oracle extraction model (Anthropic client + CLAUDE_MODEL). null/omitted: plan answers 503. */
+  oracle?: OracleModel | null | undefined;
+  /** Source of an order's seller/escrow/terms (the Recourse seller). Default: not wired, propose answers 501 once a listing is chosen. */
+  orderTerms?: OrderTermsPort | undefined;
 }
 
 /**
@@ -52,7 +57,14 @@ export function createApp(opts: CreateAppOptions) {
     bus,
     indexerStatus: opts.indexerStatus ?? (() => ({ state: "idle", reason: "no indexer attached" })),
     ports: {
-      orchestration: opts.ports?.orchestration ?? base.orchestration,
+      orchestration:
+        opts.ports?.orchestration ??
+        createOraclePort({
+          db: opts.db,
+          model: opts.oracle ?? null,
+          treasury: opts.treasury ?? null,
+          orderTerms: opts.orderTerms ?? notWiredOrderTerms(),
+        }),
       adapters: opts.ports?.adapters ?? base.adapters,
       policy: opts.ports?.policy ?? base.policy,
       reconciliation: opts.ports?.reconciliation ?? base.reconciliation,
