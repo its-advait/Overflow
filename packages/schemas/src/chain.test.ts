@@ -81,10 +81,29 @@ describe("deployments", () => {
     escrowFactory: "0x2222222222222222222222222222222222222222",
   };
 
-  it("parses a valid file and defaults usdc", () => {
-    const d = parseDeployments(valid);
+  it("parses a valid file and defaults token, usdc, txs and the escrow addresses", () => {
+    const d = parseDeployments({ chainId: 84532, treasury: valid.treasury });
     expect(d.usdc).toBe(USDC.address);
+    expect(d.token).toBe(USDC.address);
     expect(d.treasury).toBe(valid.treasury);
+    expect(d.escrowFactory).toBeNull();
+    expect(d.escrowImplementation).toBeNull();
+    expect(d.txs).toEqual({});
+    expect(parseDeployments(valid).escrowFactory).toBe(valid.escrowFactory);
+  });
+
+  it("accepts the full file the deploy script writes", () => {
+    const d = parseDeployments({
+      ...valid,
+      token: USDC.address,
+      owner: "0x3333333333333333333333333333333333333333",
+      deployer: "0x3333333333333333333333333333333333333333",
+      deployBlock: "12345",
+      deployedAt: "2026-10-24T18:00:00.000Z",
+      txs: { treasury: `0x${"ab".repeat(32)}` },
+    });
+    expect(d.owner).toBe("0x3333333333333333333333333333333333333333");
+    expect(d.txs["treasury"]).toBe(`0x${"ab".repeat(32)}`);
   });
 
   it("rejects a wrong chain id or missing addresses", () => {
@@ -93,10 +112,11 @@ describe("deployments", () => {
     expect(DeploymentsSchema.safeParse({ ...valid, escrowFactory: "0x12" }).success).toBe(false);
   });
 
-  it("default path ends with deployments/base-sepolia.json at the repo root", async () => {
+  it("default path is packages/schemas/deployments/base-sepolia.json", async () => {
     const p = await defaultDeploymentsPath();
     expect(p.endsWith(DEPLOYMENTS_RELATIVE_PATH)).toBe(true);
-    expect(p).not.toContain("packages/schemas");
+    expect(p).toContain("packages/schemas/deployments");
+    expect(p).not.toContain("src");
   });
 
   describe("loadDeployments", () => {

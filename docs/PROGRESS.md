@@ -136,3 +136,34 @@
 ### Open issues
 - `pnpm --filter @overflow/schemas test` fails at startup because Vitest in a package directory picks up the root `projects` config and resolves `apps/service` relative to the package. Run `pnpm test` from the root (or add a per-package `vitest.config`) until the scaffold is adjusted.
 - Engineer B must copy the `termsHash` and `orderId` field orders above into `OverflowEscrowFactory`/`OverflowEscrow` and add a golden-vector test against `computeOrderId`.
+
+## 2026-10-24: deploy, verify, export addresses (tooling complete; live deploy NOT yet run)
+
+### Built
+- `contracts/script/Deploy.s.sol`: deploys `OverflowTreasury(TOKEN_ADDRESS, OWNER_ADDRESS)` on chain 84532 only; signer comes from the CLI (`--account <keystore>`), no key is read in Solidity. When `owner == deployer` it calls `createRoot(AGENT_ROOT_ADDRESS, ROOT_CAP, ROOT_MAX_PER_CALL, ROOT_EXPIRY)` (defaults 50 USDC, 15 USDC, now + 7 days); otherwise it prints the `createRoot` calldata for the controller's Coinbase Wallet. The escrow implementation/factory and `setEscrowFactory` do not exist yet (P1.5/P1.6); the script carries a marked hook and the export writes `null` for both.
+- `scripts/` is a workspace package `@overflow/scripts` (tsx, viem, `@overflow/schemas`): `deploy.sh` (one command: `forge script --broadcast --verify` with `--account`/`--password-file`, `DRY_RUN=1` simulates with `--sender`, interactive password prompt if no password file, prints the `forge verify-contract` retry on failure, then exports), `export-deployment.ts` (reads `contracts/broadcast/Deploy.s.sol/84532/run-latest.json`, writes `packages/schemas/deployments/base-sepolia.json` with `{chainId, token, usdc, treasury, escrowFactory, escrowImplementation, owner, deployer, deployBlock, deployedAt, txs}`, generates `packages/schemas/src/abi/<Name>.ts` `as const` ABIs plus barrel and `src/deployments.ts`; `--abi-only` regenerates ABIs without a broadcast), `status.ts` (balance, owner, TOKEN, floor, nodeCount, per-node `remaining()`, exits non-zero if `TOKEN()` differs from the file), `dev-fund.ts` (DEV ONLY banner; checks the deployer's USDC balance, then `cast send transfer(...)` through the keystore so no key enters Node).
+- Root scripts: `contracts:deploy`, `contracts:export`, `status`, `dev:fund`. `.env.example` gains `DEPLOYER_ACCOUNT`, `DEPLOYER_PASSWORD_FILE`, `DEPLOYER_ADDRESS`, `AGENT_ROOT_ADDRESS`, `ROOT_CAP`, `ROOT_MAX_PER_CALL`, `ROOT_EXPIRY`, `DRY_RUN`.
+- `packages/schemas`: `DeploymentsSchema` extended as a superset of the P0.2 version (`token`, `owner`, `deployer`, `escrowImplementation`, nullable `escrowFactory`, `txs`; `usdc` and `txHashes` kept), `defaultDeploymentsPath()` now resolves to `packages/schemas/deployments/base-sepolia.json` (the prompt's path; the P0.2 test asserting the repo root was updated), new `./chain` subpath export so scripts can import chain facts before the generated `abi/` exists, `src/abi/OverflowTreasury.ts` (52 ABI entries) exported from the package index.
+
+### Design choices
+- Signing uses Foundry keystores (`overflow-deployer`) plus a chmod-600 password file instead of a raw key in `.env`; the `*_KEY` slots in `.env` hold addresses only.
+- The deployments JSON lives in `packages/schemas/deployments/` (prompt) rather than the repo root (P0.2 draft) so the package can import it statically; field names follow the prompt, P0.2 names stay accepted.
+- `dev-fund` is labeled DEV ONLY in code and output; in the demo the controller funds through Coinbase Wallet.
+
+### Verified (real output, 2026-10-24)
+| Check | Result |
+|---|---|
+| `forge build` | success (Deploy.s.sol compiles) |
+| `DRY_RUN=1 pnpm contracts:deploy` (simulation with `--sender 0xB6F4…06C3`) | `Script ran successfully`; treasury would be `0xd3A74fA991CA0B5627d30EF27dC699C134848291` at the deployer's current nonce, root node id 1 (key `0x390C…Ea89`, cap 50 USDC, maxPerCall 15 USDC); estimated 2,758,876 gas, 0.000030347636 ETH |
+| `pnpm contracts:export --abi-only` | wrote `packages/schemas/src/abi/OverflowTreasury.ts` (52 entries); skipped escrow artifacts (not built yet) |
+| `pnpm typecheck` | exit 0, 9 workspaces Done (incl. `scripts`) |
+| `pnpm test` | exit 0, 5 files / 104 tests (deployments schema superset and new default path covered) |
+| `pnpm contracts:test` | 64 passed, 0 failed |
+| `pnpm lint` | exit 0 |
+| `git grep -nE "0x[a-fA-F0-9]{64}"` | only typehashes/domain separators; no private keys |
+
+### Open issues (DONE WHEN items not met)
+- **Not deployed.** The live broadcast needs the `overflow-deployer` keystore password. `~/.foundry/overflow-deployer.pw` and the `DEPLOYER_PASSWORD_FILE` / `DEPLOYER_ACCOUNT` / `DEPLOYER_ADDRESS` lines in `.env` were not present when checked, so `pnpm contracts:deploy` was not run. To finish: create the password file (or run `pnpm contracts:deploy` from a terminal and type the password at forge's prompt), then `pnpm status`. Deployer `0xB6F4…06C3` holds 0.0001 ETH, enough for the estimated cost.
+- Consequently `packages/schemas/deployments/base-sepolia.json`, `src/deployments.ts` and Basescan verification do not exist yet; `loadDeployments()` throws the path until the deploy runs.
+- `dev:fund` cannot move USDC yet: the deployer holds 0 USDC (get test USDC at faucet.circle.com). The relayer holds 1 USDC but 0 ETH.
+- `escrowFactory`/`escrowImplementation` stay `null` until P1.6.

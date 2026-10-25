@@ -1,6 +1,7 @@
 packages:
   - apps/*
   - packages/*
+  - scripts
 
 # pnpm 12 blocks dependency postinstall scripts by default; these two are safe
 # (they only verify/download their native binaries) and are needed by tsx/tsup/shadcn/eslint.

@@ -1,0 +1,22 @@
+{
+  "name": "@overflow/scripts",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Operator scripts: export deployment addresses/ABIs, treasury status, dev-only funding",
+  "type": "module",
+  "scripts": {
+    "export": "tsx export-deployment.ts",
+    "status": "tsx status.ts",
+    "dev-fund": "tsx dev-fund.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@overflow/schemas": "workspace:*",
+    "viem": "^2.57.10"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}

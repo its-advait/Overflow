@@ -22,10 +22,25 @@ Optional read-only reference (git-ignored, never imported):
 git clone --depth 1 https://github.com/AnthonyOlakangil/leash reference/leash
 ```
 
+## Deploy to Base Sepolia
+
+```sh
+# .env: BASE_SEPOLIA_RPC_URL, BASESCAN_API_KEY, OWNER_ADDRESS, AGENT_ROOT_ADDRESS (or AGENT_ROOT_KEY as an address),
+#       DEPLOYER_ACCOUNT (Foundry keystore name), DEPLOYER_PASSWORD_FILE (chmod 600), DEPLOYER_ADDRESS
+DRY_RUN=1 pnpm contracts:deploy   # simulate with --sender, no broadcast
+pnpm contracts:deploy             # broadcast + Basescan verify + export (prompts for the keystore password if no password file)
+pnpm contracts:export --abi-only  # regenerate packages/schemas/src/abi/*.ts from contracts/out
+pnpm status                       # live treasury balance, owner, TOKEN, floor, nodes and remaining()
+pnpm dev:fund 5                   # DEV ONLY: move 5 USDC deployer -> treasury (the demo controller funds via Coinbase Wallet)
+```
+
+`contracts/script/Deploy.s.sol` deploys `OverflowTreasury(TOKEN_ADDRESS, OWNER_ADDRESS)`. When the owner is the deployer it also calls `createRoot(AGENT_ROOT_ADDRESS, ROOT_CAP, ROOT_MAX_PER_CALL, ROOT_EXPIRY)`; otherwise it prints the `createRoot` calldata for the controller to approve. Addresses land in `packages/schemas/deployments/base-sepolia.json` (`BASE_SEPOLIA_DEPLOYMENT`, `loadDeployments()`) and ABIs in `packages/schemas/src/abi/` (`overflowTreasuryAbi`). No private key is ever read: signing goes through a Foundry keystore.
+
 ## Layout
 
 - `apps/web` Next.js App Router UI (Tailwind, shadcn/ui, lucide-react)
 - `apps/service` Node service: `api/`, `orchestration/`, `facilitator/`, `sellers/`, `chain/`
 - `packages/*` shared libraries: `schemas`, `oracle`, `fusion`, `payment-client`, `recourse-crypto`, `database`
 - `contracts` Foundry project (solc 0.8.28, cancun, OpenZeppelin 5)
+- `scripts` operator scripts (`deploy.sh`, `export-deployment.ts`, `status.ts`, `dev-fund.ts`)
 - `docs` spec, progress, changelog
