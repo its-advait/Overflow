@@ -34,6 +34,8 @@ export const FIXTURE = {
   funding: "50000000",
   /** The direct x402 API purchase (p4). */
   apiAmount: "3000000",
+  /** Node 1's cap after the controller's CapRaised. */
+  raisedCap: "80000000",
   blockTimestamp: "1700000000",
 } as const;
 
@@ -94,7 +96,9 @@ export function buildFixtureLogs(): RawLog[] {
     X(F.escrow2, F.treasury, bond, 109, 2, 9),
     E(F.escrow2, "BondForfeited", { orderId: b32(2), seller: F.seller, bond }, 109, 3, 9),
     E(F.escrow2, "CheatProven", { seller: F.seller, index: 3n }, 110, 0, 10),
+    // Owner actions approved in Coinbase Wallet: pause node 1 and raise its cap to 80 USDC (one send_calls batch).
     T("NodePaused", { id: 1n, by: F.owner }, 110, 1, 11),
+    T("CapRaised", { id: 1n, oldCap: 50_000_000n, newCap: BigInt(F.raisedCap) }, 110, 3, 11),
     T("ReservationReleased", { digest: b32(0xd2), id: 1n, value: amount, budgetRestored: false }, 110, 2, 12),
     // Order 3 never had an OrderCreated the factory emitted here; its escrow is unknown to the indexer.
     FA("OrderCreated", { orderId: b32(3), escrow: F.escrow3, seller: F.seller, buyer: F.treasury, amount, bond: 0n, termsHash: b32(9) }, 111, 0, 13),

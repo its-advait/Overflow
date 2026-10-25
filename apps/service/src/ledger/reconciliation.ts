@@ -45,7 +45,9 @@ export interface Reconciliation {
   latest(): Promise<ReconciliationRun | undefined>;
 }
 
-export const EXCEPTION_TYPE = "reconciliation-difference" as const;
+export const EXCEPTION_TYPE = "RECONCILIATION_DIFF" as const;
+/** Reconciliation raises on behalf of the system, so any human may decide. */
+export const RECONCILIATION_PRINCIPAL = "system:reconciliation" as const;
 
 const abs = (v: bigint): bigint => (v < 0n ? -v : v);
 const arg = (row: ChainTransaction, key: string): string => String(row.args[key] ?? "");
@@ -164,6 +166,8 @@ export function createReconciliation(deps: ReconciliationDeps): Reconciliation {
           reason: d.reason,
           amountAtomic: abs(atomicToBigInt(d.differenceAtomic.replace(/^-/, ""))).toString(),
           subject: d.subject,
+          requestedBy: RECONCILIATION_PRINCIPAL,
+          details: { kind: d.kind, ...(d.chainAtomic ? { chainAtomic: d.chainAtomic } : {}), ...(d.ledgerAtomic ? { ledgerAtomic: d.ledgerAtomic } : {}), differenceAtomic: d.differenceAtomic },
           ...(d.purchaseId ? { purchaseId: d.purchaseId } : {}),
         });
         exceptionIds.push(ex.id);

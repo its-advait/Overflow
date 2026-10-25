@@ -1,5 +1,6 @@
 import type { Db, Repositories } from "@overflow/database";
 import type { ActivityBus, IndexerStatus } from "../chain/bus.js";
+import type { ExceptionService } from "../exceptions/service.js";
 import type { PurchaseService } from "../orchestration/purchase-service.js";
 import type { Ports } from "./ports.js";
 import type { Session } from "./session.js";
@@ -9,6 +10,8 @@ export interface ApiDeps {
   db: Db;
   repos: Repositories;
   purchases: PurchaseService;
+  /** Typed "ask a human" cases and their prepared controller requests. */
+  exceptions: ExceptionService;
   ports: Ports;
   session: Session;
   /** Live feed every committed activity event is published on. */

@@ -2,7 +2,7 @@ import type { PaymentRequirements } from "@overflow/payment-client";
 import type { PurchaseOrder } from "@overflow/schemas";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createPurchaseService } from "../orchestration/purchase-service.js";
-import { ATTACKER, b32, fixtureMissionAndResource, purchaseInput, quoteFor, testDatabase } from "../test-db.js";
+import { ATTACKER, b32, fixtureMissionAndResource, purchaseInput, quoteFor, testDatabase, TREASURY } from "../test-db.js";
 import { createApp } from "./app.js";
 import type { PaymentAdapter } from "./ports.js";
 
@@ -50,6 +50,7 @@ describe("REST API", () => {
       db: handle.db,
       ports: { adapters: { "overflow-facilitator": good.adapter } },
       session: { organizationId: "org-demo", principal: "owner", ownerAddress: null },
+      treasury: TREASURY,
     }).app;
   });
   afterAll(() => handle.close());
@@ -298,11 +299,14 @@ describe("REST API", () => {
       await handle.repos.agents.setNodeId("agent-research", 2);
       const res = await post("/api/agents/agent-research/pause", { reason: "suspicious listing" });
       expect(res.status).toBe(202);
-      const { request } = await json(res);
+      const { request, exception } = await json(res);
       expect(request.status).toBe("pending");
       expect(request.action).toEqual({ kind: "pause", nodeId: 2 });
       expect(request.requestedBy).toBe("owner");
       expect(request.txHash).toBeUndefined();
+      expect(request).toMatchObject({ target: TREASURY, value: "0", exceptionId: exception.id });
+      expect(request.data).toBe("0x136439dd0000000000000000000000000000000000000000000000000000000000000002"); // pause(2)
+      expect(exception).toMatchObject({ type: "PAUSE_REQUEST", status: "open", requestedBy: "owner", subject: "node:2:pause" });
 
       const pending = await handle.repos.controllerRequests.listPending();
       expect(pending).toHaveLength(1);
@@ -316,6 +320,93 @@ describe("REST API", () => {
       expect(JSON.stringify(tree)).not.toContain("paused");
       expect((await post("/api/agents/agent-research/pause", {})).status).toBe(400);
       expect((await post("/api/agents/ghost/pause", { reason: "x" })).status).toBe(404);
+    });
+  });
+
+  describe("exceptions and controller requests", () => {
+    let licenseId: string;
+
+    it("lists open exceptions with their prepared request; controller requests are read-only", async () => {
+      const res = await app.request("/api/exceptions");
+      expect(res.status).toBe(200);
+      const { exceptions } = await json(res);
+      expect(exceptions).toHaveLength(1); // the pause above
+      expect(exceptions[0].type).toBe("PAUSE_REQUEST");
+      expect(exceptions[0].request).toMatchObject({ status: "pending", action: { kind: "pause", nodeId: 2 }, target: TREASURY });
+
+      const cr = await app.request("/api/controller-requests");
+      expect(cr.status).toBe(200);
+      const body = await json(cr);
+      expect(body.treasury).toBe(TREASURY);
+      expect(body.requests).toHaveLength(1);
+      expect(body.requests[0].id).toBe(exceptions[0].request.id);
+      expect((await app.request("/api/controller-requests?status=done")).status).toBe(200);
+      expect((await json(await app.request("/api/controller-requests?status=done"))).requests).toEqual([]);
+      expect((await app.request("/api/controller-requests?status=approved")).status).toBe(400);
+      // Nothing marks a request done over HTTP.
+      expect((await post("/api/controller-requests/" + body.requests[0].id + "/done", {})).status).toBe(404);
+    });
+
+    it("an agent can't decide its own exception; the controller can, once, with who and why", async () => {
+      const { deps } = createApp({ db: handle.db, session: { organizationId: "org-demo", principal: "owner", ownerAddress: null }, treasury: TREASURY });
+      const raised = await deps.exceptions.raise({
+        type: "UNCLEAR_LICENSE",
+        requestedBy: "agent-research",
+        reason: "license says 'internal use' but the mission shares results with a partner",
+        resourceId: "resource-1",
+        license: "unclear",
+        agentId: "agent-research",
+      });
+      licenseId = raised.exception.id;
+
+      const self = await post(`/api/exceptions/${licenseId}/decide`, { decidedBy: "agent-research", decision: "approve", reason: "I need it" });
+      expect(self.status).toBe(403);
+      expect((await json(self)).error.code).toBe("self_resolution");
+      expect((await handle.repos.exceptions.getById(licenseId))!.status).toBe("open");
+
+      expect((await post(`/api/exceptions/${licenseId}/decide`, { decidedBy: "owner", decision: "maybe", reason: "r" })).status).toBe(400);
+      expect((await post(`/api/exceptions/${licenseId}/decide`, { decidedBy: "owner", decision: "approve" })).status).toBe(400);
+
+      const ok = await post(`/api/exceptions/${licenseId}/decide`, { decidedBy: "owner", decision: "approve", reason: "legal confirmed partner sharing is covered" });
+      expect(ok.status).toBe(200);
+      const body = await json(ok);
+      expect(body.exception).toMatchObject({
+        status: "resolved",
+        resolvedBy: "owner",
+        decision: "approve",
+        decisionReason: "legal confirmed partner sharing is covered",
+      });
+      expect(body.request).toBeNull();
+      const recent = await handle.repos.activityEvents.listRecent(1);
+      expect(recent[0]).toMatchObject({ kind: "controller.resolved", agentId: "agent-research" });
+
+      const twice = await post(`/api/exceptions/${licenseId}/decide`, { decidedBy: "owner", decision: "reject", reason: "changed my mind" });
+      expect(twice.status).toBe(409);
+      expect((await json(twice)).error.code).toBe("already_decided");
+      expect((await post("/api/exceptions/nope/decide", { decidedBy: "owner", decision: "approve", reason: "r" })).status).toBe(404);
+
+      const all = await json(await app.request("/api/exceptions?status=all"));
+      expect(all.exceptions.map((e: { type: string }) => e.type).sort()).toEqual(["PAUSE_REQUEST", "UNCLEAR_LICENSE"]);
+      expect((await json(await app.request("/api/exceptions"))).exceptions.map((e: { type: string }) => e.type)).toEqual(["PAUSE_REQUEST"]);
+    });
+
+    it("approving an onchain exception over HTTP is refused; rejecting it rejects the request without a tx", async () => {
+      const [pause] = (await json(await app.request("/api/exceptions"))).exceptions;
+      const approve = await post(`/api/exceptions/${pause.id}/decide`, { decidedBy: "controller", decision: "approve", reason: "yes" });
+      expect(approve.status).toBe(409);
+      const err = (await json(approve)).error;
+      expect(err.code).toBe("onchain_approval_required");
+      expect(err.details.requestId).toBe(pause.request.id);
+      expect((await handle.repos.controllerRequests.getById(pause.request.id))!.status).toBe("pending");
+
+      const reject = await post(`/api/exceptions/${pause.id}/decide`, { decidedBy: "controller", decision: "reject", reason: "the listing checked out" });
+      expect(reject.status).toBe(200);
+      const body = await json(reject);
+      expect(body.exception).toMatchObject({ status: "dismissed", resolvedBy: "controller", decision: "reject" });
+      expect(body.request).toMatchObject({ status: "rejected" });
+      expect(body.request.txHash).toBeUndefined();
+      expect((await json(await app.request("/api/controller-requests"))).requests).toEqual([]);
+      expect((await json(await app.request("/api/controller-requests?status=rejected"))).requests).toHaveLength(1);
     });
   });
 });

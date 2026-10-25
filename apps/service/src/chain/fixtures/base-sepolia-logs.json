@@ -17,6 +17,7 @@
   "bond": "2400000",
   "funding": "50000000",
   "apiAmount": "3000000",
+  "raisedCap": "80000000",
   "blockTimestamp": "1700000000",
   "logs": [
     {
@@ -285,6 +286,18 @@
       "blockTimestamp": "1700000000",
       "transactionHash": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff000b",
       "logIndex": 1
+    },
+    {
+      "address": "0x1111111111111111111111111111111111111111",
+      "topics": [
+        "0x262b1fb8c7accfce794d622a09309bbb0d95dd8b3c96ba2d04912ced08eb2b45",
+        "0x0000000000000000000000000000000000000000000000000000000000000001"
+      ],
+      "data": "0x0000000000000000000000000000000000000000000000000000000002faf0800000000000000000000000000000000000000000000000000000000004c4b400",
+      "blockNumber": "110",
+      "blockTimestamp": "1700000000",
+      "transactionHash": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff000b",
+      "logIndex": 3
     },
     {
       "address": "0x1111111111111111111111111111111111111111",

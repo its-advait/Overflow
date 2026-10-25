@@ -4,6 +4,7 @@ import { InvalidTransitionError } from "@overflow/schemas";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z, ZodError } from "zod";
+import { ExceptionAlreadyDecidedError, OnchainApprovalRequiredError, SelfResolutionError } from "../exceptions/service.js";
 import { ActivePurchaseExistsError, TransitionEvidenceError } from "../orchestration/purchase-service.js";
 import { NotWiredError } from "./ports.js";
 import type { Session } from "./session.js";
@@ -51,6 +52,15 @@ export function toApiError(e: unknown): ApiError {
   if (e instanceof UniqueViolationError) return new ApiError(409, "conflict", e.message, { constraint: e.constraint });
   if (e instanceof QuoteMismatchError) {
     return new ApiError(409, "quote_mismatch", e.message, { field: e.field, expected: e.expected, actual: e.actual });
+  }
+  if (e instanceof SelfResolutionError) {
+    return new ApiError(403, "self_resolution", e.message, { exceptionId: e.exceptionId, principal: e.principal });
+  }
+  if (e instanceof ExceptionAlreadyDecidedError) {
+    return new ApiError(409, "already_decided", e.message, { exceptionId: e.exceptionId, status: e.status });
+  }
+  if (e instanceof OnchainApprovalRequiredError) {
+    return new ApiError(409, "onchain_approval_required", e.message, { exceptionId: e.exceptionId, requestId: e.requestId });
   }
   if (e instanceof NotWiredError) return new ApiError(501, "not_wired", e.message, { port: e.port, lands: e.lands });
   return new ApiError(500, "internal_error", "internal error");

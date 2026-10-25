@@ -23,6 +23,11 @@ export const treasuryAbi = parseAbi([
   "event Reserved(bytes32 indexed digest, uint256 indexed id, address indexed to, uint256 value, uint256 validBefore, bytes32 nonce)",
   "event ReservationReleased(bytes32 indexed digest, uint256 indexed id, uint256 value, bool budgetRestored)",
   "event EscrowFactorySet(address indexed factory)",
+  // owner functions (IOverflowTreasury.sol, person1; identical to Leash). Only used to ENCODE calldata for
+  // ControllerRequests the controller approves in Coinbase Wallet; the service never sends them.
+  "function setAllow(address payee, bool allowed)",
+  "function raiseCap(uint256 id, uint256 newCap)",
+  "function pause(uint256 id)",
   // errors (SPEC "Errors and what the Blocked lane says")
   "error UnknownAgent(address signer)",
   "error PayeeNotAllowed(uint256 node)",

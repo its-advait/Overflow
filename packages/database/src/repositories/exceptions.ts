@@ -1,4 +1,9 @@
-import { ExceptionRecordSchema, type ExceptionRecord } from "@overflow/schemas";
+import {
+  ExceptionRecordSchema,
+  type ExceptionDecision,
+  type ExceptionRecord,
+  type ExceptionStatus,
+} from "@overflow/schemas";
 import { and, eq } from "drizzle-orm";
 import type { Executor } from "../client";
 import { NotFoundError, withDbErrors } from "../errors";
@@ -17,8 +22,12 @@ const toRecord = (r: typeof exceptions.$inferSelect): ExceptionRecord =>
     openedAt: iso(r.openedAt),
     purchaseId: opt(r.purchaseId),
     subject: opt(r.subject),
+    requestedBy: opt(r.requestedBy),
+    details: opt(r.details),
     resolvedBy: opt(r.resolvedBy),
     resolvedAt: isoOpt(r.resolvedAt),
+    decision: opt(r.decision),
+    decisionReason: opt(r.decisionReason),
   });
 
 export function exceptionsRepository(db: Executor) {
@@ -41,7 +50,11 @@ export function exceptionsRepository(db: Executor) {
             status: row.status,
             purchaseId: nul(row.purchaseId),
             subject: nul(row.subject),
+            requestedBy: nul(row.requestedBy),
+            details: nul(row.details),
             resolvedBy: nul(row.resolvedBy),
+            decision: nul(row.decision),
+            decisionReason: nul(row.decisionReason),
             openedAt: new Date(row.openedAt),
             resolvedAt: row.resolvedAt ? new Date(row.resolvedAt) : null,
           })
@@ -55,12 +68,26 @@ export function exceptionsRepository(db: Executor) {
       return r ? toRecord(r) : undefined;
     },
 
-    /** A human (the controller) resolves or dismisses; the row records who. */
-    async resolve(id: string, resolvedBy: string, outcome: "resolved" | "dismissed" = "resolved"): Promise<ExceptionRecord> {
+    /**
+     * Closes the exception and records who did it and why. `resolvedBy` is a
+     * human principal, or "chain" when the indexer saw the confirming event.
+     */
+    async resolve(
+      id: string,
+      resolvedBy: string,
+      outcome: "resolved" | "dismissed" = "resolved",
+      extra: { decision?: ExceptionDecision; decisionReason?: string } = {},
+    ): Promise<ExceptionRecord> {
       const [r] = await withDbErrors(() =>
         db
           .update(exceptions)
-          .set({ status: outcome, resolvedBy, resolvedAt: new Date() })
+          .set({
+            status: outcome,
+            resolvedBy,
+            resolvedAt: new Date(),
+            ...(extra.decision ? { decision: extra.decision } : {}),
+            ...(extra.decisionReason ? { decisionReason: extra.decisionReason } : {}),
+          })
           .where(eq(exceptions.id, id))
           .returning(),
       );
@@ -68,7 +95,7 @@ export function exceptionsRepository(db: Executor) {
       return toRecord(r);
     },
 
-    /** The open exception about `subject` of this type, if any (reconciliation does not reopen a known difference). */
+    /** The open exception about `subject` of this type, if any (a known case is not raised twice). */
     async findOpenBySubject(type: ExceptionRecord["type"], subject: string): Promise<ExceptionRecord | undefined> {
       const [r] = await db
         .select()
@@ -78,7 +105,13 @@ export function exceptionsRepository(db: Executor) {
     },
 
     async listOpen(): Promise<ExceptionRecord[]> {
-      const rows = await db.select().from(exceptions).where(eq(exceptions.status, "open")).orderBy(exceptions.openedAt);
+      return this.list("open");
+    },
+
+    /** Oldest first. */
+    async list(status: ExceptionStatus | "all" = "all"): Promise<ExceptionRecord[]> {
+      const q = db.select().from(exceptions);
+      const rows = await (status === "all" ? q : q.where(eq(exceptions.status, status))).orderBy(exceptions.openedAt);
       return rows.map(toRecord);
     },
   };

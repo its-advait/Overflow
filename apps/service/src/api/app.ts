@@ -1,17 +1,20 @@
 import { randomUUID } from "node:crypto";
 import { createRepositories, type Db } from "@overflow/database";
-import { CHAIN_ID } from "@overflow/schemas";
+import { CHAIN_ID, type Address } from "@overflow/schemas";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { createActivityBus, type ActivityBus, type IndexerStatus } from "../chain/bus.js";
+import { createExceptionService } from "../exceptions/service.js";
 import { createPurchaseService } from "../orchestration/purchase-service.js";
 import type { ApiDeps } from "./deps.js";
 import { ApiError, errorResponse, type ApiEnv } from "./http.js";
 import { defaultPorts, type Ports } from "./ports.js";
 import { activityRoutes } from "./routes/activity.js";
 import { agentRoutes } from "./routes/agents.js";
+import { controllerRequestRoutes } from "./routes/controller-requests.js";
 import { escrowRoutes } from "./routes/escrow.js";
 import { eventsRoutes } from "./routes/events.js";
+import { exceptionRoutes } from "./routes/exceptions.js";
 import { ledgerRoutes } from "./routes/ledger.js";
 import { missionRoutes } from "./routes/missions.js";
 import { purchaseRoutes } from "./routes/purchases.js";
@@ -28,12 +31,15 @@ export interface CreateAppOptions {
   bus?: ActivityBus | undefined;
   /** Real indexer state. Default: idle, "no indexer attached". */
   indexerStatus?: (() => IndexerStatus) | undefined;
+  /** The deployed treasury (from deployments/base-sepolia.json). Without it, onchain exceptions answer 501: no address is invented. */
+  treasury?: Address | undefined;
 }
 
 /**
  * The REST API of docs/SPEC.md "API". There is no /api/execute and no route
  * accepts calldata, ABI-encoded data or raw transactions: agents propose and
- * sign; only the contracts move USDC.
+ * sign; only the contracts move USDC. The API does EMIT prepared calldata
+ * (controller requests) for the controller to approve in Coinbase Wallet.
  */
 export function createApp(opts: CreateAppOptions) {
   const base = defaultPorts();
@@ -42,6 +48,7 @@ export function createApp(opts: CreateAppOptions) {
     db: opts.db,
     repos: createRepositories(opts.db),
     purchases: createPurchaseService(opts.db, { publish: (event) => bus.publish(event) }),
+    exceptions: createExceptionService({ db: opts.db, treasury: opts.treasury ?? null, bus }),
     bus,
     indexerStatus: opts.indexerStatus ?? (() => ({ state: "idle", reason: "no indexer attached" })),
     ports: {
@@ -80,6 +87,8 @@ export function createApp(opts: CreateAppOptions) {
   app.route("/api/escrow", escrowRoutes(deps));
   app.route("/api/agents", agentRoutes(deps));
   app.route("/api/activity", activityRoutes(deps));
+  app.route("/api/exceptions", exceptionRoutes(deps));
+  app.route("/api/controller-requests", controllerRequestRoutes(deps));
   app.route("/api", ledgerRoutes(deps));
   app.route("/events", eventsRoutes(deps));
 

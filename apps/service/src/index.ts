@@ -64,6 +64,7 @@ const { app } = createApp({
   db: database.db,
   bus,
   ...(reconciliation ? { ports: { reconciliation: { run: (trigger) => reconciliation!.run(trigger) } } } : {}),
+  ...(indexerConfig.ok ? { treasury: indexerConfig.config.treasury } : {}),
   indexerStatus: () => indexer?.status() ?? { state: "idle", reason: indexerConfig.ok ? "not started" : indexerConfig.reason },
   status: {
     database: { dialect: database.dialect, migrationsFolder: database.migrationsFolder, migrated: true },
@@ -74,6 +75,9 @@ const { app } = createApp({
       sellers: SELLERS_STATUS,
       chain: chainStatus,
       ledger: ledgerStatus,
+      exceptions: indexerConfig.ok
+        ? `controller requests target treasury ${indexerConfig.config.treasury}; done only on indexed AllowSet/CapRaised/NodePaused`
+        : "offchain exceptions only: no treasury address (onchain requests answer 501 until a deployments file exists)",
     },
   },
 });

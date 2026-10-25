@@ -373,9 +373,15 @@ export const exceptions = pgTable(
     amount: money("amount"),
     status: text("status").notNull(),
     purchaseId: text("purchase_id").references(() => purchases.id),
-    /** What the exception is about ("treasury", "escrow:<purchaseId>", "event:<key>"); one open row per subject. */
+    /** What the exception is about ("treasury", "escrow:<purchaseId>", "payee:<address>"); one open row per subject. */
     subject: text("subject"),
+    /** Who raised it (agent id, principal, "system:reconciliation"); may never equal resolved_by. */
+    requestedBy: text("requested_by"),
+    /** Per-type payload, validated by Zod at the boundary. */
+    details: jsonb("details"),
     resolvedBy: text("resolved_by"),
+    decision: text("decision"),
+    decisionReason: text("decision_reason"),
     openedAt: ts("opened_at").notNull().defaultNow(),
     resolvedAt: ts("resolved_at"),
   },
@@ -386,17 +392,35 @@ export const exceptions = pgTable(
   ],
 );
 
-export const controllerRequests = pgTable("controller_requests", {
-  id: text("id").primaryKey(),
-  /** ControllerAction discriminated union, validated by Zod at the boundary. */
-  action: jsonb("action").notNull(),
-  requestedBy: text("requested_by").notNull(),
-  reason: text("reason").notNull(),
-  status: text("status").notNull(),
-  txHash: text("tx_hash"),
-  createdAt: ts("created_at").notNull().defaultNow(),
-  resolvedAt: ts("resolved_at"),
-});
+/**
+ * A prepared owner call the controller approves in Coinbase Wallet. The row
+ * only describes the call (target, calldata, no ETH); nothing here sends it,
+ * and `status` becomes "done" only when the indexer stores the matching event.
+ */
+export const controllerRequests = pgTable(
+  "controller_requests",
+  {
+    id: text("id").primaryKey(),
+    /** ControllerAction discriminated union, validated by Zod at the boundary. */
+    action: jsonb("action").notNull(),
+    exceptionId: text("exception_id").references(() => exceptions.id),
+    requestedBy: text("requested_by").notNull(),
+    reason: text("reason").notNull(),
+    target: text("target").notNull(),
+    data: text("data").notNull(),
+    value: money("value").notNull(),
+    summary: text("summary").notNull(),
+    status: text("status").notNull(),
+    txHash: text("tx_hash"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    resolvedAt: ts("resolved_at"),
+  },
+  (t) => [
+    index("controller_requests_status_idx").on(t.status),
+    index("controller_requests_exception_idx").on(t.exceptionId),
+    check("controller_requests_value_nonneg", nonNegative(t.value)),
+  ],
+);
 
 /**
  * Stored results of idempotent API calls (Idempotency-Key header). A repeat

@@ -1,5 +1,6 @@
+import { toFunctionSelector, type AbiFunction } from "viem";
 import { describe, expect, it } from "vitest";
-import { escrowEvents, eventSignature, EVENT_BY_TOPIC, factoryEvents, TRANSFER_TOPIC, treasuryEvents, usdcEvents } from "./abi.js";
+import { escrowEvents, eventSignature, EVENT_BY_TOPIC, factoryEvents, TRANSFER_TOPIC, treasuryAbi, treasuryEvents, usdcEvents } from "./abi.js";
 
 // Pinned so a change to the provisional ABI shows up in review. The contract
 // author must emit these signatures or edit abi.ts and this snapshot together.
@@ -30,6 +31,15 @@ describe("provisional event ABI", () => {
       "CheatProven(address,uint256)",
       "BondForfeited(bytes32,address,uint256)",
     ]);
+  });
+  it("owner function selectors used for ControllerRequest calldata", () => {
+    const fns = (treasuryAbi as readonly unknown[]).filter((i): i is AbiFunction => (i as { type: string }).type === "function");
+    expect(fns.map((f) => `${f.name}(${f.inputs.map((i) => i.type).join(",")})`)).toEqual([
+      "setAllow(address,bool)",
+      "raiseCap(uint256,uint256)",
+      "pause(uint256)",
+    ]);
+    expect(fns.map(toFunctionSelector)).toEqual(["0xde6a0525", "0xf4f0fc21", "0x136439dd"]);
   });
   it("USDC Transfer (the only third-party event the indexer reads)", () => {
     expect(usdcEvents.map(eventSignature)).toEqual(["Transfer(address,address,uint256)"]);

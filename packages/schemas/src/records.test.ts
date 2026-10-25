@@ -176,7 +176,7 @@ describe("ActivityEvent / ExceptionRecord / ControllerRequest", () => {
     expect(
       ExceptionRecordSchema.safeParse({
         id: "x1",
-        type: "reconciliation-difference",
+        type: "RECONCILIATION_DIFF",
         reason: "ledger off by 0.50 USDC",
         amountAtomic: "500000",
         status: "open",
@@ -195,7 +195,17 @@ describe("ActivityEvent / ExceptionRecord / ControllerRequest", () => {
   });
 
   it("controller requests are a discriminated union on action.kind", () => {
-    const base = { id: "c1", requestedBy: "research", reason: "need more budget", status: "pending", createdAt: NOW };
+    const base = {
+      id: "c1",
+      requestedBy: "research",
+      reason: "need more budget",
+      target: ADDR,
+      data: "0xdeadbeef",
+      value: "0",
+      summary: "owner call",
+      status: "pending",
+      createdAt: NOW,
+    };
     expect(
       ControllerRequestSchema.safeParse({
         ...base,

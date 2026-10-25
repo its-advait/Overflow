@@ -149,7 +149,7 @@ describe("repositories return Zod-validated rows", () => {
     expect((await sellerHistory.listFlagged()).map((s) => s.sellerAddress)).toEqual([ADDR2]);
 
     const ex = await exceptions.open({
-      type: "reconciliation-difference",
+      type: "RECONCILIATION_DIFF",
       reason: "ledger differs from chain by 0.50 USDC (planted)",
       amountAtomic: "500000",
       purchaseId,
@@ -164,10 +164,14 @@ describe("repositories return Zod-validated rows", () => {
       action: { kind: "raise-cap", nodeId: 2, newCapAtomic: "100000000" },
       requestedBy: fixture.research.id,
       reason: "mission needs more budget",
+      target: ADDR2,
+      data: "0xdeadbeef",
+      value: "0",
+      summary: "raiseCap(2, 100000000)",
     });
     expect(ControllerRequestSchema.safeParse(cr).success).toBe(true);
-    await expect(controllerRequests.resolve(cr.id, "executed")).rejects.toThrow(/txHash/);
-    expect((await controllerRequests.resolve(cr.id, "executed", b32(900))).txHash).toBe(b32(900));
+    await expect(controllerRequests.resolve(cr.id, "done")).rejects.toThrow(/txHash/);
+    expect((await controllerRequests.resolve(cr.id, "done", b32(900))).txHash).toBe(b32(900));
     expect((await controllerRequests.listPending()).length).toBe(0);
 
     const ev = await activityEvents.insert({

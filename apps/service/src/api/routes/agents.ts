@@ -1,4 +1,4 @@
-import { AgentRecordSchema, ControllerRequestSchema, IdSchema, type AgentRecord } from "@overflow/schemas";
+import { AgentRecordSchema, ControllerRequestSchema, ExceptionRecordSchema, IdSchema, type AgentRecord } from "@overflow/schemas";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { ApiDeps } from "../deps.js";
@@ -17,7 +17,7 @@ const AgentTreeNodeSchema: z.ZodType<AgentTreeNode> = AgentRecordSchema.extend({
 
 const TreeResponse = z.object({ agents: z.array(AgentRecordSchema), tree: z.array(AgentTreeNodeSchema) });
 const PauseBody = z.object({ reason: z.string().min(1).max(500) });
-const PauseResponse = z.object({ request: ControllerRequestSchema });
+const PauseResponse = z.object({ exception: ExceptionRecordSchema, request: ControllerRequestSchema });
 const IdParams = z.object({ id: IdSchema });
 
 export function buildTree(agents: AgentRecord[]): AgentTreeNode[] {
@@ -40,10 +40,10 @@ export function agentRoutes(deps: ApiDeps) {
   });
 
   /**
-   * Pause opens a controller approval. It records a ControllerRequest the
-   * human approves in Coinbase Wallet (P4.5); the treasury's `pause(nodeId)`
-   * emits NodePaused and only that event makes the agent paused. No local
-   * flag is written anywhere.
+   * Pause opens a PAUSE_REQUEST exception with a prepared ControllerRequest
+   * (`pause(nodeId)` calldata) the human approves in Coinbase Wallet. The
+   * treasury's NodePaused event is the only thing that marks it done and the
+   * only source of "paused". No local flag is written anywhere.
    */
   app.post("/:id/pause", async (c) => {
     const { id } = parseParams(c, IdParams);
@@ -56,17 +56,15 @@ export function agentRoutes(deps: ApiDeps) {
     if (!agent.nodeId) {
       throw new ApiError(409, "no_node_yet", `agent ${id} has no treasury node onchain yet; there is nothing to pause`);
     }
-    const request = await deps.repos.controllerRequests.insert({
-      action: { kind: "pause", nodeId: agent.nodeId },
+    const r = await deps.exceptions.raise({
+      type: "PAUSE_REQUEST",
       requestedBy: session.principal,
-      reason: body.reason,
-    });
-    await deps.repos.activityEvents.insert({
-      kind: "controller.requested",
-      message: `pause requested for node ${agent.nodeId} (${agent.name}): ${body.reason}; awaiting controller approval`,
+      reason: `${body.reason} (node ${agent.nodeId}, ${agent.name})`,
+      nodeId: agent.nodeId,
       agentId: agent.id,
     });
-    return respond(c, PauseResponse, { request }, 202);
+    if (!r.request) throw new ApiError(500, "internal_error", "pause exception has no controller request"); // unreachable: onchain type
+    return respond(c, PauseResponse, { exception: r.exception, request: r.request }, 202);
   });
 
   return app;

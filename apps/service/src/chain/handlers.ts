@@ -10,6 +10,7 @@ import {
 } from "@overflow/schemas";
 import type { PurchaseService, TransitionSource } from "../orchestration/purchase-service.js";
 import type { DecodedLog, JsonArgs } from "./decode.js";
+import { completeControllerRequests } from "../exceptions/service.js";
 import { isKnownEscrow, purchaseForOrder as purchaseForOrderOn, waitingPurchaseForPayee } from "./lookup.js";
 
 // ---------------------------------------------------------------------------
@@ -77,6 +78,9 @@ async function unmatched(ctx: HandlerContext, kind: ActivityKind, what: string, 
   ctx.warn(`${ctx.decoded.eventName} for order ${orderId} matches no purchase`);
   return { events: [await note(ctx, kind, `${what} for order ${orderId} (no matching purchase)`)] };
 }
+
+const completed = (ctx: HandlerContext): Promise<ActivityEvent[]> =>
+  completeControllerRequests(ctx.repos, { eventName: ctx.decoded.eventName, args: ctx.decoded.args, txHash: ctx.txHash });
 
 type Handler = (ctx: HandlerContext) => Promise<HandlerResult>;
 
@@ -164,26 +168,24 @@ const handlers: Record<string, Handler> = {
     return { events: [event], purchaseId: purchase?.id };
   },
 
+  // Owner actions. Each may complete pending ControllerRequests: the stored event is the only thing that marks one done.
   async NodePaused(ctx) {
     const a = ctx.decoded.args;
-    return { events: [await note(ctx, "treasury.node", `NodePaused: node ${str(a, "id")} paused by ${str(a, "by")}`)] };
+    const event = await note(ctx, "treasury.node", `NodePaused: node ${str(a, "id")} paused by ${str(a, "by")}`);
+    return { events: [event, ...(await completed(ctx))] };
   },
   async NodeUnpaused(ctx) {
     return { events: [await note(ctx, "treasury.node", `NodeUnpaused: node ${str(ctx.decoded.args, "id")} unpaused`)] };
   },
   async CapRaised(ctx) {
     const a = ctx.decoded.args;
-    return {
-      events: [await note(ctx, "treasury.node", `CapRaised: node ${str(a, "id")} cap ${str(a, "oldCap")} -> ${str(a, "newCap")}`)],
-    };
+    const event = await note(ctx, "treasury.node", `CapRaised: node ${str(a, "id")} cap ${str(a, "oldCap")} -> ${str(a, "newCap")}`);
+    return { events: [event, ...(await completed(ctx))] };
   },
   async AllowSet(ctx) {
     const a = ctx.decoded.args;
-    return {
-      events: [
-        await note(ctx, "treasury.policy", `AllowSet: payee ${str(a, "payee")} ${a["allowed"] === true ? "allowed" : "removed"}`),
-      ],
-    };
+    const event = await note(ctx, "treasury.policy", `AllowSet: payee ${str(a, "payee")} ${a["allowed"] === true ? "allowed" : "removed"}`);
+    return { events: [event, ...(await completed(ctx))] };
   },
   async EscrowFactorySet(ctx) {
     return {

@@ -104,8 +104,8 @@ describe("chain indexer (SIMULATED fixture replay)", () => {
     const r = await indexer.tick();
     expect(r.fromBlock).toBe(100n);
     expect(r.toBlock).toBe(115n);
-    expect(r.logsSeen).toBe(26);
-    expect(r.logsInserted).toBe(26);
+    expect(r.logsSeen).toBe(27);
+    expect(r.logsInserted).toBe(27);
 
     // Every log is a chain_transactions row, confirmed, with its decoded args as strings.
     const p1Tx = await handle.repos.chainTransactions.listByPurchase("p1");

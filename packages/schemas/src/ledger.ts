@@ -4,6 +4,7 @@ import {
   AddressSchema,
   AtomicAmountSchema,
   Bytes32Schema,
+  HexSchema,
   IdSchema,
   IsoDateTimeSchema,
   UintStringSchema,
@@ -138,17 +139,35 @@ export type ActivityEvent = z.infer<typeof ActivityEventSchema>;
 // Exceptions (SPEC "When it asks a human")
 // ---------------------------------------------------------------------------
 
-export const ExceptionTypeSchema = z.enum([
-  "reconciliation-difference",
-  "new-payee",
-  "budget-raise",
-  "unclear-license",
-  "low-confidence-sample",
-  "dispute",
-]);
+/**
+ * Every case where Overflow must ask a human. The first three need an owner
+ * transaction (setAllow, raiseCap, pause) and carry a prepared ControllerRequest;
+ * the others are decided offchain by the controller.
+ */
+export const EXCEPTION_TYPES = [
+  "NEW_PAYEE",
+  "CAP_RAISE",
+  "PAUSE_REQUEST",
+  "UNCLEAR_LICENSE",
+  "LOW_CONFIDENCE_SAMPLE",
+  "RECONCILIATION_DIFF",
+  "DISPUTE_WITHOUT_PROOF",
+] as const;
+export const ExceptionTypeSchema = z.enum(EXCEPTION_TYPES);
 export type ExceptionType = z.infer<typeof ExceptionTypeSchema>;
 
+/** Exception types whose resolution is a treasury owner call confirmed onchain. */
+export const ONCHAIN_EXCEPTION_TYPES = ["NEW_PAYEE", "CAP_RAISE", "PAUSE_REQUEST"] as const satisfies readonly ExceptionType[];
+export type OnchainExceptionType = (typeof ONCHAIN_EXCEPTION_TYPES)[number];
+export const isOnchainExceptionType = (t: ExceptionType): t is OnchainExceptionType =>
+  (ONCHAIN_EXCEPTION_TYPES as readonly string[]).includes(t);
+
 export const ExceptionStatusSchema = z.enum(["open", "resolved", "dismissed"]);
+export type ExceptionStatus = z.infer<typeof ExceptionStatusSchema>;
+
+/** The controller's call on an exception. Onchain types are only ever approved by the indexed event. */
+export const ExceptionDecisionSchema = z.enum(["approve", "reject"]);
+export type ExceptionDecision = z.infer<typeof ExceptionDecisionSchema>;
 
 export const ExceptionRecordSchema = z.object({
   id: IdSchema,
@@ -158,10 +177,17 @@ export const ExceptionRecordSchema = z.object({
   status: ExceptionStatusSchema,
   openedAt: IsoDateTimeSchema,
   purchaseId: IdSchema.optional(),
-  /** What the exception is about, e.g. "treasury", "escrow:<purchaseId>", "event:<txHash>:<logIndex>". One open exception per subject. */
+  /** What the exception is about, e.g. "treasury", "escrow:<purchaseId>", "payee:<address>". One open exception per subject. */
   subject: z.string().min(1).optional(),
+  /** Who raised it: an agent id, the session principal, or "system:reconciliation". May never equal the decider. */
+  requestedBy: z.string().min(1).optional(),
+  /** Typed per-type payload (payee, nodeId + newCapAtomic, resourceId + license, sampleId + confidence, ...). */
+  details: z.record(z.string(), z.unknown()).optional(),
   resolvedBy: z.string().min(1).optional(),
   resolvedAt: IsoDateTimeSchema.optional(),
+  decision: ExceptionDecisionSchema.optional(),
+  /** The controller's stated why (or the confirming chain event for onchain types). */
+  decisionReason: z.string().min(1).optional(),
 });
 export type ExceptionRecord = z.infer<typeof ExceptionRecordSchema>;
 
@@ -232,13 +258,23 @@ export const ControllerActionSchema = z.discriminatedUnion("kind", [
 ]);
 export type ControllerAction = z.infer<typeof ControllerActionSchema>;
 
-export const ControllerRequestStatusSchema = z.enum(["pending", "approved", "rejected", "executed"]);
+/** `done` is set only by the indexer when the matching treasury event is stored; `rejected` by the controller. */
+export const ControllerRequestStatusSchema = z.enum(["pending", "done", "rejected"]);
+export type ControllerRequestStatus = z.infer<typeof ControllerRequestStatusSchema>;
 
 export const ControllerRequestSchema = z.object({
   id: IdSchema,
   action: ControllerActionSchema,
+  /** The exception this request resolves. */
+  exceptionId: IdSchema.optional(),
   requestedBy: IdSchema,
   reason: z.string().min(1),
+  /** The prepared owner call for Coinbase Wallet `send_calls`: the treasury, its ABI-encoded calldata, no ETH. */
+  target: AddressSchema,
+  data: HexSchema,
+  value: AtomicAmountSchema,
+  /** One human-readable line describing exactly what `data` does. */
+  summary: z.string().min(1),
   status: ControllerRequestStatusSchema,
   createdAt: IsoDateTimeSchema,
   resolvedAt: IsoDateTimeSchema.optional(),
