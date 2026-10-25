@@ -17,9 +17,13 @@ function bigEndianUint64(bytes: Uint8Array): bigint {
   return v;
 }
 
-/** Period column -> the month a registry would publish after ("2021-01" -> 2021-02-01; "2024" -> 2025-01-01). */
-function expectedTimestamp(period: string): bigint {
-  const lastMonth = /^\d{4}$/.test(period) ? `${period}-12` : period;
+/**
+ * Period column -> the month a registry would publish after ("2021-01" -> 2021-02-01). An annual row aggregates the
+ * months of that year inside the listing's coverage, so a partial last year (2026 ends 2026-09) publishes 2026-10-01.
+ */
+function expectedTimestamp(period: string, coverageEnd: string): bigint {
+  const endMonth = coverageEnd.slice(0, 7);
+  const lastMonth = /^\d{4}$/.test(period) ? (endMonth.startsWith(period) ? endMonth : `${period}-12`) : period;
   return publicationTimestamp(lastMonth);
 }
 
@@ -41,7 +45,7 @@ describe("committed records use the contract's byte layout", () => {
         const decoded = decodePayload(payload);
         expect(onChainRead).toBe(decoded.timestamp);
         const period = decoded.row.split(",")[0] as string;
-        expect(onChainRead).toBe(expectedTimestamp(period));
+        expect(onChainRead, `${listing.id} row ${decoded.row}`).toBe(expectedTimestamp(period, listing.coverage.dateRange.end));
         min = min === undefined || onChainRead < min ? onChainRead : min;
       }
       expect(min?.toString()).toBe(manifest.minTimestamp);

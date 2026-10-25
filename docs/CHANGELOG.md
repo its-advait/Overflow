@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- docs(deploy): read-only Base Sepolia deployment preflight (`docs/deploy-preflight.md`): manifest, blockers, rollback plan, operator commands. Fix: the datasets layout test's annual-row expectation.
 - fix(scripts): `pnpm contracts:export` finds the escrow implementation in the factory tx's nested creates (matched by init code) instead of exporting `null`.
 - fix(recourse-crypto,datasets): records are `timestamp(8) || data(87)` with no version byte, as `RecourseCrypto.sol` reads them; vectors and `data/` regenerated; layout tests on both sides.
 - merge: `main` (datasets + catalog, database, REST API, chain indexer + SSE, ledger, exceptions, direct-API sellers, oracle, x402 client) integrated into `person1`. One recourse-crypto (`main`'s modules, `person1`'s forge-pinned vectors ported), one payment-client barrel (adapters at `@overflow/payment-client/adapters`), one relayer (seller paywall settles through the facilitator app in-process), one service entry point.

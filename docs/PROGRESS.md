@@ -918,7 +918,7 @@ Follow-ups: a facilitator route for `releaseClosed` (the Coinbase adapter's reco
 |---|---|
 | first 2021-2022 record, `uint64(payload[0:8])` | 1612137600 (2021-02-01T00:00:00Z) |
 | second `pnpm datasets:generate` + `vectors` | byte-identical (shasum of 13 data files + fixture) |
-| `vitest run packages/recourse-crypto packages/datasets` | 9 files, 58 tests passed |
+| `vitest run packages/recourse-crypto packages/datasets` | 9 files, 58 tests passed, run before `records-layout.test.ts` existed. That file was committed unrun and failed on annual rows (a 2026 annual row publishes after 2026-09, not December). Fixed in the preflight commit; `vitest run packages/datasets`: 2 files, 11 tests passed. |
 | `forge test` | 19 suites, 194 passed, 0 failed, 1 skipped (fork test) |
 | `pnpm -r typecheck` / `pnpm lint` | exit 0 / exit 0 |
 
@@ -935,3 +935,29 @@ Follow-ups: a facilitator route for `releaseClosed` (the Coinbase adapter's reco
 | `vitest run scripts` (`lib/broadcast.test.ts`: treasury-only shape, factory with nested create, no match, two matches, direct CREATE, errors) | 7 passed |
 | `pnpm contracts:export` against the existing treasury-only broadcast | identical output: `git status -- packages/schemas` empty |
 | `pnpm --filter @overflow/scripts typecheck` / `pnpm lint` | exit 0 / exit 0 |
+
+## 2026-10-24: Base Sepolia deployment preflight (read-only)
+
+### Built
+- `docs/deploy-preflight.md`: the deployment manifest. Chain and toolchain facts, every public address with its live balance and nonce, the three predicted contract addresses (the dry run logged the same), configuration audited by variable name and format only, the four anticipated transactions with gas limits and the forge ETH estimate, funding requirements per account, a source checklist with line references, the pipeline review (deploy.sh, exporter, ABI freshness, boot detection), blockers, and a rollback/recovery plan with the exact commands. Nothing was deployed, broadcast, funded or signed; no keystore, password file or private key was read.
+- `packages/datasets/src/records-layout.test.ts`: annual rows expect the publication month after the listing's coverage end for a partial last year (2026 ends 2026-09), not December.
+
+### Findings
+- **Blocker: deployer gas.** The deployer holds 0.0000873 ETH; the dry run estimates 0.0000805 ETH (7,319,349 gas at 0.011 gwei max fee). 1.08x margin; fund to at least 0.002 ETH.
+- **Password entry.** `DEPLOYER_PASSWORD_FILE` is unset, so `pnpm contracts:deploy` must run in an interactive terminal (forge prompts) or get a chmod-600 password file.
+- `ROOT_EXPIRY` defaults to deploy time + 7 days; set it if the demo is later. `DEMO_PAYEE_ADDRESS` unset: no payee allowlisted at deploy; direct-API payees need `setAllow` later.
+- Not blocking the deploy: `RELAYER_ACCOUNT`/`RELAYER_PASSWORD_FILE` missing (service cannot boot), relayer has 0 ETH and holds 1 USDC (policy: gas only), `SELLER_KEYS` empty, old treasury `0xd3A7…8291` has the pre-P1.6 ABI and 0 USDC and is retired by the export.
+
+### Verified (real output, 2026-10-24)
+| Check | Result |
+|---|---|
+| `forge build --sizes` | Treasury 12,594 / Factory 2,562 / Escrow 8,917 runtime bytes |
+| `forge test` | 194 passed, 0 failed, 1 skipped |
+| `pnpm contracts:invariant` | 4 passed |
+| `pnpm contracts:fork` (live USDC) | 7 passed |
+| `DRY_RUN=1 pnpm contracts:deploy` (`--sender` deployer) | success; treasury `0x7479939c9397FF36C35c4C8F7425B254167De5A6`, factory `0xddc66246C333cDC8B918ced02E4d84aCb6B2E8b0`, implementation `0x30c9F9c4d3f50df4d13f6bfB05429d3302Dc85c6` |
+| `pnpm test` | 56 files passed, 1 skipped (live-key oracle test); 518 tests passed, 1 skipped |
+| `pnpm -r typecheck` / `pnpm lint` | exit 0 / exit 0 |
+
+### Open issues
+- The live deployment waits for the operator (funding + password entry). Phase 3 (Recourse sellers) proceeds in code and unit tests; its on-chain DONE WHEN runs after the deploy and funding.
