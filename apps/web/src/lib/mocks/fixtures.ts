@@ -67,7 +67,7 @@ const T2 = "2026-10-24T17:12:00.000Z";
 const T3 = "2026-10-24T17:20:00.000Z";
 const T4 = "2026-10-24T17:41:00.000Z";
 const T5 = "2026-10-24T18:02:00.000Z";
-const EXPIRES = "2026-10-24T19:00:00.000Z";
+const EXPIRES = "2027-01-31T19:00:00.000Z";
 
 // Agents -------------------------------------------------------------------
 
@@ -133,7 +133,7 @@ export const requests: ResourceRequestRecord[] = parseAll(ResourceRequestRecordS
     format: ["csv", "parquet"],
     license: "company-use",
     freshness: { maxAgeDays: 45 },
-    maxPriceAtomic: "9000000",
+    maxPriceAtomic: "15000000",
     createdAt: T1,
   },
   {
@@ -149,10 +149,46 @@ export const requests: ResourceRequestRecord[] = parseAll(ResourceRequestRecordS
     format: ["csv"],
     license: "company-use",
     freshness: { maxAgeDays: 60 },
-    maxPriceAtomic: "8000000",
+    maxPriceAtomic: "7000000",
+    createdAt: T1,
+  },
+  // Two single-user requests for the same weekly California basket: the SPEC acceptance case
+  // "same dataset with a single-user license gives no merge". Finance (lowest id) gets the purchase.
+  {
+    id: "req-finance-ca-weekly",
+    missionId: mission.id,
+    agentId: "agent-finance",
+    status: "matched",
+    topic: "grocery basket California weekly",
+    regions: ["US-CA"],
+    dateRange: { start: "2025-01-06", end: "2025-09-29" },
+    granularity: "weekly",
+    requiredFields: ["sku", "price"],
+    format: ["csv"],
+    license: "single-user",
+    freshness: { maxAgeDays: 60 },
+    maxPriceAtomic: "11000000",
+    createdAt: T1,
+  },
+  {
+    id: "req-research-ca-weekly",
+    missionId: mission.id,
+    agentId: "agent-research",
+    status: "open",
+    topic: "grocery basket California weekly",
+    regions: ["US-CA"],
+    dateRange: { start: "2025-01-06", end: "2025-09-29" },
+    granularity: "weekly",
+    requiredFields: ["sku", "price"],
+    format: ["csv"],
+    license: "single-user",
+    freshness: { maxAgeDays: 60 },
+    maxPriceAtomic: "9000000",
     createdAt: T1,
   },
 ]);
+
+export const requestById = (id: string): ResourceRequestRecord | undefined => requests.find((r) => r.id === id);
 
 // Listings (SIMULATED sellers and datasets) ---------------------------------
 
@@ -176,7 +212,7 @@ export const resources: ResourceRecord[] = parseAll(ResourceRecordSchema, [
       granularity: "monthly",
       fields: ["sku", "region", "price", "unit", "store_count"],
       format: "csv",
-      asOf: "2025-10-01",
+      asOf: "2026-10-01",
     },
     license: "company-use",
     priceAtomic: "12000000",
@@ -196,7 +232,7 @@ export const resources: ResourceRecord[] = parseAll(ResourceRecordSchema, [
       granularity: "weekly",
       fields: ["sku", "price", "store"],
       format: "csv",
-      asOf: "2025-10-03",
+      asOf: "2026-10-03",
     },
     license: "single-user",
     priceAtomic: "9000000",
@@ -281,8 +317,8 @@ export const purchaseGroup: PurchaseGroup = PurchaseGroupSchema.parse({
   resourceId: "res-cpi-national",
   payingNodeId: 1,
   requestIds: ["req-finance-cpi", "req-research-cpi"],
-  mergeReason:
-    "Merge: all 9 rules pass; price 12.00 USDC vs 17.00 USDC separately; company-use license with 5 seats for 2 agents.",
+  // Exact wording of packages/fusion/src/rules.ts and payer.ts, as the service stores it.
+  mergeReason: "Merge: all 9 rules pass for req-finance-cpi, req-research-cpi on res-cpi-national. lowest common ancestor agent-orchestrator pays from node 1",
   createdAt: T2,
 });
 
@@ -347,7 +383,8 @@ export const purchases: PurchaseRecord[] = parseAll(PurchaseRecordSchema, [
       { agentId: "agent-research", department: "research", amountAtomic: "3818182" },
     ],
     purchaseGroupId: purchaseGroup.id,
-    oracleReason: "Covers both requests' regions and fields at monthly granularity; cheapest listing that passes every term.",
+    oracleReason:
+      "Chose res-cpi-national from sim-seller-northstar at 12.00 USDC (1.71 USDC per covered requirement, 7 requirements, as of 2026-10-01).\nThis is a recommendation; it authorizes no payment.",
     authorizationDigest: b32("d16e570001"),
     txHashes: [TX.fundMerged, TX.payoutMerged],
     updatedAt: T5,
@@ -379,8 +416,10 @@ export const purchases: PurchaseRecord[] = parseAll(PurchaseRecordSchema, [
     resourceId: "res-cpi-california",
     escrowAddress: ESCROWS.california,
     status: "PAYMENT_PENDING",
-    participatingAgentIds: ["agent-research"],
-    allocations: [{ agentId: "agent-research", department: "research", amountAtomic: "9000000" }],
+    participatingAgentIds: ["agent-finance"],
+    allocations: [{ agentId: "agent-finance", department: "finance", amountAtomic: "9000000" }],
+    oracleReason:
+      "Chose res-cpi-california from sim-seller-pacific at 9.00 USDC (1.50 USDC per covered requirement, 6 requirements, as of 2026-10-03).\nThis is a recommendation; it authorizes no payment.",
     authorizationDigest: b32("d16e570004"),
     updatedAt: T4,
   }),
@@ -487,7 +526,7 @@ export const chainTransactions: ChainTransaction[] = parseAll(ChainTransactionSc
   tx({ id: "ctx-merged-paidout", purchaseId: "pur-merged-national", txHash: TX.payoutMerged, eventName: "PaidOut", blockNumber: "49850410", observedAt: T5 }),
   tx({ id: "ctx-weather-funded", purchaseId: "pur-weather-daily", txHash: TX.fundWeather, eventName: "OrderFunded", blockNumber: "49850131", observedAt: T3 }),
   tx({ id: "ctx-oregon-funded", purchaseId: "pur-oregon-monthly", txHash: TX.fundOregon, eventName: "OrderFunded", blockNumber: "49850140", observedAt: T3 }),
-  tx({ id: "ctx-oregon-revealed", purchaseId: "pur-oregon-monthly", txHash: TX.revealOregon, eventName: "Revealed", blockNumber: "49850300", observedAt: T4 }),
+  tx({ id: "ctx-oregon-revealed", purchaseId: "pur-oregon-monthly", txHash: TX.revealOregon, eventName: "KeyRevealed", blockNumber: "49850300", observedAt: T4 }),
   tx({ id: "ctx-freight-funded", purchaseId: "pur-freight-weekly", txHash: TX.fundFreight, eventName: "OrderFunded", blockNumber: "49850150", observedAt: T3 }),
   tx({ id: "ctx-freight-refunded", purchaseId: "pur-freight-weekly", txHash: TX.refundFreight, eventName: "Refunded", blockNumber: "49850420", observedAt: T5 }),
 ]);
@@ -606,7 +645,8 @@ export const activity: ActivityEvent[] = parseAll(ActivityEventSchema, [
     id: "ev-04",
     at: T2,
     kind: "oracle.recommendation",
-    message: "Oracle ranked res-cpi-national first for req-finance-cpi (2 rejected). This is a recommendation; it authorizes no payment.",
+    message:
+      "request req-finance-cpi: chose res-cpi-national (rejected res-cpi-california: license,region; res-cpi-oregon: region; res-freight-index: field; res-weather-daily: field). This is a recommendation; it authorizes no payment.",
     missionId: mission.id,
     agentId: "agent-finance",
     simulated: true,
@@ -615,9 +655,20 @@ export const activity: ActivityEvent[] = parseAll(ActivityEventSchema, [
     id: "ev-05",
     at: T2,
     kind: "fusion.decision",
-    message: "Fusion: merge req-finance-cpi + req-research-cpi on res-cpi-national; all 9 rules pass; payer node 1 (mission-root).",
+    message: "Merge: all 9 rules pass for req-finance-cpi, req-research-cpi on res-cpi-national. lowest common ancestor agent-orchestrator pays from node 1.",
     missionId: mission.id,
     purchaseId: "pur-merged-national",
+    simulated: true,
+  },
+  {
+    id: "ev-05b",
+    at: T2,
+    kind: "fusion.decision",
+    message:
+      "No merge of req-finance-ca-weekly, req-research-ca-weekly on res-cpi-california: license (license is single-user, shared internal use needs company-use; 1 seat(s) for 2 agents). lowest common ancestor agent-orchestrator pays from node 1. Request(s) req-research-ca-weekly wait: res-cpi-california cannot be shared and one active purchase per mission and resource exists; a second seat needs its own order once this one settles.",
+    missionId: mission.id,
+    agentId: "agent-finance",
+    purchaseId: "pur-california-weekly",
     simulated: true,
   },
   { id: "ev-06", at: T2, kind: "purchase.proposed", message: "Proposed 12.00 USDC to Northstar Data (SIMULATED) for 2 agents.", missionId: mission.id, purchaseId: "pur-merged-national", simulated: true },
@@ -689,54 +740,121 @@ export const reconciliationRun: ReconciliationRun = ReconciliationRunSchema.pars
 // Oracle and Fusion decisions for the merged purchase -------------------------
 
 export const oracleDecisions: OracleDecision[] = parseAll(OracleDecisionSchema, [
+  // Rejection details use the exact templates of packages/oracle/src/coverage.ts and terms.ts.
   {
     requestId: "req-finance-cpi",
     chosen: "res-cpi-national",
-    alternatives: ["res-cpi-oregon"],
+    alternatives: [],
     rejected: [
-      { listingId: "res-cpi-california", reasons: [{ reason: "license", detail: "single-user; request needs company-use" }] },
-      { listingId: "res-freight-index", reasons: [{ reason: "field", detail: "missing sku, price" }] },
-      { listingId: "res-weather-daily", reasons: [{ reason: "field", detail: "missing sku, region, price" }] },
+      {
+        listingId: "res-cpi-california",
+        reasons: [
+          { reason: "region", detail: "missing region(s) US; listing covers US-CA" },
+          { reason: "license", detail: "request needs company-use, listing is single-user" },
+        ],
+      },
+      { listingId: "res-cpi-oregon", reasons: [{ reason: "region", detail: "missing region(s) US; listing covers US-OR" }] },
+      { listingId: "res-freight-index", reasons: [{ reason: "field", detail: "missing field(s) sku, region, price; listing has lane, rate_per_mile, fuel_surcharge" }] },
+      { listingId: "res-weather-daily", reasons: [{ reason: "field", detail: "missing field(s) sku, region, price; listing has station, tmax, tmin, precip" }] },
     ],
     assumptions: ["Monthly granularity is acceptable for a board deck."],
-    summary: "Chose US grocery price index (national) at 12.00 USDC. This is a recommendation; it authorizes no payment.",
+    summary:
+      "Chose res-cpi-national from sim-seller-northstar at 12.00 USDC (1.71 USDC per covered requirement, 7 requirements, as of 2026-10-01).\nAll considered listings are SIMULATED demo sellers.\nThis is a recommendation; it authorizes no payment.",
     simulated: true,
   },
   {
+    // Alone, research cannot afford the national set (cap 7 USDC); Fusion makes it reachable on the combined caps.
     requestId: "req-research-cpi",
-    chosen: "res-cpi-national",
+    chosen: null,
     alternatives: [],
     rejected: [
-      { listingId: "res-cpi-california", reasons: [{ reason: "license", detail: "single-user; request needs company-use" }] },
-      { listingId: "res-cpi-oregon", reasons: [{ reason: "region", detail: "US-OR does not cover US-CA" }] },
+      { listingId: "res-cpi-national", reasons: [{ reason: "price", detail: "price 12.00 USDC exceeds max 7.00 USDC" }] },
+      { listingId: "res-cpi-california", reasons: [{ reason: "license", detail: "request needs company-use, listing is single-user" }] },
+      { listingId: "res-cpi-oregon", reasons: [{ reason: "region", detail: "missing region(s) US-CA; listing covers US-OR" }] },
+      { listingId: "res-freight-index", reasons: [{ reason: "field", detail: "missing field(s) sku, price; listing has lane, rate_per_mile, fuel_surcharge" }] },
+      { listingId: "res-weather-daily", reasons: [{ reason: "field", detail: "missing field(s) sku, price; listing has station, tmax, tmin, precip" }] },
     ],
     assumptions: [],
-    summary: "Chose US grocery price index (national), which covers US-CA. This is a recommendation; it authorizes no payment.",
+    summary: "No listing satisfies the request.\nAll considered listings are SIMULATED demo sellers.\nThis is a recommendation; it authorizes no payment.",
     simulated: true,
   },
+  ...(["req-finance-ca-weekly", "req-research-ca-weekly"] as const).map((requestId) => ({
+    requestId,
+    chosen: "res-cpi-california",
+    alternatives: [],
+    rejected: [
+      { listingId: "res-cpi-national", reasons: [{ reason: "granularity", detail: "monthly cannot roll down to weekly" }] },
+      {
+        listingId: "res-cpi-oregon",
+        reasons: [
+          { reason: "region", detail: "missing region(s) US-CA; listing covers US-OR" },
+          { reason: "format", detail: "listing is parquet, request reads csv" },
+        ],
+      },
+      { listingId: "res-freight-index", reasons: [{ reason: "field", detail: "missing field(s) sku, price; listing has lane, rate_per_mile, fuel_surcharge" }] },
+      { listingId: "res-weather-daily", reasons: [{ reason: "field", detail: "missing field(s) sku, price; listing has station, tmax, tmin, precip" }] },
+    ],
+    assumptions: [],
+    summary:
+      "Chose res-cpi-california from sim-seller-pacific at 9.00 USDC (1.50 USDC per covered requirement, 6 requirements, as of 2026-10-03).\nAll considered listings are SIMULATED demo sellers.\nThis is a recommendation; it authorizes no payment.",
+    simulated: true,
+  })),
 ]);
 
 export const fusionOutcomes: FusionOutcome[] = parseAll(FusionOutcomeSchema, [
+  // Merged: evidence in the exact wording of packages/fusion/src/rules.ts for these fixture records.
   {
     listingId: "res-cpi-national",
     requestIds: ["req-finance-cpi", "req-research-cpi"],
     merge: true,
     checks: [
-      { rule: "identity", passed: true, evidence: "same listing res-cpi-national" },
-      { rule: "geography", passed: true, evidence: "US ⊇ US, US-CA" },
-      { rule: "dates", passed: true, evidence: "2024-01-01..2025-09-30 covers both ranges" },
-      { rule: "resolution", passed: true, evidence: "monthly for both" },
-      { rule: "fields", passed: true, evidence: "sku, region, price present" },
-      { rule: "format", passed: true, evidence: "csv readable by both" },
+      {
+        rule: "identity",
+        passed: true,
+        evidence: "req-finance-cpi: same product as res-cpi-national (manifestHash 0xab1e5c0d…); req-research-cpi: no standalone listing, judged on coverage",
+      },
+      { rule: "geography", passed: true, evidence: "covers US, US-CA (listing: US, US-CA, US-OR, US-WA)" },
+      { rule: "dates", passed: true, evidence: "listing 2024-01-01..2025-09-30 covers 2025-01-01..2025-09-30 and 2025-03-01..2025-09-30" },
+      { rule: "resolution", passed: true, evidence: "monthly serves monthly" },
+      { rule: "fields", passed: true, evidence: "listing has sku, region, price, unit, store_count" },
+      { rule: "format", passed: true, evidence: "csv readable by every request" },
       { rule: "license", passed: true, evidence: "company-use, 5 seats for 2 agents" },
-      { rule: "freshness", passed: true, evidence: "asOf 2025-10-01 within 45 days" },
-      { rule: "price", passed: true, evidence: "12.00 USDC vs 17.00 USDC separately" },
+      { rule: "freshness", passed: true, evidence: "asOf 2026-10-01 is 23 days old, within 45 and 60" },
+      { rule: "price", passed: true, evidence: "one purchase 12.00 USDC vs 24.00 USDC separately (12.00 + 12.00), caps 22.00 USDC" },
     ],
     failingRules: [],
-    reason: purchaseGroup.mergeReason,
+    reason: "Merge: all 9 rules pass for req-finance-cpi, req-research-cpi on res-cpi-national",
     simulated: true,
-    payer: { agentId: null, nodeId: 1, rule: "mission-root", evidence: "no agent has an onchain node yet; mission root pays" },
+    payer: { agentId: "agent-orchestrator", nodeId: 1, rule: "lca", evidence: "lowest common ancestor agent-orchestrator pays from node 1" },
     waitingRequestIds: [],
+  },
+  // Refused: same listing, single-user license with one seat. Finance keeps the purchase, research waits.
+  {
+    listingId: "res-cpi-california",
+    requestIds: ["req-finance-ca-weekly", "req-research-ca-weekly"],
+    merge: false,
+    checks: [
+      {
+        rule: "identity",
+        passed: true,
+        evidence:
+          "req-finance-ca-weekly: same product as res-cpi-california (manifestHash 0xab1e5c0d…); req-research-ca-weekly: same product as res-cpi-california (manifestHash 0xab1e5c0d…)",
+      },
+      { rule: "geography", passed: true, evidence: "covers US-CA (listing: US-CA)" },
+      { rule: "dates", passed: true, evidence: "listing 2025-01-06..2025-09-29 covers 2025-01-06..2025-09-29 and 2025-01-06..2025-09-29" },
+      { rule: "resolution", passed: true, evidence: "weekly serves weekly" },
+      { rule: "fields", passed: true, evidence: "listing has sku, price, store" },
+      { rule: "format", passed: true, evidence: "csv readable by every request" },
+      { rule: "license", passed: false, evidence: "license is single-user, shared internal use needs company-use; 1 seat(s) for 2 agents" },
+      { rule: "freshness", passed: true, evidence: "asOf 2026-10-03 is 21 days old, within 60 and 60" },
+      { rule: "price", passed: true, evidence: "one purchase 9.00 USDC vs 18.00 USDC separately (9.00 + 9.00), caps 20.00 USDC" },
+    ],
+    failingRules: ["license"],
+    reason:
+      "No merge of req-finance-ca-weekly, req-research-ca-weekly on res-cpi-california: license (license is single-user, shared internal use needs company-use; 1 seat(s) for 2 agents)",
+    simulated: true,
+    payer: { agentId: "agent-orchestrator", nodeId: 1, rule: "lca", evidence: "lowest common ancestor agent-orchestrator pays from node 1" },
+    waitingRequestIds: ["req-research-ca-weekly"],
   },
 ]);
 

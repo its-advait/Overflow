@@ -10,7 +10,9 @@ import {
   ExceptionsResponseSchema,
   IndexerStatusSchema,
   LedgerResponseSchema,
+  MissionDetailResponseSchema,
   MissionResponseSchema,
+  MissionsResponseSchema,
   PauseAgentResponseSchema,
   PauseMissionAgentResponseSchema,
   PlanResponseSchema,
@@ -80,6 +82,8 @@ export function createHttpApi(base: string = API_BASE): OverflowApi {
     source: "live",
     status: () => request(base, ServiceStatusSchema, "/"),
 
+    listMissions: () => request(base, MissionsResponseSchema, "/api/missions"),
+    getMission: (id) => request(base, MissionDetailResponseSchema, `/api/missions/${enc(id)}`),
     createMission: (body) => request(base, MissionResponseSchema, "/api/missions", { method: "POST", body }),
     planMission: (id) => request(base, PlanResponseSchema, `/api/missions/${enc(id)}/plan`, { method: "POST" }),
     runMission: (id, body = {}) =>

@@ -2,6 +2,8 @@ import {
   AtomicAmountSchema,
   IdSchema,
   MissionRecordSchema,
+  PurchaseGroupSchema,
+  PurchaseRecordSchema,
   ResourceRequestRecordSchema,
 } from "@overflow/schemas";
 import { Hono } from "hono";
@@ -19,6 +21,14 @@ const CreateMissionBody = z.object({
 });
 
 const MissionResponse = z.object({ mission: MissionRecordSchema });
+const MissionsResponse = z.object({ missions: z.array(MissionRecordSchema) });
+/** Read model for the Purchases page: the mission, its requests, its purchases and the Fusion groups behind merged ones. */
+const MissionDetailResponse = z.object({
+  mission: MissionRecordSchema,
+  requests: z.array(ResourceRequestRecordSchema),
+  purchases: z.array(PurchaseRecordSchema),
+  groups: z.array(PurchaseGroupSchema),
+});
 const PlanResponse = z.object({ mission: MissionRecordSchema, requests: z.array(ResourceRequestRecordSchema) });
 const IdParams = z.object({ id: IdSchema });
 const RunBody = z.object({
@@ -31,6 +41,23 @@ const PauseAgentResponse = z.object({ txHash: z.string(), nodeId: z.number().int
 
 export function missionRoutes(deps: ApiDeps) {
   const app = new Hono<ApiEnv>();
+
+  app.get("/", async (c) => {
+    const missions = await deps.repos.missions.listByOrganization(c.get("session").organizationId);
+    return respond(c, MissionsResponse, { missions });
+  });
+
+  /** Everything stored for one mission. Oracle decisions and Fusion rule checks are not stored; they come from POST /api/purchases/propose. */
+  app.get("/:id", async (c) => {
+    const { id } = parseParams(c, IdParams);
+    const mission = await loadMission(deps, c.get("session").organizationId, id);
+    const [requests, purchases, groups] = await Promise.all([
+      deps.repos.resourceRequests.listByMission(id),
+      deps.repos.purchases.listByMission(id),
+      deps.repos.purchaseGroups.listByMission(id),
+    ]);
+    return respond(c, MissionDetailResponse, { mission, requests, purchases, groups });
+  });
 
   app.post("/", async (c) => {
     const body = await parseBody(c, CreateMissionBody);

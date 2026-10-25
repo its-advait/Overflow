@@ -2,16 +2,33 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { Suspense } from "react";
 import { Waves } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { NAV } from "./nav";
 
+/**
+ * On a dynamic route (/purchases/[id]) the pathname is request-time data under
+ * cacheComponents, so the active-item highlight waits in a Suspense boundary and
+ * the static shell renders the list without a highlight.
+ */
 export function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
-  const pathname = usePathname();
+  return (
+    <Suspense fallback={<NavList pathname={null} onNavigate={onNavigate} />}>
+      <ActiveNav onNavigate={onNavigate} />
+    </Suspense>
+  );
+}
+
+function ActiveNav({ onNavigate }: { onNavigate?: (() => void) | undefined }) {
+  return <NavList pathname={usePathname()} onNavigate={onNavigate} />;
+}
+
+function NavList({ pathname, onNavigate }: { pathname: string | null; onNavigate?: (() => void) | undefined }) {
   return (
     <nav aria-label="Primary" className="flex flex-col gap-0.5 px-2">
       {NAV.map((item) => {
-        const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
+        const active = pathname !== null && (item.href === "/" ? pathname === "/" : pathname.startsWith(item.href));
         const Icon = item.icon;
         return (
           <Link

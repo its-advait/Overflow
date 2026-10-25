@@ -1,4 +1,4 @@
-import type { Hex, LedgerAccount } from "@overflow/schemas";
+import type { Hex, LedgerAccount, PurchaseRecord } from "@overflow/schemas";
 import { ApiError, type OverflowApi } from "./client";
 import type { Balance, DepartmentBalance } from "./contracts";
 import * as fx from "../mocks/fixtures";
@@ -13,6 +13,15 @@ import * as fx from "../mocks/fixtures";
 // ---------------------------------------------------------------------------
 
 const LATENCY_MS = 250;
+
+/**
+ * Purchases the mock has handed out this session: the fixtures plus the PROPOSED
+ * row a mock propose creates, so getPurchase/authorizePurchase/getMission find
+ * it. In memory only; a reload goes back to the fixtures.
+ */
+const purchaseStore = new Map<string, PurchaseRecord>(fx.purchases.map((p) => [p.id, p]));
+const storedPurchase = (id: string): PurchaseRecord | undefined => purchaseStore.get(id);
+const missionPurchases = (missionId: string): PurchaseRecord[] => [...purchaseStore.values()].filter((p) => p.missionId === missionId);
 const delay = <T>(value: T, ms = LATENCY_MS): Promise<T> => new Promise((r) => setTimeout(() => r(value), ms));
 const notFound = (what: string, id: string) => new ApiError(404, "not_found", `${what} ${id} not found (${fx.MOCK_LABEL})`);
 
@@ -52,6 +61,12 @@ export function createMockApi(): OverflowApi {
     source: "mock",
     status: () => delay(fx.serviceStatus),
 
+    listMissions: () => delay({ missions: [fx.mission] }),
+    getMission: (id) => {
+      if (id !== fx.mission.id) return Promise.reject(notFound("mission", id));
+      return delay({ mission: fx.mission, requests: fx.requests, purchases: missionPurchases(id), groups: [fx.purchaseGroup] });
+    },
+
     createMission: (body) =>
       delay({
         mission: {
@@ -82,28 +97,40 @@ export function createMockApi(): OverflowApi {
       if (missionId !== fx.mission.id) return Promise.reject(notFound("mission", missionId));
       const merged = fx.purchaseById("pur-merged-national");
       if (!merged) return Promise.reject(notFound("purchase", "pur-merged-national"));
-      // A proposal is a PROPOSED row: no digest, no transactions, no funding.
+      // A proposal is a PROPOSED row: no digest, no transactions, no funding. Replaying keeps the same row (idempotent).
       const { authorizationDigest: _digest, ...rest } = merged;
       void _digest;
-      const proposed = { ...rest, id: "pur-proposed-national", status: "PROPOSED" as const, txHashes: [] };
+      const existing = purchaseStore.get("pur-proposed-national");
+      const proposed: PurchaseRecord = existing ?? {
+        ...rest,
+        id: "pur-proposed-national",
+        status: "PROPOSED",
+        txHashes: [],
+        idempotencyKey: `propose:${fx.mission.id}:res-cpi-national:req-finance-cpi,req-research-cpi`,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      purchaseStore.set(proposed.id, proposed);
       return delay({ purchases: [proposed], decisions: fx.oracleDecisions, merges: fx.fusionOutcomes });
     },
     authorizePurchase: (id) => {
-      const p = fx.purchaseById(id);
+      const p = storedPurchase(id);
       if (!p) return Promise.reject(notFound("purchase", id));
       if (p.status !== "PROPOSED") {
         return Promise.reject(new ApiError(409, "invalid_transition", `invalid purchase transition ${p.status} -> RESERVED`, { from: p.status, to: "RESERVED" }));
       }
       const digest = `0x${"d16e57".padEnd(64, "0")}` as Hex;
+      const reserved: PurchaseRecord = { ...p, status: "RESERVED", authorizationDigest: digest, updatedAt: new Date().toISOString() };
+      purchaseStore.set(id, reserved);
       return delay({
-        purchase: { ...p, status: "RESERVED" as const, authorizationDigest: digest },
+        purchase: reserved,
         authorizationDigest: digest,
         submission: { outcome: "unknown" as const, error: `${fx.MOCK_LABEL}: no facilitator; nothing was broadcast` },
         replayed: false,
       });
     },
     getPurchase: (id) => {
-      const p = fx.purchaseById(id);
+      const p = storedPurchase(id);
       if (!p) return Promise.reject(notFound("purchase", id));
       return delay({
         purchase: p,

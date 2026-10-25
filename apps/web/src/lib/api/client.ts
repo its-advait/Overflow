@@ -15,7 +15,9 @@ import type {
   ExceptionsResponse,
   LedgerQuery,
   LedgerResponse,
+  MissionDetailResponse,
   MissionResponse,
+  MissionsResponse,
   PauseAgentBody,
   PauseAgentResponse,
   PauseMissionAgentResponse,
@@ -58,6 +60,9 @@ export interface OverflowApi {
   readonly source: "live" | "mock";
   status(): Promise<ServiceStatus>;
 
+  listMissions(): Promise<MissionsResponse>;
+  /** The mission with its requests, purchases and Fusion groups, as stored. */
+  getMission(id: string): Promise<MissionDetailResponse>;
   createMission(body: CreateMissionBody): Promise<MissionResponse>;
   planMission(id: string): Promise<PlanResponse>;
   runMission(id: string, body?: RunMissionBody): Promise<RunMissionResponse>;

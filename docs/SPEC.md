@@ -627,6 +627,7 @@ Amounts are integer atomic units. `idempotencyKey` is unique.
 | Endpoint | Purpose |
 | --- | --- |
 | `POST /api/missions`, `POST /api/missions/:id/plan` | Create a mission; extract requirements |
+| `GET /api/missions`, `GET /api/missions/:id` | List missions; a mission with its requests, purchases and Fusion groups |
 | `GET /api/resources` | Candidates with coverage |
 | `POST /api/purchases/propose` | Oracle plus Fusion proposal |
 | `POST /api/purchases/:id/authorize` | Agent signs; the adapter submits |

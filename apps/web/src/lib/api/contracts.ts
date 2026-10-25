@@ -16,6 +16,7 @@ import {
   IsoDateTimeSchema,
   LedgerAccountSchema,
   MissionRecordSchema,
+  PurchaseGroupSchema,
   PurchaseRecordSchema,
   ReconciliationRunSchema,
   ResourceRecordSchema,
@@ -85,6 +86,17 @@ export const CreateMissionBodySchema = z.object({
 export type CreateMissionBody = z.infer<typeof CreateMissionBodySchema>;
 export const MissionResponseSchema = z.object({ mission: MissionRecordSchema });
 export type MissionResponse = z.infer<typeof MissionResponseSchema>;
+// GET /api/missions and GET /api/missions/:id (apps/service/src/api/routes/missions.ts). Oracle decisions and
+// Fusion rule checks are not stored; they only come back from POST /api/purchases/propose.
+export const MissionsResponseSchema = z.object({ missions: z.array(MissionRecordSchema) });
+export type MissionsResponse = z.infer<typeof MissionsResponseSchema>;
+export const MissionDetailResponseSchema = z.object({
+  mission: MissionRecordSchema,
+  requests: z.array(ResourceRequestRecordSchema),
+  purchases: z.array(PurchaseRecordSchema),
+  groups: z.array(PurchaseGroupSchema),
+});
+export type MissionDetailResponse = z.infer<typeof MissionDetailResponseSchema>;
 export const PlanResponseSchema = z.object({
   mission: MissionRecordSchema,
   requests: z.array(ResourceRequestRecordSchema),
