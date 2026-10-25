@@ -15,14 +15,14 @@ describe("migrations on a fresh database", () => {
     expect(handle.dialect).toBe("pglite");
   });
 
-  it("creates all 18 tables", async () => {
+  it("creates all 19 tables", async () => {
     const rows = await queryRows<{ table_name: string }>(
       handle.db,
       sql`SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`,
     );
     const names = new Set(rows.map((r) => r.table_name));
     for (const t of TABLE_NAMES) expect(names.has(t), t).toBe(true);
-    expect(TABLE_NAMES.length).toBe(18);
+    expect(TABLE_NAMES.length).toBe(19);
   });
 
   it("stores every money column as numeric(78,0) and uses no float types anywhere", async () => {

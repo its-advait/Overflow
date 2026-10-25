@@ -241,3 +241,11 @@ export const IdempotencyRecordSchema = z.object({
   createdAt: IsoDateTimeSchema,
 });
 export type IdempotencyRecord = z.infer<typeof IdempotencyRecordSchema>;
+
+/** One indexer checkpoint row (indexer_cursors). `lastBlock` is a decimal block number. */
+export const IndexerCursorSchema = z.object({
+  name: z.string().min(1),
+  lastBlock: UintStringSchema,
+  updatedAt: IsoDateTimeSchema,
+});
+export type IndexerCursor = z.infer<typeof IndexerCursorSchema>;

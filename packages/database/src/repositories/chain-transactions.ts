@@ -1,5 +1,5 @@
 import { ChainTransactionSchema, type ChainTransaction } from "@overflow/schemas";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq, gte, lte } from "drizzle-orm";
 import type { Executor } from "../client";
 import { withDbErrors } from "../errors";
 import { chainTransactions } from "../schema";
@@ -79,6 +79,47 @@ export function chainTransactionsRepository(db: Executor) {
         .where(eq(chainTransactions.purchaseId, purchaseId))
         .orderBy(chainTransactions.observedAt);
       return rows.map(toRecord);
+    },
+
+    /** Every stored log of one event name, in chain order (e.g. OrderCreated to rediscover escrows). */
+    async listByEvent(eventName: string): Promise<ChainTransaction[]> {
+      const rows = await db
+        .select()
+        .from(chainTransactions)
+        .where(eq(chainTransactions.eventName, eventName))
+        .orderBy(asc(chainTransactions.blockNumber), asc(chainTransactions.logIndex));
+      return rows.map(toRecord);
+    },
+
+    /** Stored logs with fromBlock <= block_number <= toBlock, in chain order (reorg window check). */
+    async listInBlockRange(fromBlock: string | bigint, toBlock: string | bigint): Promise<ChainTransaction[]> {
+      const rows = await db
+        .select()
+        .from(chainTransactions)
+        .where(
+          and(
+            gte(chainTransactions.blockNumber, String(fromBlock)),
+            lte(chainTransactions.blockNumber, String(toBlock)),
+          ),
+        )
+        .orderBy(asc(chainTransactions.blockNumber), asc(chainTransactions.logIndex));
+      return rows.map(toRecord);
+    },
+
+    /** Marks a stored log confirmed or not (a reorg removed it from the canonical chain). */
+    async setConfirmed(id: string, confirmed: boolean): Promise<ChainTransaction | undefined> {
+      const [r] = await withDbErrors(() =>
+        db.update(chainTransactions).set({ confirmed }).where(eq(chainTransactions.id, id)).returning(),
+      );
+      return r ? toRecord(r) : undefined;
+    },
+
+    /** Links a stored log to a purchase after the fact (e.g. the purchase row appeared later). */
+    async setPurchaseId(id: string, purchaseId: string): Promise<ChainTransaction | undefined> {
+      const [r] = await withDbErrors(() =>
+        db.update(chainTransactions).set({ purchaseId }).where(eq(chainTransactions.id, id)).returning(),
+      );
+      return r ? toRecord(r) : undefined;
     },
 
     async listByTxHash(txHash: string): Promise<ChainTransaction[]> {

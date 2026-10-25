@@ -1,5 +1,5 @@
 import { ActivityEventSchema, type ActivityEvent } from "@overflow/schemas";
-import { desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, ne } from "drizzle-orm";
 import type { Executor } from "../client";
 import { withDbErrors } from "../errors";
 import { activityEvents } from "../schema";
@@ -57,6 +57,35 @@ export function activityEventsRepository(db: Executor) {
     /** Newest first. */
     async listRecent(limit = 100): Promise<ActivityEvent[]> {
       const rows = await db.select().from(activityEvents).orderBy(desc(activityEvents.at)).limit(limit);
+      return rows.map(toRecord);
+    },
+
+    /**
+     * Events after `afterId` (SSE Last-Event-ID): everything with a later `at`,
+     * plus events at the same instant other than `afterId` itself. Oldest first.
+     * Unknown id: returns [] (the client then re-reads history).
+     */
+    async listAfter(afterId: string, limit = 500): Promise<ActivityEvent[]> {
+      const anchor = await this.getById(afterId);
+      if (!anchor) return [];
+      const at = new Date(anchor.at);
+      const rows = await db
+        .select()
+        .from(activityEvents)
+        .where(and(gte(activityEvents.at, at), ne(activityEvents.id, afterId)))
+        .orderBy(asc(activityEvents.at))
+        .limit(limit);
+      return rows.filter((r) => r.at.getTime() > at.getTime() || r.id !== afterId).map(toRecord);
+    },
+
+    /** Events strictly after an ISO instant, oldest first. */
+    async listSince(sinceIso: string, limit = 500): Promise<ActivityEvent[]> {
+      const rows = await db
+        .select()
+        .from(activityEvents)
+        .where(gt(activityEvents.at, new Date(sinceIso)))
+        .orderBy(asc(activityEvents.at))
+        .limit(limit);
       return rows.map(toRecord);
     },
 

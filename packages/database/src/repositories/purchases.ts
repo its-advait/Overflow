@@ -9,7 +9,7 @@ import {
   type PurchaseRecord,
   type PurchaseStatus,
 } from "@overflow/schemas";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Executor, Tx } from "../client";
 import { NotFoundError, withDbErrors } from "../errors";
 import { allocations, purchases } from "../schema";
@@ -183,6 +183,34 @@ export function purchasesRepository(db: Executor) {
 
     getById: (id: string) => getByIdOn(db, id),
     getByIdempotencyKey: (key: string) => getByIdempotencyKeyOn(db, key),
+
+    /** Purchases sharing an onchain orderId (normally one), oldest first. */
+    async listByOrderId(orderIdBytes32: string): Promise<PurchaseRecord[]> {
+      const rows = await db
+        .select()
+        .from(purchases)
+        .where(eq(purchases.orderIdBytes32, orderIdBytes32))
+        .orderBy(purchases.createdAt);
+      return hydrate(db, rows);
+    },
+
+    /** The purchase whose EIP-3009 authorization digest is `digest`, if any. */
+    async getByAuthorizationDigest(digest: string): Promise<PurchaseRecord | undefined> {
+      const [r] = await db.select().from(purchases).where(eq(purchases.authorizationDigest, digest));
+      if (!r) return undefined;
+      const [rec] = await hydrate(db, [r]);
+      return rec;
+    },
+
+    /** Purchases whose escrow is `escrowAddress` (case-insensitive), oldest first. */
+    async listByEscrowAddress(escrowAddress: string): Promise<PurchaseRecord[]> {
+      const rows = await db
+        .select()
+        .from(purchases)
+        .where(sql`lower(${purchases.escrowAddress}) = lower(${escrowAddress})`)
+        .orderBy(purchases.createdAt);
+      return hydrate(db, rows);
+    },
 
     /** The shared PurchaseOrder view (allocations joined), validated by PurchaseOrderSchema. */
     async getOrder(id: string): Promise<PurchaseOrder | undefined> {

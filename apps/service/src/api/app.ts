@@ -3,6 +3,7 @@ import { createRepositories, type Db } from "@overflow/database";
 import { CHAIN_ID } from "@overflow/schemas";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { createActivityBus, type ActivityBus, type IndexerStatus } from "../chain/bus.js";
 import { createPurchaseService } from "../orchestration/purchase-service.js";
 import type { ApiDeps } from "./deps.js";
 import { ApiError, errorResponse, type ApiEnv } from "./http.js";
@@ -10,6 +11,7 @@ import { defaultPorts, type Ports } from "./ports.js";
 import { activityRoutes } from "./routes/activity.js";
 import { agentRoutes } from "./routes/agents.js";
 import { escrowRoutes } from "./routes/escrow.js";
+import { eventsRoutes } from "./routes/events.js";
 import { ledgerRoutes } from "./routes/ledger.js";
 import { missionRoutes } from "./routes/missions.js";
 import { purchaseRoutes } from "./routes/purchases.js";
@@ -22,6 +24,10 @@ export interface CreateAppOptions {
   session?: Session | undefined;
   /** Extra fields for GET / (database dialect etc.). */
   status?: Record<string, unknown> | undefined;
+  /** Shared live feed; the indexer publishes on the same bus. A private one is created when omitted. */
+  bus?: ActivityBus | undefined;
+  /** Real indexer state. Default: idle, "no indexer attached". */
+  indexerStatus?: (() => IndexerStatus) | undefined;
 }
 
 /**
@@ -31,10 +37,13 @@ export interface CreateAppOptions {
  */
 export function createApp(opts: CreateAppOptions) {
   const base = defaultPorts();
+  const bus = opts.bus ?? createActivityBus();
   const deps: ApiDeps = {
     db: opts.db,
     repos: createRepositories(opts.db),
-    purchases: createPurchaseService(opts.db),
+    purchases: createPurchaseService(opts.db, { publish: (event) => bus.publish(event) }),
+    bus,
+    indexerStatus: opts.indexerStatus ?? (() => ({ state: "idle", reason: "no indexer attached" })),
     ports: {
       orchestration: opts.ports?.orchestration ?? base.orchestration,
       adapters: opts.ports?.adapters ?? base.adapters,
@@ -60,6 +69,7 @@ export function createApp(opts: CreateAppOptions) {
       scaffold: false,
       chainId: CHAIN_ID,
       session: { organizationId: deps.session.organizationId, principal: deps.session.principal },
+      indexer: deps.indexerStatus(),
       ...opts.status,
     }),
   );
@@ -71,6 +81,7 @@ export function createApp(opts: CreateAppOptions) {
   app.route("/api/agents", agentRoutes(deps));
   app.route("/api/activity", activityRoutes(deps));
   app.route("/api", ledgerRoutes(deps));
+  app.route("/events", eventsRoutes(deps));
 
   return { app, deps };
 }

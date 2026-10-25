@@ -95,6 +95,17 @@ export const ActivityKindSchema = z.enum([
   "controller.resolved",
   "exception.opened",
   "reconciliation.ok",
+  // Chain indexer kinds: one per confirmed log that does not itself move a purchase.
+  "treasury.paid",
+  "treasury.reserved",
+  "treasury.released",
+  "treasury.node",
+  "treasury.policy",
+  "escrow.created",
+  "escrow.revealed",
+  "escrow.accepted",
+  "seller.flagged",
+  "indexer.unconfirmed",
 ]);
 export type ActivityKind = z.infer<typeof ActivityKindSchema>;
 

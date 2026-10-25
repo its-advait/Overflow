@@ -7,6 +7,7 @@ import { escrowOrdersRepository } from "./escrow-orders";
 import { exceptionsRepository } from "./exceptions";
 import { financialEntriesRepository } from "./financial-entries";
 import { idempotencyKeysRepository } from "./idempotency-keys";
+import { indexerCursorsRepository } from "./indexer-cursors";
 import { missionsRepository } from "./missions";
 import { organizationsRepository } from "./organizations";
 import { purchaseGroupsRepository } from "./purchase-groups";
@@ -24,6 +25,7 @@ export * from "./escrow-orders";
 export * from "./exceptions";
 export * from "./financial-entries";
 export * from "./idempotency-keys";
+export * from "./indexer-cursors";
 export * from "./missions";
 export * from "./organizations";
 export * from "./purchase-groups";
@@ -54,6 +56,7 @@ export function createRepositories(db: Executor) {
     exceptions: exceptionsRepository(db),
     controllerRequests: controllerRequestsRepository(db),
     idempotencyKeys: idempotencyKeysRepository(db),
+    indexerCursors: indexerCursorsRepository(db),
   };
 }
 export type Repositories = ReturnType<typeof createRepositories>;

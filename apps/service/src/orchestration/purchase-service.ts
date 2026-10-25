@@ -2,16 +2,18 @@ import {
   createRepositories,
   isUniqueViolation,
   NotFoundError,
-  type Db,
+  type Executor,
   type PurchaseInsert,
 } from "@overflow/database";
 import {
   assertTransition,
   Bytes32Schema,
+  EscrowStatusSchema,
   IdSchema,
   PurchaseStatusSchema,
   type ActivityEvent,
   type ActivityKind,
+  type EscrowOrder,
   type PurchaseRecord,
   type PurchaseStatus,
 } from "@overflow/schemas";
@@ -26,6 +28,10 @@ import { z } from "zod";
 // It never moves USDC. Entering ESCROW_FUNDED / SETTLED / REFUNDED requires a
 // confirmed chain transaction hash, so no row can claim funding or settlement
 // that the chain has not confirmed.
+//
+// The escrow_orders mirror moves through here as well: evidence may carry the
+// escrow status a confirmed escrow event established, applied in the same
+// transaction. Nothing else writes purchases.status or escrow_orders.status.
 // ---------------------------------------------------------------------------
 
 export const TransitionSourceSchema = z.object({
@@ -47,6 +53,14 @@ export const TransitionEvidenceSchema = z.object({
   decodedRevert: z.string().min(1).optional(),
   agentId: IdSchema.optional(),
   simulated: z.boolean().default(false),
+  /** Escrow status the same confirmed event established (OrderFunded, KeyRevealed, PaidOut, Refunded). */
+  escrow: z
+    .object({
+      status: EscrowStatusSchema,
+      revealedKey: Bytes32Schema.optional(),
+      refundReason: z.string().min(1).optional(),
+    })
+    .optional(),
 });
 export type TransitionEvidence = z.input<typeof TransitionEvidenceSchema>;
 
@@ -99,11 +113,21 @@ function checkEvidence(from: PurchaseStatus, to: PurchaseStatus, ev: z.output<ty
   if (from === "PAYMENT_UNKNOWN" && ev.source.kind !== "reconciliation") {
     throw new TransitionEvidenceError(to, "only reconciliation against the chain may leave PAYMENT_UNKNOWN");
   }
+  if (ev.escrow && !ev.txHash) {
+    throw new TransitionEvidenceError(to, "an escrow status needs the confirmed txHash of the escrow event");
+  }
 }
 
 export interface TransitionResult {
   purchase: PurchaseRecord;
   event: ActivityEvent;
+  /** The escrow_orders row after `evidence.escrow` was applied; undefined when no row exists yet or none was requested. */
+  escrow?: EscrowOrder | undefined;
+}
+
+export interface PurchaseServiceOptions {
+  /** Called after each commit with the activity event written (live feed). Never before commit. */
+  publish?: ((event: ActivityEvent) => void) | undefined;
 }
 
 export interface ProposeInput {
@@ -114,7 +138,14 @@ export interface ProposeInput {
   simulated?: boolean | undefined;
 }
 
-export function createPurchaseService(db: Db) {
+export function createPurchaseService(db: Executor, options: PurchaseServiceOptions = {}) {
+  const publish = (event: ActivityEvent): void => {
+    try {
+      options.publish?.(event);
+    } catch (e) {
+      console.warn("[purchases] publish hook threw", e);
+    }
+  };
   return {
     /**
      * Records a PROPOSED purchase (idempotent on idempotencyKey) and its
@@ -123,8 +154,9 @@ export function createPurchaseService(db: Db) {
      */
     async propose(input: ProposeInput): Promise<TransitionResult> {
       const source = TransitionSourceSchema.parse(input.source);
+      let result: TransitionResult;
       try {
-        return await db.transaction(async (tx) => {
+        result = await db.transaction(async (tx) => {
           const repos = createRepositories(tx);
           const purchase = await repos.purchases.create(input.purchase);
           const event = await repos.activityEvents.insert({
@@ -143,18 +175,22 @@ export function createPurchaseService(db: Db) {
         }
         throw e;
       }
+      publish(result.event);
+      return result;
     },
 
     /**
      * Moves purchaseId to `to`. Refuses illegal moves (InvalidTransitionError)
      * and moves without the required evidence (TransitionEvidenceError); in
      * both cases nothing is written. Otherwise updates the row, stores the
-     * digest / tx hash carried by the evidence, and writes one activity event.
+     * digest / tx hash carried by the evidence, applies the escrow status the
+     * evidence carries (when an escrow_orders row exists), and writes one
+     * activity event.
      */
     async transition(purchaseId: string, to: PurchaseStatus, evidence: TransitionEvidence): Promise<TransitionResult> {
       const target = PurchaseStatusSchema.parse(to);
       const ev = TransitionEvidenceSchema.parse(evidence);
-      return db.transaction(async (tx) => {
+      const result = await db.transaction(async (tx) => {
         const repos = createRepositories(tx);
         const current = await repos.purchases.getById(purchaseId);
         if (!current) throw new NotFoundError("purchases", purchaseId);
@@ -167,6 +203,17 @@ export function createPurchaseService(db: Db) {
         }
         if (ev.txHash) purchase = await repos.purchases.appendTxHash(purchaseId, ev.txHash);
 
+        let escrow: EscrowOrder | undefined;
+        if (ev.escrow) {
+          const existing = await repos.escrowOrders.getByPurchase(purchaseId);
+          if (existing) {
+            escrow = await repos.escrowOrders.setStatus(purchaseId, ev.escrow.status, {
+              ...(ev.escrow.revealedKey ? { revealedKey: ev.escrow.revealedKey } : {}),
+              ...(ev.escrow.refundReason ? { refundReason: ev.escrow.refundReason } : {}),
+            });
+          }
+        }
+
         const event = await repos.activityEvents.insert({
           kind: KIND_BY_STATUS[target] ?? "purchase.status",
           message: `${current.status} -> ${target}: ${ev.reason} [${ev.source.kind}:${ev.source.reference}]`,
@@ -177,8 +224,10 @@ export function createPurchaseService(db: Db) {
           ...(ev.txHash ? { txHash: ev.txHash } : {}),
           simulated: ev.simulated,
         });
-        return { purchase, event };
+        return { purchase, event, escrow };
       });
+      publish(result.event);
+      return result;
     },
 
     async get(purchaseId: string): Promise<PurchaseRecord | undefined> {

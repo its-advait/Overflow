@@ -15,6 +15,13 @@
       "when": 1792894602605,
       "tag": "0001_idempotency_keys",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792895891961,
+      "tag": "0002_indexer_cursors",
+      "breakpoints": true
     }
   ]
 }

@@ -1,4 +1,4 @@
-import { NotFoundError, UniqueViolationError } from "@overflow/database";
+import { InvalidEscrowTransitionError, NotFoundError, UniqueViolationError } from "@overflow/database";
 import { QuoteMismatchError } from "@overflow/payment-client";
 import { InvalidTransitionError } from "@overflow/schemas";
 import type { Context } from "hono";
@@ -42,6 +42,9 @@ export function toApiError(e: unknown): ApiError {
     return new ApiError(409, "invalid_transition", e.message, { from: e.from, to: e.to });
   }
   if (e instanceof TransitionEvidenceError) return new ApiError(409, "missing_evidence", e.message, { to: e.to });
+  if (e instanceof InvalidEscrowTransitionError) {
+    return new ApiError(409, "invalid_escrow_transition", e.message, { from: e.from, to: e.to });
+  }
   if (e instanceof ActivePurchaseExistsError) {
     return new ApiError(409, "active_purchase_exists", e.message, { missionId: e.missionId, resourceId: e.resourceId });
   }

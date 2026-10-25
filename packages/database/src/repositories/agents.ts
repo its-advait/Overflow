@@ -1,5 +1,5 @@
 import { AgentRecordSchema, type AgentRecord } from "@overflow/schemas";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import type { Executor } from "../client";
 import { withDbErrors } from "../errors";
 import { agents } from "../schema";
@@ -57,8 +57,9 @@ export function agentsRepository(db: Executor) {
       return r ? toRecord(r) : undefined;
     },
 
+    /** Case-insensitive: chain logs return checksummed addresses, seeds may not. */
     async getByKey(key: string): Promise<AgentRecord | undefined> {
-      const [r] = await db.select().from(agents).where(eq(agents.key, key));
+      const [r] = await db.select().from(agents).where(sql`lower(${agents.key}) = lower(${key})`);
       return r ? toRecord(r) : undefined;
     },
 

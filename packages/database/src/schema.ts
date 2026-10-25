@@ -185,6 +185,8 @@ export const purchases = pgTable(
       .where(activeStatusPredicate(t.status)),
     index("purchases_mission_idx").on(t.missionId),
     index("purchases_status_idx").on(t.status),
+    index("purchases_order_id_idx").on(t.orderIdBytes32),
+    index("purchases_escrow_address_idx").on(t.escrowAddress),
     check("purchases_amount_nonneg", nonNegative(t.amount)),
   ],
 );
@@ -225,6 +227,8 @@ export const chainTransactions = pgTable(
   (t) => [
     unique("chain_transactions_tx_hash_log_index_unique").on(t.txHash, t.logIndex),
     index("chain_transactions_purchase_idx").on(t.purchaseId),
+    index("chain_transactions_block_idx").on(t.blockNumber),
+    index("chain_transactions_event_idx").on(t.eventName),
   ],
 );
 
@@ -400,6 +404,17 @@ export const idempotencyKeys = pgTable("idempotency_keys", {
   createdAt: ts("created_at").notNull().defaultNow(),
 });
 
+/**
+ * Indexer checkpoints. One row per log stream (e.g. "indexer:base-sepolia");
+ * `last_block` is the highest block fully scanned. Stored as numeric(78,0) like
+ * every other chain integer.
+ */
+export const indexerCursors = pgTable("indexer_cursors", {
+  name: text("name").primaryKey(),
+  lastBlock: numeric("last_block", { precision: 78, scale: 0, mode: "string" }).notNull(),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+});
+
 export const TABLE_NAMES = [
   "organizations",
   "missions",
@@ -419,4 +434,5 @@ export const TABLE_NAMES = [
   "exceptions",
   "controller_requests",
   "idempotency_keys",
+  "indexer_cursors",
 ] as const;

@@ -280,3 +280,46 @@
 - The `PaymentAdapter` signatures (`preparePayment(purchaseId, CheckedQuote)`, `submitPayment` outcome union) are the contract P7.x must implement; the chain indexer must drive `ESCROW_FUNDED`/`SETTLED`/`REFUNDED` through `PurchaseService.transition` with `source.kind: "chain"` and the tx hash.
 - `GET /api/resources?missionId=` is accepted but not yet filtered by Oracle's coverage check (`filtered: false` says so).
 - No authentication on the demo session; fine on localhost, not for exposure.
+
+## 2026-10-24: chain event indexer and SSE stream
+
+### Built
+- `apps/service/src/chain/abi.ts`: **provisional** human-readable ABI (viem `parseAbi`) for the treasury (nine events, sixteen errors), the factory (`OrderCreated`) and the escrow (`OrderFunded`, `KeyRevealed`, `Accepted`, `PaidOut`, `Refunded(orderId, amount, reason)`, `CheatProven(seller, index)`). The six Leash-era treasury events are copied from `origin/person1:contracts/src/IOverflowTreasury.sol`; `Reserved`, `ReservationReleased`, `EscrowFactorySet` and every factory/escrow event are derived from the spec because no Solidity for them exists on any branch. `abi.test.ts` snapshots every signature; `REVERT_REASONS` carries the spec's Blocked-lane wording.
+- `chain/config.ts`: `resolveIndexerConfig()` = `BASE_SEPOLIA_RPC_URL` + `loadDeployments()` (`deployments/base-sepolia.json`, override `OVERFLOW_DEPLOYMENTS_PATH`) + `INDEXER_POLL_MS` (2000) / `INDEXER_REORG_DEPTH` (12) / `INDEXER_CHUNK_BLOCKS` (190, the public RPC's `eth_getLogs` range cap). Returns `{ ok:false, reason }` instead of inventing anything.
+- `chain/client.ts`: `LogSource` structural interface + `createLogSource(rpcUrl)` (viem, `assertChain()` checks 84532). `chain/decode.ts`: `decodeLog` (bigints → decimal strings), `decodeTreasuryRevert` (viem cause chain, raw data, Solidity `Error(string)`/`Panic`, fallback `Unknown("<short message>")`).
+- `chain/indexer.ts`: `createIndexer({ db, source, config, bus })` with `start/stop/tick/status`. Each poll re-reads from `max(deployBlock, cursor + 1 − reorgDepth)` to head in chunks; an `OrderCreated` inside a chunk re-queries that chunk for the new escrow; every log is one transaction: `chainTransactions.record` (idempotent on `(tx_hash, log_index)`; replay → no effects) then the handler in a savepoint (a state-machine refusal keeps the chain row, warns, writes nothing else). Stored logs the chain no longer returns in the window get `confirmed=false` + an `indexer.unconfirmed` event; reappearing ones are re-confirmed. Cursor `indexer:base-sepolia` in the new `indexer_cursors` table (migration `0002_indexer_cursors`, plus indexes on `purchases.order_id_bytes32`/`escrow_address` and `chain_transactions.block_number`/`event_name`). Escrows are reloaded from stored `OrderCreated` rows on restart.
+- `chain/handlers.ts`: `OrderFunded → ESCROW_FUNDED`, `KeyRevealed → DELIVERY_PENDING`, `PaidOut → SETTLED`, `Refunded → REFUNDED`, `ReservationReleased(budgetRestored) → RELEASED`, all through `PurchaseService.transition` with `source.kind: "chain"` (`reconciliation` only when leaving `PAYMENT_UNKNOWN`) and the tx hash; the escrow mirror moves in the same call (`evidence.escrow`). `Paid` and `Reserved` only link and record (authorization ≠ funding ≠ settlement). `NodeCreated` sets `agents.nodeId` by key; `KeyRevealed` scores on-time/late reveals; `CheatProven` flags the seller. Unmatched escrow events are recorded and labeled "no matching purchase".
+- `orchestration/purchase-service.ts`: accepts an `Executor` (joins the indexer's transaction), `evidence.escrow { status, revealedKey?, refundReason? }` applied via `escrowOrders.setStatus` when a row exists, and a `publish` hook called after commit. `chain/failed.ts`: `recordFailedTransaction()` → decoded revert, `REJECTED` through the service when a live purchase is named, else a standalone `policy.blocked` event with `decodedRevert`/`txHash`.
+- `chain/bus.ts` + `api/routes/events.ts`: in-process `ActivityBus`; `GET /events` (Hono `streamSSE`) sends `event: indexer` (real status), replays history (`Last-Event-ID` → `activityEvents.listAfter`, `?since=` → `listSince`, else last `replay` events), then live committed events with `id:` = event id; 15 s heartbeat; unsubscribes on abort. `GET /` now includes `indexer` and `modules.chain`.
+- Repositories added: `indexerCursors.get/set`, `purchases.listByOrderId/listByEscrowAddress/getByAuthorizationDigest`, `chainTransactions.listByEvent/listInBlockRange/setConfirmed/setPurchaseId`, `activityEvents.listAfter/listSince`; `agents.getByKey` is case-insensitive. `ActivityKind` gains `treasury.*`, `escrow.created/revealed/accepted`, `seller.flagged`, `indexer.unconfirmed`. `InvalidEscrowTransitionError` → HTTP 409.
+- `chain/fixtures/build-fixture.ts` → `base-sepolia-logs.json`: SIMULATED recorded log set (18 logs, blocks 101–111) encoded from the provisional ABI with the service test addresses. `chain/fake-source.ts`: test `LogSource`.
+
+### Design choices
+- Per-log transaction with the handler in a savepoint: the ledger's "one row per event" and the state machine's refusals never fight; a refused `PaidOut` for a never-funded purchase leaves the chain row and the purchase status untouched.
+- `confirmed` is now truthful (reorg withdraws it) instead of a constant `true`.
+- No `financial_entries` are posted here (ledger prompt); `controller_requests` are not resolved from `NodePaused`/`CapRaised` (P4.5).
+
+### Stubbed or simulated
+- The ABI is provisional until the contracts land; the fixture is encoded, not recorded from a deployment (its JSON says `simulated: true`).
+- No deployments file or deployed contract exists, so the indexer runs idle on this machine.
+
+### Verified (real output, 2026-10-24)
+| Check | Result |
+|---|---|
+| `pnpm --filter @overflow/database db:generate` | wrote `0002_indexer_cursors`; re-run "No schema changes" |
+| `pnpm typecheck` | exit 0 |
+| `pnpm test` | 32 files / 270 tests passed (new: abi 3, decode 5, indexer 4, failed 2, events 3; database migrations test now expects 19 tables) |
+| indexer fixture replay | 18 logs → 18 `chain_transactions`; p1 `PAYMENT_PENDING → SETTLED` (escrow `Settled`, key `0x…77`), p2 `→ REFUNDED` (escrow `Refunded`, reason "timeout: no reveal before deadline"), p3 stays `PROPOSED` with its `PaidOut` recorded and refused; reservation `d2` released; `agent-orchestrator.nodeId = 1`; seller `onTimeReveals 1, provenCheats 1, flagged`; cursor 115; 3 escrows tracked; the chunk 100–104 was re-queried for escrow 1 |
+| restart | second indexer on the same DB: `fromBlock 104`, 0 inserted, 0 new activity, 3 escrows rediscovered |
+| reorg | dropping `NodePaused` (block 110) → `confirmed=false` + one `indexer.unconfirmed`; restoring it → re-confirmed, 0 inserted |
+| `GET /events` | `indexer` frame, replayed `purchase.proposed`, live `payment.authorized` from a real `transition()`; `Last-Event-ID` replays one later event; `?since=yesterday` → 400; listener count 0 after abort |
+| `tsx src/index.ts` (PGlite, no RPC) + curl | `GET /` → `modules.chain: "idle: BASE_SEPOLIA_RPC_URL is not set"`, `indexer.state: "idle"`; `curl -N /events` → `event: indexer` idle frame |
+| `resolveIndexerConfig` with RPC set, no file | `ok:false, reason: "deployments file not found at …/deployments/base-sepolia.json …"` |
+| `createLogSource("https://sepolia.base.org")` probe | `assertChain` ok, head 49873975, 7 USDC logs in the last 20 blocks, block timestamp read |
+| `pnpm --filter @overflow/service build` | tsup success, migrations copied |
+
+### Open issues
+- **Live Base Sepolia check not run**: no Overflow contract is deployed and `deployments/base-sepolia.json` does not exist. Once person1 deploys: set `BASE_SEPOLIA_RPC_URL`, start the service, run `settle()`, watch `curl -N localhost:4000/events` for `treasury.paid`.
+- The provisional event signatures (`Reserved`, `ReservationReleased`, `EscrowFactorySet`, factory and escrow events) must be matched by the contracts or edited in `chain/abi.ts` + `abi.test.ts`.
+- Escrow-order rows are expected from the sellers/order prompt; without one, the purchase still moves and the indexer warns.
+- `PolicyPort.allowlistedPayees()` could now read `AllowSet` rows; not wired.

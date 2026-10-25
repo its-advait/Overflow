@@ -1,7 +1,7 @@
 import { serve } from "@hono/node-server";
 import { createDatabase, seed } from "@overflow/database";
 import { createApp } from "./api/index.js";
-import { CHAIN_STATUS } from "./chain/index.js";
+import { createActivityBus, createIndexer, createLogSource, resolveIndexerConfig, type Indexer } from "./chain/index.js";
 import { FACILITATOR_STATUS } from "./facilitator/index.js";
 import { ORCHESTRATION_STATUS } from "./orchestration/index.js";
 import { SELLERS_STATUS } from "./sellers/index.js";
@@ -20,8 +20,26 @@ console.log(
   `[seed] organization "${seeded.organization.name}" (SIMULATED) agents=${seeded.agents.length}`,
 );
 
+// Chain indexer: runs only with BASE_SEPOLIA_RPC_URL and a deployments file.
+// Otherwise it stays idle and says why; no address or block is ever invented.
+const bus = createActivityBus();
+const indexerConfig = await resolveIndexerConfig();
+let indexer: Indexer | undefined;
+let chainStatus: string;
+if (indexerConfig.ok) {
+  const source = createLogSource(indexerConfig.config.rpcUrl);
+  await source.assertChain();
+  indexer = createIndexer({ db: database.db, source, config: indexerConfig.config, bus });
+  chainStatus = `indexing treasury ${indexerConfig.config.treasury} from block ${indexerConfig.config.deployBlock}`;
+} else {
+  chainStatus = `idle: ${indexerConfig.reason}`;
+  console.warn(`[chain] indexer idle: ${indexerConfig.reason}`);
+}
+
 const { app } = createApp({
   db: database.db,
+  bus,
+  indexerStatus: () => indexer?.status() ?? { state: "idle", reason: indexerConfig.ok ? "not started" : indexerConfig.reason },
   status: {
     database: { dialect: database.dialect, migrationsFolder: database.migrationsFolder, migrated: true },
     modules: {
@@ -29,7 +47,7 @@ const { app } = createApp({
       orchestration: ORCHESTRATION_STATUS,
       facilitator: FACILITATOR_STATUS,
       sellers: SELLERS_STATUS,
-      chain: CHAIN_STATUS,
+      chain: chainStatus,
     },
   },
 });
@@ -37,10 +55,13 @@ const { app } = createApp({
 const server = serve({ fetch: app.fetch, port }, (info) => {
   console.log(`[api] @overflow/service listening on http://localhost:${info.port}`);
 });
+await indexer?.start();
 
 const shutdown = (): void => {
   server.close(() => {
-    void database.close().finally(() => process.exit(0));
+    void (indexer ? indexer.stop() : Promise.resolve())
+      .then(() => database.close())
+      .finally(() => process.exit(0));
   });
 };
 process.on("SIGINT", shutdown);
