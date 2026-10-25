@@ -366,8 +366,8 @@ contract OverflowEscrowTest is EscrowBaseTest {
         // tier 2: a correct chunk is not a cheat
         vm.expectRevert(_err(IOverflowEscrow.ChunkMatches.selector));
         e.complainMismatch(1, _cipher(1), _proof(cipher, 1), plain[1], _proof(plain, 1));
-        // tier 3 still a stub
-        vm.expectRevert(_err(IOverflowEscrow.NotImplemented.selector));
+        // tier 3: these terms promise no source and no timestamp, so there is nothing to break
+        vm.expectRevert(_err(IOverflowEscrow.NoPromise.selector));
         e.complainPromise(2, _chunk(2), _proof(plain, 2));
     }
 

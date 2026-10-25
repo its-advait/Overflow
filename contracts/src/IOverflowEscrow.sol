@@ -50,7 +50,8 @@ interface IOverflowEscrow {
     error BadProofLength(uint256 expected, uint256 actual);
     error BadProof();
     error ChunkMatches();
-    error NotImplemented();
+    error PromiseKept();
+    error NoPromise();
 
     event OrderFunded(uint256 balance);
     event KeyRevealed(bytes32 key, uint64 challengeEnd);

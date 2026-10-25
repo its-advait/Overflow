@@ -10,8 +10,28 @@ library RecourseCrypto {
     uint256 internal constant CHUNK_SIZE = 160;
     uint256 internal constant BLOCK_SIZE = 32;
     uint256 internal constant BLOCKS_PER_CHUNK = CHUNK_SIZE / BLOCK_SIZE;
+    /// Record layout: payload [0, 95) whose first 8 bytes are a big-endian uint64 timestamp, signature [95, 160).
+    uint256 internal constant PAYLOAD_SIZE = 95;
+    uint256 internal constant SIGNATURE_SIZE = 65;
 
     error BadChunkLength();
+
+    /// Split a 160-byte record into its payload and 65-byte (r, s, v) signature.
+    function splitRecord(bytes calldata record) internal pure returns (bytes calldata payload, bytes calldata sig) {
+        if (record.length != CHUNK_SIZE) revert BadChunkLength();
+        payload = record[:PAYLOAD_SIZE];
+        sig = record[PAYLOAD_SIZE:];
+    }
+
+    /// Big-endian uint64 in the first 8 payload bytes.
+    function recordTimestamp(bytes calldata payload) internal pure returns (uint64) {
+        return uint64(bytes8(payload[:8]));
+    }
+
+    /// Hash the source signs: plain keccak256 of the payload (no EIP-191 prefix).
+    function payloadHash(bytes calldata payload) internal pure returns (bytes32) {
+        return keccak256(payload);
+    }
 
     function deriveKey(bytes32 sellerSecret, bytes32 orderId, address buyer) internal pure returns (bytes32) {
         return keccak256(abi.encodePacked(sellerSecret, orderId, buyer));

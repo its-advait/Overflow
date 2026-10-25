@@ -5,6 +5,7 @@ import {EscrowBaseTest} from "../escrow/EscrowBase.t.sol";
 import {OverflowEscrow} from "../../src/OverflowEscrow.sol";
 import {IOverflowEscrow} from "../../src/IOverflowEscrow.sol";
 import {IOverflowTreasury} from "../../src/IOverflowTreasury.sol";
+import {IOverflowEscrowFactory} from "../../src/IOverflowEscrowFactory.sol";
 
 /// The treasury pays factory escrows as payees (spec "settle() check order" step 4, "The escrow address is the order").
 contract TreasuryEscrowPayeeTest is EscrowBaseTest {
@@ -114,15 +115,18 @@ contract TreasuryEscrowPayeeTest is EscrowBaseTest {
     }
 
     function test_flaggedSeller_escrowPathReverts() public {
+        // an order opened before the flag is blocked at payment time; a new one cannot be created at all
+        OverflowEscrow earlier = _create(_termsFor(seller, address(treasury), AMOUNT, "earlier"));
         _flag(seller);
         _expectPayRevert(
             rootPk, address(e), AMOUNT, abi.encodeWithSelector(IOverflowTreasury.PayeeFlagged.selector, seller)
         );
-        // a fresh order for the same seller is blocked too
-        OverflowEscrow again = _create(_termsFor(seller, address(treasury), AMOUNT, "again"));
         _expectPayRevert(
-            rootPk, address(again), AMOUNT, abi.encodeWithSelector(IOverflowTreasury.PayeeFlagged.selector, seller)
+            rootPk, address(earlier), AMOUNT, abi.encodeWithSelector(IOverflowTreasury.PayeeFlagged.selector, seller)
         );
+        IOverflowEscrow.OrderTerms memory again = _termsFor(seller, address(treasury), AMOUNT, "again");
+        vm.expectRevert(abi.encodeWithSelector(IOverflowEscrowFactory.SellerFlagged.selector, seller));
+        factory.create(again);
     }
 
     function test_flaggedSeller_directPathReverts() public {

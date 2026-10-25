@@ -1,8 +1,14 @@
 import { keccak256, stringToBytes, toHex, type Hex } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it } from "vitest";
 import {
   BLOCKS_PER_CHUNK,
   CHUNK_SIZE,
+  buildPayload,
+  buildRecord,
+  payloadHash,
+  promiseBroken,
+  splitRecord,
   chunkKey,
   chunkMatches,
   commitDelivery,
@@ -98,4 +104,43 @@ describe("recourse crypto properties", () => {
     rec.set([0, 0, 0, 0, 0x6a, 0x12, 0x34, 0x56], 0);
     expect(recordTimestamp(toHex(rec))).toBe(0x6a123456n);
   });
+
+  it("records split into payload and signature", () => {
+    const payload = buildPayload(1_790_000_000n, toHex(new Uint8Array(87).fill(7)));
+    const sig = toHex(new Uint8Array(65).fill(9));
+    const rec = buildRecord(payload, sig);
+    expect(hexToLen(rec)).toBe(CHUNK_SIZE);
+    expect(splitRecord(rec)).toEqual({ payload, signature: sig });
+    expect(recordTimestamp(rec)).toBe(1_790_000_000n);
+    expect(() => buildPayload(1n, toHex(new Uint8Array(86)))).toThrow();
+  });
 });
+
+describe("promise check (mirrors complainPromise)", () => {
+  const source = privateKeyToAccount(`0x${"50c4ce".padStart(64, "0")}`);
+  const stranger = privateKeyToAccount(`0x${"bad".padStart(64, "0")}`);
+  const minTs = 1_790_000_000n;
+  const data = toHex(new Uint8Array(87).fill(1));
+
+  async function record(ts: bigint, signer: typeof source): Promise<Hex> {
+    const payload = buildPayload(ts, data);
+    const signature = await signer.sign({ hash: payloadHash(payload) });
+    return buildRecord(payload, signature);
+  }
+
+  it("keeps the promise for a fresh, source-signed record", async () => {
+    expect(await promiseBroken(await record(minTs + 1n, source), source.address, minTs)).toBe(false);
+  });
+  it("breaks on a wrong signer, a stale timestamp or a malformed signature", async () => {
+    expect(await promiseBroken(await record(minTs + 1n, stranger), source.address, minTs)).toBe(true);
+    expect(await promiseBroken(await record(minTs - 1n, source), source.address, minTs)).toBe(true);
+    const garbage = buildRecord(buildPayload(minTs, data), toHex(new Uint8Array(65)));
+    expect(await promiseBroken(garbage, source.address, 0n)).toBe(true);
+  });
+  it("ignores the signer when no source was promised, and rejects an empty promise", async () => {
+    expect(await promiseBroken(await record(minTs + 1n, stranger), null, minTs)).toBe(false);
+    await expect(promiseBroken(await record(minTs, source), null, 0n)).rejects.toThrow();
+  });
+});
+
+const hexToLen = (h: Hex): number => (h.length - 2) / 2;

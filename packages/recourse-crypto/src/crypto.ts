@@ -1,4 +1,14 @@
-import { concatHex, encodeAbiParameters, encodePacked, hexToBytes, keccak256, toHex, type Address, type Hex } from "viem";
+import {
+  concatHex,
+  encodeAbiParameters,
+  encodePacked,
+  hexToBytes,
+  keccak256,
+  recoverAddress,
+  toHex,
+  type Address,
+  type Hex,
+} from "viem";
 import { CHUNK_SIZE, hashLeaf, keyCommitment, merkleRoot } from "./merkle";
 
 /**
@@ -94,10 +104,54 @@ export const RECORD_LAYOUT = {
 
 export function recordTimestamp(chunk: Hex): bigint {
   const b = hexToBytes(chunk);
-  if (b.length !== CHUNK_SIZE) throw new Error(`chunk must be ${CHUNK_SIZE} bytes`);
+  if (b.length !== CHUNK_SIZE && b.length !== RECORD_LAYOUT.payloadBytes) throw new Error("expected a record or payload");
   let t = 0n;
   for (let k = 0; k < RECORD_LAYOUT.timestampBytes; k++) t = (t << 8n) | BigInt(b[k] as number);
   return t;
+}
+
+/** Split a 160-byte record into its 95-byte payload and 65-byte (r, s, v) signature. */
+export function splitRecord(record: Hex): { payload: Hex; signature: Hex } {
+  const b = hexToBytes(record);
+  if (b.length !== CHUNK_SIZE) throw new Error(`record must be ${CHUNK_SIZE} bytes`);
+  return { payload: toHex(b.slice(0, RECORD_LAYOUT.payloadBytes)), signature: toHex(b.slice(RECORD_LAYOUT.payloadBytes)) };
+}
+
+/** Assemble a record from a 95-byte payload and a 65-byte signature. */
+export function buildRecord(payload: Hex, signature: Hex): Hex {
+  if (hexToBytes(payload).length !== RECORD_LAYOUT.payloadBytes) throw new Error("payload must be 95 bytes");
+  if (hexToBytes(signature).length !== RECORD_LAYOUT.signatureBytes) throw new Error("signature must be 65 bytes");
+  return concatHex([payload, signature]);
+}
+
+/** Payload = uint64 big-endian timestamp || 87 data bytes. */
+export function buildPayload(timestamp: bigint | number, data: Hex): Hex {
+  const d = hexToBytes(data);
+  if (d.length !== RECORD_LAYOUT.payloadBytes - RECORD_LAYOUT.timestampBytes) throw new Error("data must be 87 bytes");
+  return concatHex([toHex(BigInt(timestamp), { size: 8 }), data]);
+}
+
+/** The hash the data source signs: plain keccak256 of the payload (no EIP-191 prefix), as the contract checks it. */
+export const payloadHash = (payload: Hex): Hex => keccak256(payload);
+
+/**
+ * Offchain mirror of complainPromise's decision: true when the record breaks the promised source key
+ * (signature does not recover to it) or the promised minimum timestamp. Both zero means no promise exists.
+ */
+export async function promiseBroken(record: Hex, sourceKey: Address | null, minTimestamp: bigint): Promise<boolean> {
+  const noSource = sourceKey === null || /^0x0{40}$/i.test(sourceKey);
+  if (noSource && minTimestamp === 0n) throw new Error("no promise to check");
+  const { payload, signature } = splitRecord(record);
+  if (!noSource) {
+    let recovered: Address | null = null;
+    try {
+      recovered = await recoverAddress({ hash: payloadHash(payload), signature });
+    } catch {
+      recovered = null;
+    }
+    if (recovered === null || recovered.toLowerCase() !== (sourceKey as string).toLowerCase()) return true;
+  }
+  return minTimestamp !== 0n && recordTimestamp(payload) < minTimestamp;
 }
 
 /** Local check a buyer runs before complaining: does cipher chunk i decrypt to the committed plain leaf? */

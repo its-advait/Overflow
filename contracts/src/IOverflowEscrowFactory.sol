@@ -8,6 +8,7 @@ interface IOverflowEscrowFactory {
     error BadTermsHash(bytes32 expected, bytes32 actual);
     error OrderExists(address escrow);
     error NotEscrow();
+    error SellerFlagged(address seller);
 
     event OrderCreated(
         address indexed escrow,

@@ -36,6 +36,15 @@ reveals individual `k_i`.
   consumed. The contract additionally requires `proof.length == expectedProofLength(i, chunkCount)` and
   `chunk.length == 160`, so an internal node can never be presented as a leaf.
 
+## Complaint (tier 3, `complainPromise`)
+
+Buyer submits `(i, p_i, plainProof)`. The contract verifies the record under `rootPlain`, splits it into payload and
+signature (`splitRecord`), and refunds price + bond when `ecrecover(keccak256(payload)) != sourceKey` (if a source
+was promised) or the payload's uint64 timestamp is below `minTimestamp` (if one was promised). A malformed signature
+counts as a wrong source. Terms that promise neither revert `NoPromise`; a record that keeps the promise reverts
+`PromiseKept`. Offchain mirror: `promiseBroken`. Every proven cheat (tier 2 or 3) increments `provenCheats[seller]`
+on the factory; the factory then refuses `create()` for that seller and the treasury refuses to pay them.
+
 ## Complaint (tier 2, `complainMismatch`)
 
 Buyer submits `(i, c_i, cipherProof, leaf(p_i), plainProof)` while the escrow is `Revealed` and inside the challenge

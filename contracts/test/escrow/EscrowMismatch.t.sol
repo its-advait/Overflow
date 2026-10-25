@@ -138,15 +138,15 @@ contract EscrowMismatchTest is EscrowBaseTest {
     }
 
     function test_flaggedSeller_blockedByTreasury() public {
-        _fundedAndRevealed();
-        _complainBad();
-        assertEq(factory.provenCheats(seller), 1);
-
-        // a new order from the same seller cannot be paid by any node
+        // an order opened before the proof exists; after the proof no node may pay it
         IOverflowEscrow.OrderTerms memory t2 = _terms(AMOUNT, 0, 2);
         t2.orderId = keccak256("second order");
         t2.termsHash = factory.termsHashOf(t2);
         OverflowEscrow e2 = _create(t2);
+
+        _fundedAndRevealed();
+        _complainBad();
+        assertEq(factory.provenCheats(seller), 1);
         _expectPayRevert(
             rootPk, address(e2), AMOUNT, abi.encodeWithSelector(IOverflowTreasury.PayeeFlagged.selector, seller)
         );

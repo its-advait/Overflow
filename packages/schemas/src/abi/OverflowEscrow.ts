@@ -190,7 +190,7 @@ export const overflowEscrowAbi = [
       }
     ],
     "outputs": [],
-    "stateMutability": "view"
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -686,6 +686,11 @@ export const overflowEscrowAbi = [
   },
   {
     "type": "error",
+    "name": "NoPromise",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "NotBuyerNode",
     "inputs": [
       {
@@ -702,12 +707,12 @@ export const overflowEscrowAbi = [
   },
   {
     "type": "error",
-    "name": "NotImplemented",
+    "name": "NotSeller",
     "inputs": []
   },
   {
     "type": "error",
-    "name": "NotSeller",
+    "name": "PromiseKept",
     "inputs": []
   },
   {

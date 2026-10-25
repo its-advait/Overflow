@@ -24,6 +24,7 @@ contract OverflowEscrowFactory is IOverflowEscrowFactory {
             t.buyer == address(0) || t.seller == address(0) || t.token == address(0) || t.amount == 0
                 || t.chunkCount == 0 || t.revealDeadline <= block.timestamp
         ) revert BadTerms();
+        if (provenCheats[t.seller] != 0) revert SellerFlagged(t.seller);
         bytes32 expected = termsHashOf(t);
         if (t.termsHash != expected) revert BadTermsHash(expected, t.termsHash);
 

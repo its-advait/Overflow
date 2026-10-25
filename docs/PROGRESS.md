@@ -296,3 +296,27 @@ The Base Sepolia treasury at `0xd3A74fA991CA0B5627d30EF27dC699C134848291` was ch
 - Tier 3 (`complainPromise`: source signature over the 95-byte payload, `minTimestamp`, bond flows) is not implemented.
 - The live Base Sepolia treasury and no escrow contracts are deployed with this code; redeploy pending (see P1.5 section).
 - Sampling (`k_i` reveal for random indices before funding) is an offchain protocol in the service, not yet built.
+
+## 2026-10-24: signed-record promises, bonds, cheater flags (P1.7)
+
+### Built
+- `RecourseCrypto.splitRecord(record) -> (payload[0:95], sig[95:160])`, `recordTimestamp(payload)` (big-endian uint64 in the first 8 bytes), `payloadHash(payload) = keccak256(payload)` (plain, no EIP-191 prefix; the data source signs raw keccak of the payload).
+- `OverflowEscrow.complainPromise(i, plainChunk, plainProof)`: window + structural checks as tier 2, record verified under `rootPlain`; then `broken = (sourceKey != 0 && tryRecover(payloadHash, sig) != sourceKey) || (minTimestamp != 0 && ts < minTimestamp)`. A malformed signature (ECDSA error) counts as a wrong source. Terms that promise nothing (`sourceKey == 0 && minTimestamp == 0`) revert `NoPromise` so a vacuous promise can never be used to drain an honest seller; a kept promise reverts `PromiseKept`. Both tiers share `_proveCheat(i, reason)`: `status = Refunded` first, `CheatProven`, `factory.recordCheat`, sweep price + bond + surplus to the buyer, `Refunded(reason)`.
+- `OverflowEscrowFactory.create` reverts `SellerFlagged(seller)` when `provenCheats[seller] != 0`. Combined with P1.4 (`PayeeFlagged` in the treasury) a flagged seller can neither open new orders nor be paid for existing ones.
+- Bonds were already enforced by P1.3 (`markFunded` requires price + bond; payout sends both to the seller; refund/timeout sweep everything to the buyer). This task adds the explicit flow tests; no contract change was needed.
+- `@overflow/recourse-crypto`: `splitRecord`, `buildRecord`, `buildPayload(timestamp, 87 data bytes)`, `payloadHash`, `promiseBroken(record, sourceKey | null, minTimestamp)` (offchain mirror of the contract's decision, viem `recoverAddress`), README section for tier 3. `recordTimestamp` accepts a record or a bare payload.
+- Tests: `contracts/test/escrow/EscrowPromise.t.sol` (13): wrong-source record refunds (treasury funded via `settle`, bond to the buyer, allowance stays charged, anyone may relay), stale record refunds, malformed signature refunds, valid record complaint reverts for every chunk and a forged record fails `BadProof`, timestamp-only promise ignores the signer, no-promise terms revert, complaints before reveal / after the window revert, bond to seller on payout, bond to buyer on cheat, bond to buyer on ghost (no cheat flag), `markFunded` underfunded without the bond, flagged seller cannot create (`SellerFlagged`, no clone deployed) or be paid (earlier order and direct), cheat count accumulates across orders. `TreasuryEscrowPayee::test_flaggedSeller_escrowPathReverts` updated for the new create rule; `test_complaint_wellFormed_honestSeller` now expects `NoPromise` for tier 3. ABIs re-exported (escrow 53 entries, factory 17).
+
+### Verified (real output, 2026-10-24)
+| Check | Result |
+|---|---|
+| `forge build` | success |
+| `forge test` | 166 passed, 0 failed across 12 suites |
+| `forge snapshot` | refreshed; `test_wrongSourceRecord_refunds` 2,317,848 gas whole-test (incl. order creation and treasury funding) |
+| `pnpm test` | 7 files / 122 tests (4 new: record split, promise kept/broken/malformed, empty promise rejected) |
+| `pnpm typecheck` / `pnpm lint` | exit 0 / exit 0 |
+
+### Open issues
+- `sourceKey` is a single EOA per order; a source that rotates keys needs a new order or an onchain registry (not in spec).
+- Offchain: the service does not yet build or verify records (`buildPayload`/`buildRecord` exist; the seller simulation and sampling protocol are P2).
+- Live Base Sepolia treasury predates escrow support; redeploy pending.

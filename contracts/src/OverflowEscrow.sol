@@ -15,8 +15,8 @@ import {SafeERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeE
 /// or a quiet challenge window; a missed reveal refunds the buyer (the treasury). Exactly one terminal state.
 /// @dev Clone implementation: FACTORY is immutable (shared by every clone through the code); the implementation
 /// itself is marked initialized in the constructor so only clones can be initialized, and only by the factory.
-/// Tier 2 (complainMismatch) refunds on a proven ciphertext/plaintext mismatch; tier 3 (complainPromise) is a stub
-/// that enforces every structural check, then reverts NotImplemented.
+/// Tier 2 (complainMismatch) refunds on a proven ciphertext/plaintext mismatch; tier 3 (complainPromise) refunds when
+/// a committed record breaks the source-signature or minimum-timestamp promise. Both record the seller's cheat.
 contract OverflowEscrow is IOverflowEscrow, ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
 
@@ -118,23 +118,50 @@ contract OverflowEscrow is IOverflowEscrow, ReentrancyGuardTransient {
         bytes memory plaintext = RecourseCrypto.xorChunk(RecourseCrypto.chunkKey(revealedKey, i), cipherChunk);
         if (MerkleLib.leaf(plaintext) == plainLeaf) revert ChunkMatches();
 
-        address seller_ = _t.seller;
-        status = Status.Refunded; // effect first; the factory and token calls follow
-        emit CheatProven(seller_, i);
-        IOverflowEscrowFactory(FACTORY).recordCheat(seller_);
-        _sweepToBuyer();
-        emit Refunded("mismatch");
+        _proveCheat(i, "mismatch");
     }
 
-    /// @dev Tier 3 fills in the source-signature and timestamp checks and the refund.
-    function complainPromise(uint256 i, bytes calldata plainChunk, bytes32[] calldata plainProof) external view {
+    /// @notice Tier 3: prove a committed plaintext record breaks the seller's promise. The record is verified
+    /// under rootPlain, split into a 95-byte payload and a 65-byte signature; the cheat is proven when the
+    /// signature does not recover to `terms.sourceKey` (when a source was promised) or the payload's uint64
+    /// timestamp is below `terms.minTimestamp` (when one was promised). Refunds price + bond to the buyer.
+    function complainPromise(uint256 i, bytes calldata plainChunk, bytes32[] calldata plainProof)
+        external
+        nonReentrant
+    {
         _checkComplaintWindow();
         uint256 n = _t.chunkCount;
         if (i >= n) revert ChunkOutOfRange();
         if (plainChunk.length != CHUNK_SIZE) revert BadChunkLength();
         _checkProofLength(plainProof, i, n);
         if (!MerkleLib.verify(plainProof, _t.rootPlain, MerkleLib.leaf(plainChunk), i, n)) revert BadProof();
-        revert NotImplemented();
+
+        address sourceKey = _t.sourceKey;
+        uint64 minTimestamp = _t.minTimestamp;
+        if (sourceKey == address(0) && minTimestamp == 0) revert NoPromise();
+
+        (bytes calldata payload, bytes calldata sig) = RecourseCrypto.splitRecord(plainChunk);
+        bool broken;
+        if (sourceKey != address(0)) {
+            (address recovered, ECDSA.RecoverError err,) = ECDSA.tryRecover(RecourseCrypto.payloadHash(payload), sig);
+            broken = err != ECDSA.RecoverError.NoError || recovered != sourceKey;
+        }
+        if (!broken && minTimestamp != 0) {
+            broken = RecourseCrypto.recordTimestamp(payload) < minTimestamp;
+        }
+        if (!broken) revert PromiseKept();
+
+        _proveCheat(i, "promise");
+    }
+
+    /// Shared tail of a proven complaint: close first, then record the cheat and sweep price + bond to the buyer.
+    function _proveCheat(uint256 i, string memory reason) internal {
+        address seller_ = _t.seller;
+        status = Status.Refunded;
+        emit CheatProven(seller_, i);
+        IOverflowEscrowFactory(FACTORY).recordCheat(seller_);
+        _sweepToBuyer();
+        emit Refunded(reason);
     }
 
     // ---------------------------------------------------------------- views
