@@ -21,6 +21,7 @@ import { ledgerRoutes } from "./routes/ledger.js";
 import { missionRoutes } from "./routes/missions.js";
 import { purchaseRoutes } from "./routes/purchases.js";
 import { resourceRoutes } from "./routes/resources.js";
+import { settingsRoutes } from "./routes/settings.js";
 import { treasuryRoutes } from "./routes/treasury.js";
 import { resolveSession, type Session } from "./session.js";
 
@@ -92,6 +93,8 @@ export function createApp(opts: CreateAppOptions) {
       treasuryRead: opts.ports?.treasuryRead ?? base.treasuryRead,
       escrowRead: opts.ports?.escrowRead ?? base.escrowRead,
       treasury: opts.ports?.treasury ?? base.treasury,
+      recourse: opts.ports?.recourse ?? base.recourse,
+      network: opts.ports?.network ?? base.network,
     },
     session: opts.session ?? resolveSession(),
     treasury: opts.treasury ?? null,
@@ -128,6 +131,7 @@ export function createApp(opts: CreateAppOptions) {
   app.route("/api/controller-requests", controllerRequestRoutes(deps));
   app.route("/api", ledgerRoutes(deps));
   app.route("/api/treasury", treasuryRoutes(deps));
+  app.route("/api/settings", settingsRoutes(deps));
   app.route("/events", eventsRoutes(deps));
 
   return { app, deps };

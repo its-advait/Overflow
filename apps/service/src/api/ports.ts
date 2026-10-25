@@ -3,18 +3,22 @@ import type { CheckedQuote, PaymentRequirements } from "@overflow/payment-client
 import type {
   EscrowStatus,
   MissionRecord,
+  NetworkInfo,
   PaymentPath,
   PurchaseOrder,
   ReconciliationRun,
   ReconciliationTrigger,
+  RecourseSellerView,
   ResourceRecord,
   ResourceRequestRecord,
+  SellerBehaviour,
 } from "@overflow/schemas";
 import type { Hex } from "viem";
 import type { TreasurySnapshot } from "../chain/treasury-snapshot.js";
 import type { ProposeResult } from "../orchestration/oracle-port.js";
 import type { MissionRunResult, RunOptions } from "../orchestration/mission-runner.js";
 import type { TreasuryNode } from "../orchestration/delegation-plan.js";
+import type { OrderOutcome } from "../recourse/run.js";
 
 // ---------------------------------------------------------------------------
 // Ports: what the API needs from parts of the system that later prompts build.
@@ -135,6 +139,28 @@ export interface TreasuryPort {
   read(): Promise<TreasurySnapshot>;
 }
 
+/**
+ * Judge controls over the SIMULATED recourse sellers (recourse/port.ts): which behaviour each seller account
+ * plays next, and one order run end to end on the local Anvil fork. The default refuses (501): without the seller
+ * keys, an Anvil RPC and an escrow factory there is nothing to run, and nothing is faked.
+ */
+export interface RecourseOrderInput {
+  sellerAddress: Address;
+  listingId: string;
+  bondAtomic?: bigint | undefined;
+}
+export interface RecoursePort {
+  sellers(): Promise<RecourseSellerView[]>;
+  setBehaviour(sellerAddress: Address, behaviour: SellerBehaviour): Promise<RecourseSellerView>;
+  /** Runs one order with the seller's current behaviour; resolves when the runner is done. Statuses: the indexer. */
+  runOrder(input: RecourseOrderInput): Promise<OrderOutcome>;
+}
+
+/** Treasury owner/floor/reservationWindow/reservedTotal/nodeCount views plus the boot token domain (chain/network-info.ts). */
+export interface NetworkInfoPort {
+  read(): Promise<NetworkInfo>;
+}
+
 export interface Ports {
   orchestration: OrchestrationPort;
   adapters: Partial<Record<PaymentPath, PaymentAdapter>>;
@@ -143,6 +169,8 @@ export interface Ports {
   treasuryRead: TreasuryReadPort;
   escrowRead: EscrowReadPort;
   treasury: TreasuryPort;
+  recourse: RecoursePort;
+  network: NetworkInfoPort;
 }
 
 /** Defaults for the ports later prompts build. The orchestration port is always real (createApp builds createOraclePort). */
@@ -163,7 +191,20 @@ export function defaultPorts(): Omit<Ports, "orchestration"> {
         throw new NotWiredError("TreasuryPort.read (chain balance reads)", "BASE_SEPOLIA_RPC_URL + deployments/base-sepolia.json");
       },
     },
+    recourse: notWiredRecourse(),
+    network: {
+      read: async () => {
+        throw new NotWiredError("NetworkInfoPort.read (treasury view calls)", "BASE_SEPOLIA_RPC_URL + deployments/base-sepolia.json");
+      },
+    },
   };
+}
+
+function notWiredRecourse(): RecoursePort {
+  const refuse = async (): Promise<never> => {
+    throw new NotWiredError("RecoursePort (SIMULATED orders on local Anvil)", "AGENT_ROOT_KEY + RECOURSE_SELLER_KEYS + an Anvil RPC + an escrow factory (anvil:provision)");
+  };
+  return { sellers: refuse, setBehaviour: refuse, runOrder: refuse };
 }
 
 function notWiredEscrowRead(): EscrowReadPort {

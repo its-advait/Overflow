@@ -104,6 +104,18 @@ export function resourcesRepository(db: Executor) {
       return found!;
     },
 
+    /** A judge's edit (price, license, seats) of one listing; undefined when the id is unknown. */
+    async update(id: string, fields: { priceAtomic?: string | undefined; license?: ResourceRecord["license"] | undefined; seats?: number | undefined }): Promise<ResourceRecord | undefined> {
+      const set = {
+        ...(fields.priceAtomic !== undefined ? { price: fields.priceAtomic } : {}),
+        ...(fields.license !== undefined ? { license: fields.license } : {}),
+        ...(fields.seats !== undefined ? { seats: fields.seats } : {}),
+      };
+      if (Object.keys(set).length === 0) return this.getById(id);
+      await withDbErrors(() => db.update(resources).set(set).where(eq(resources.id, id)));
+      return this.getById(id);
+    },
+
     async getById(id: string): Promise<ResourceRecord | undefined> {
       const [r] = await db.select().from(resources).where(eq(resources.id, id));
       return r ? toResource(r) : undefined;

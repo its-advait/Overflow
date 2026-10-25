@@ -30,7 +30,8 @@ import {
   type OracleModel,
 } from "./orchestration/index.js";
 import { createSweepReconciler, MemoryExceptions, MemoryLedger, MemoryPurchaseIndex } from "./reconciliation/sweeps";
-import { isAnvil, redact, resolveRecourseAccounts, runRecourseOnAnvil } from "./recourse/index.js";
+import { createRecoursePort, isAnvil, redact, resolveRecourseAccounts, type RecourseRunner } from "./recourse/index.js";
+import { viemNetworkInfo } from "./chain/network-info.js";
 import { createSellerApp, resolveSellerConfig, sellersStatus } from "./sellers/index.js";
 
 const log = (line: string) => console.log(`${new Date().toISOString()} ${line}`);
@@ -174,16 +175,31 @@ async function main(): Promise<void> {
   }
   log(`[orchestration] mission runner ${runnerStatus}`);
 
-  // Recourse demo (P5.2 minimum): three SIMULATED orders on a LOCAL Anvil fork only. Refuses unless the RPC is Anvil.
+  // Recourse on a LOCAL Anvil fork only: the judge controls (POST /api/settings/orders) and, with
+  // RECOURSE_ANVIL_RUN=1, the P5.2 boot demo (three SIMULATED orders: honest, ghost, swap). Refuses unless the RPC is Anvil.
   const recourseAccounts = resolveRecourseAccounts();
+  const anvil = await isAnvil(config.rpcUrl);
+  const bootRun = process.env["RECOURSE_ANVIL_RUN"] === "1";
   let recourseStatus: string;
-  let recourseEnabled = false;
+  let recourse: RecourseRunner | undefined;
   if (!recourseAccounts.ok) recourseStatus = `idle: ${recourseAccounts.reason}`;
-  else if (!(await isAnvil(config.rpcUrl))) recourseStatus = `refused: ${redact(config.rpcUrl)} is not an Anvil node (no anvil_nodeInfo); the SIMULATED recourse run never targets Base Sepolia`;
+  else if (!anvil) recourseStatus = `refused: ${redact(config.rpcUrl)} is not an Anvil node (no anvil_nodeInfo); the SIMULATED recourse run never targets Base Sepolia`;
   else if (!boot.escrowFactory) recourseStatus = "idle: the deployments file has no escrow factory (run anvil:provision)";
   else {
-    recourseEnabled = true;
-    recourseStatus = `live: 3 SIMULATED orders (honest, ghost, swap) on local Anvil ${redact(config.rpcUrl)}, started after the indexer; root node key ${recourseAccounts.accounts.rootNode.address}`;
+    recourse = createRecoursePort({
+      db: database.db,
+      bus: activityBus,
+      rpcUrl: config.rpcUrl,
+      treasury: boot.treasury,
+      escrowFactory: boot.escrowFactory,
+      usdc: deployments.usdc,
+      chain: client,
+      relayer,
+      facilitator: facilitatorViaApp(facilitatorApp, { log }),
+      accounts: recourseAccounts.accounts,
+      log,
+    });
+    recourseStatus = `live: judge controls for 3 SIMULATED sellers on local Anvil ${redact(config.rpcUrl)} (GET/PUT /api/settings/sellers, POST /api/settings/orders); boot demo ${bootRun ? "scheduled after the indexer (RECOURSE_ANVIL_RUN=1)" : "off (RECOURSE_ANVIL_RUN is not 1)"}; root node key ${recourseAccounts.accounts.rootNode.address}`;
   }
   log(`[recourse] ${recourseStatus}`);
 
@@ -198,6 +214,10 @@ async function main(): Promise<void> {
       treasuryRead: viemTreasuryRead(client, boot.treasury),
       // Escrow view calls + USDC balance for GET /api/escrow/:id; read-only.
       escrowRead: viemEscrowRead(config.rpcUrl, deployments.usdc),
+      // Treasury owner/floor/window views for GET /api/settings/network; read-only.
+      network: viemNetworkInfo({ chain: client, chainId: boot.chainId, anvil, rpcHost: redact(config.rpcUrl), treasury: boot.treasury, escrowFactory: boot.escrowFactory, token: boot.token, relayer: account.address, deployments }),
+      // Judge controls over the SIMULATED recourse sellers; only on a local Anvil fork with the seller keys.
+      ...(recourse ? { recourse } : {}),
     },
     treasury: boot.treasury,
     oracle,
@@ -252,21 +272,9 @@ async function main(): Promise<void> {
   );
   await indexer?.start();
 
-  if (recourseEnabled && recourseAccounts.ok && boot.escrowFactory) {
-    const escrowFactory = boot.escrowFactory;
-    void runRecourseOnAnvil({
-      db: database.db,
-      bus: activityBus,
-      rpcUrl: config.rpcUrl,
-      treasury: boot.treasury,
-      escrowFactory,
-      usdc: deployments.usdc,
-      chain: client,
-      relayer,
-      facilitator: facilitatorViaApp(facilitatorApp, { log }),
-      accounts: recourseAccounts.accounts,
-      log,
-    })
+  if (recourse && bootRun) {
+    void recourse
+      .demo()
       .then((r) => log(`[recourse] run complete: ${r.orders.map((o) => `${o.behaviour} ${o.purchaseId} ${o.escrow} -> ${o.lastStep}`).join("; ")}; warped ${r.warpedSeconds}s`))
       .catch((e: unknown) => log(`[recourse] run failed: ${e instanceof Error ? e.message : String(e)}`));
   }

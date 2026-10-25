@@ -8,6 +8,9 @@ import { z, ZodError } from "zod";
 import { ExceptionAlreadyDecidedError, OnchainApprovalRequiredError, SelfResolutionError } from "../exceptions/service.js";
 import { NoOpenRequestsError, OracleUnavailableError, RequirementsUnconfirmedError } from "../orchestration/oracle-port.js";
 import { ActivePurchaseExistsError, TransitionEvidenceError } from "../orchestration/purchase-service.js";
+import { NotAnvilError } from "../recourse/anvil.js";
+import { UnknownRecourseSellerError } from "../recourse/behaviour.js";
+import { RecourseOrderError } from "../recourse/port.js";
 import { NotWiredError } from "./ports.js";
 import type { Session } from "./session.js";
 
@@ -75,6 +78,12 @@ export function toApiError(e: unknown): ApiError {
   if (e instanceof NoOpenRequestsError) return new ApiError(409, "no_open_requests", e.message, { missionId: e.missionId });
   if (e instanceof RequirementsUnconfirmedError) {
     return new ApiError(409, "requirements_unconfirmed", e.message, { missionId: e.missionId });
+  }
+  if (e instanceof UnknownRecourseSellerError) return new ApiError(404, "unknown_seller", e.message, { address: e.address });
+  if (e instanceof NotAnvilError) return new ApiError(409, "not_anvil", e.message);
+  if (e instanceof RecourseOrderError) {
+    // The runner stopped mid-order; whatever it recorded is on GET /api/escrow. Nothing is retried.
+    return new ApiError(502, "order_failed", e.message, { listingId: e.listingId, sellerAddress: e.sellerAddress });
   }
   return new ApiError(500, "internal_error", "internal error");
 }

@@ -2,6 +2,7 @@ import { buildTree, encryptDataset, getProof, hashLeaf, keyCommitment, revealChu
 import type { Address, Hex } from "@overflow/schemas";
 import { concatHex, keccak256, stringToHex } from "viem";
 import type { PrivateKeyAccount } from "viem/accounts";
+import type { SellerBehaviour } from "./behaviour.js";
 import type { LoadedDataset } from "./dataset.js";
 import { drawSample } from "./evidence.js";
 
@@ -18,7 +19,7 @@ import { drawSample } from "./evidence.js";
 // No seller here speaks HTTP; run.ts drives them in-process.
 // ---------------------------------------------------------------------------
 
-export type SellerBehaviour = "honest" | "ghost" | "swap";
+export type { SellerBehaviour };
 
 export const SIMULATED_SELLER_LABEL: Record<SellerBehaviour, string> = {
   honest: "SIMULATED honest seller",

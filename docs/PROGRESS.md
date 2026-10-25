@@ -1541,3 +1541,42 @@ Live run on the Anvil fork (treasury `0x9d1bc2c1…`, root node 1, service on `:
 - The forced `/settle` from `facilitator-demo.ts` step 2b is a direct caller outside the agents; it stays on `/facilitator/events` and is not in the lane (by design, see the service section above).
 - A mission created after the page loaded shows its id, not its goal, in the drawer until the page is reloaded.
 - Seen in the live run, not fixed here: the agents' `request_sample` tool fails with ENOENT because it looks for datasets under `apps/service/data/` instead of the repo's `data/`.
+
+## 2026-10-25: judge controls API (service half of Settings)
+
+Prompt: let a judge change the scenario live with no code change (docs/SPEC.md "A judge's own scenario"): seller behaviour per seller, listing price and license flag, agent caps and a new payee, network and contract info. DONE WHEN switching a seller to ghost makes the next order refund; changing a license flag changes the next Fusion decision. Both met on the local Anvil fork (nothing broadcast on Base Sepolia). The web page is the next commit.
+
+Finding first: there was no API for either control. Seller behaviour was fixed in `recourse/run.ts` (`ORDERS`), the three orders ran once at boot, and the order price came from the catalog file, not the `resources` row. Nothing could run a "next order".
+
+### Built
+- `apps/service/src/recourse/run.ts` split into `createRunContext` (Anvil guard, repos, purchase service, the one relayer and the sellers' own sender, the demo mission), `runOrder(ctx, spec)` (one order end to end: commit, sample, judge, records first, `factory.create`, bond, `settle()`, `markFunded`, then reveal + `accept`, reveal + `complainMismatch`, or "awaiting timeout"), `claimTimeouts` (warps the Anvil clock only when some order awaits a timeout, then `claimTimeoutRefund`) and the thin boot demo `runRecourseOnAnvil` (`BOOT_ORDERS`, unchanged cast and result shape). The seller's secret follows its account, so a behaviour switch keeps the seller's identity. **Price from the `resources` row** (a judge's edit reaches the next order's `escrow.amount()`); manifest still from the catalog. A factory refusal at `create` (`SellerFlagged`) closes the purchase as REJECTED with the decoded revert; nothing has moved.
+- **Two-clock fix.** The runner signed `validAfter = chainNow - 5`; the in-process facilitator prechecks the window against the wall clock. After any `evm_increaseTime` the Anvil clock runs ahead, so the next `settle()` was refused "not yet valid" (today that bit a service restart on a warmed fork; with per-order ghost warps it would have bitten the very next order). `authorizationWindow(chainNow, wallNow)` opens at the earlier clock and closes 600 s after the later one; `settle()` has no window-length check (only `reserve()` does).
+- `recourse/behaviour.ts`: in-memory behaviour per SIMULATED seller address (defaults honest, ghost, swap by `RECOURSE_SELLER_KEYS` position; `SellerBehaviourSchema` now lives in `@overflow/schemas`). `recourse/accounts.ts` resolves whenever the keys are present; `RECOURSE_ANVIL_RUN=1` only schedules the boot demo (`index.ts`). `recourse/port.ts` `createRecoursePort`: one mutex around every order and the boot demo (shared relayer, shared clock), `sellers()` merges `seller_history.flagged` from the indexer, `runOrder` = `runOrder` + `claimTimeouts` for that one order; failures become `RecourseOrderError` (502 `order_failed`), unknown addresses 404 `unknown_seller`, a non-Anvil RPC 409 `not_anvil`.
+- Routes: `GET /api/settings/sellers`, `PUT /api/settings/sellers/:address {behaviour}`, `POST /api/settings/orders {sellerAddress, listingId, bondAtomic?}` (synchronous; answers the runner's `OrderOutcome` with its tx hashes and the note that statuses come from the indexer), `GET /api/settings/network` (`NetworkInfoPort` over `owner()`, `floor()`, `reservationWindow()`, `reservedTotal()`, `nodeCount()` at one block, the boot token domain, relayer, deploy facts, "local Anvil fork" vs "Base Sepolia"), `PUT /api/resources/:id {priceAtomic?, license?, seats?}` (SIMULATED listings only, 409 `not_simulated` otherwise; `resourcesRepository.update`). Ports `recourse` and `network` default to 501. Shapes in `packages/schemas/src/settings.ts`.
+- Tests: behaviour store, accounts, `authorizationWindow` (chain ahead by 1800 s, behind by 120 s, equal, checked through `buildAuthorization` under both clocks), network reader with a fake chain, settings routes with a fake port (501 by default, list/set/run, 400/404), resource update route (price, license, seats; empty, float, negative, unknown license, unknown id, non-simulated refused).
+
+### Verified (real output)
+| Check | Result |
+| --- | --- |
+| `pnpm -r typecheck` | exit 0 |
+| `pnpm test` | 99 files passed, 1 skipped; 780 tests passed, 1 skipped (before the `create` REJECTED patch; `apps/service` rerun after it: 37 files, 271 tests passed) |
+
+Live on the Anvil fork (`anvil-up.sh`, `anvil:provision`: treasury `0x84123aef…3edb`, factory `0xb709de40…65a2`, owner Anvil #0, root node 1; service on `:4010` with an empty block mined every 2 s):
+
+| Step | Result |
+| --- | --- |
+| Boot demo (`RECOURSE_ANVIL_RUN=1`) through the refactored runner | `run complete: honest … -> accept; ghost … -> claimTimeoutRefund; swap … -> complainMismatch; warped 1800s`; indexer: SETTLED / REFUNDED / REFUNDED; treasury 100.00 → 91.60 USDC (12 paid, 1.0 + 2.6 bonds won) |
+| `GET /api/settings/sellers` | index 0 honest, 1 ghost, 2 swap `flagged: true` (from the indexed `CheatRecorded`) |
+| **Ghost DONE WHEN**: `PUT /sellers/<seller 0> {ghost}` then `POST /orders {seller 0, listing-national-annual-2024-2026}` | 0.86 s after a 1800 s warp: `lastStep: claimTimeoutRefund`, txs create/bond/settle/markFunded/claimTimeoutRefund; `GET /api/escrow/9cb2f83d…`: escrow `Refunded`, purchase `REFUNDED`, chain `Refunded`; treasury 91.60 → 92.80 USDC (6.00 out and back, 1.20 bond won) |
+| Seller 0 back to honest, `PUT /api/resources/listing-national-monthly-2021-2022 {priceAtomic: 4500000}` (catalog says 4000000), `POST /orders` | `lastStep: accept`, `amountAtomic 4500000`; indexer SETTLED; `cast call escrow.amount()` = 4500000; treasury 92.80 → 88.30 |
+| Flagged swap seller (index 2) `POST /orders` | 502 `order_failed` "factory.create(swap): simulation reverted SellerFlagged(0x9965…A4dc)"; purchase `REJECTED`, no transaction sent |
+| `GET /api/settings/network` vs `cast call` | owner `0xf39F…2266`, floor 0, reservationWindow 600, nodeCount 1: equal |
+| **License DONE WHEN** (fresh service, boot demo off so nothing is owned; mission planned by `claude-sonnet-5-5`, fields aligned to the catalog in the requirements edit, confirmed): propose → flip `listing-national-monthly-2024-2026` to single-user → propose → flip `…-seller-b` too → propose | `fusion.decision` 1: "Merge: all 9 rules pass … on listing-national-monthly-2024-2026 … mission root node 1 pays"; 2: "Merge: all 9 rules pass … on listing-national-monthly-2024-2026-seller-b …"; 3: "No merge … on listing-california-monthly-2024-2026: geography (missing region(s) US; listing covers US-CA). Requests stay separate." Each propose answered 501 `not_wired` (order terms, by design) after recording the decision |
+| `POST /api/exceptions` CAP_RAISE node 1 → 150 USDC, NEW_PAYEE | two pending controller requests (`raiseCap(1, 150000000)`, `setAllow(0x1234…5678, true)`); nothing DONE |
+
+### Limits
+- The behaviour store is in memory, like PGlite: a restart returns to honest/ghost/swap.
+- Every ghost order moves the shared Anvil clock 1800 s forward for everything else on the fork (deadlines of other open orders included). Honest and swap orders leave the clock alone.
+- A `create`-refused order keeps its `escrow_orders` row, so `GET /api/escrow` shows that escrow as `Created` (the row's default) next to the `REJECTED` purchase; no contract exists at that address.
+- `GET /api/activity?missionId=` lists oldest first; the web sorts.
+- The live model named a field `ev_registrations` that the SIMULATED catalog calls `units`; the owner's requirements edit (already in the UI) fixes it before confirm.
