@@ -162,11 +162,31 @@
 | `pnpm lint` | exit 0 |
 | `git grep -nE "0x[a-fA-F0-9]{64}"` | only typehashes/domain separators; no private keys |
 
-### Open issues (DONE WHEN items not met)
-- **Not deployed.** The live broadcast needs the `overflow-deployer` keystore password. `~/.foundry/overflow-deployer.pw` and the `DEPLOYER_PASSWORD_FILE` / `DEPLOYER_ACCOUNT` / `DEPLOYER_ADDRESS` lines in `.env` were not present when checked, so `pnpm contracts:deploy` was not run. To finish: create the password file (or run `pnpm contracts:deploy` from a terminal and type the password at forge's prompt), then `pnpm status`. Deployer `0xB6F4…06C3` holds 0.0001 ETH, enough for the estimated cost.
-- Consequently `packages/schemas/deployments/base-sepolia.json`, `src/deployments.ts` and Basescan verification do not exist yet; `loadDeployments()` throws the path until the deploy runs.
-- `dev:fund` cannot move USDC yet: the deployer holds 0 USDC (get test USDC at faucet.circle.com). The relayer holds 1 USDC but 0 ETH.
-- `escrowFactory`/`escrowImplementation` stay `null` until P1.6.
+### Deployed (Base Sepolia, 2026-10-25 01:29 UTC, run by the user with the keystore)
+| Item | Value |
+|---|---|
+| OverflowTreasury | `0xd3A74fA991CA0B5627d30EF27dC699C134848291` (https://sepolia.basescan.org/address/0xd3a74fa991ca0b5627d30ef27dc699c134848291) |
+| deploy tx | `0x5a78240fc7d6bdb5135332dbbf37dd9d17f8aaaca8335c3627d45a48678ad845`, status 0x1, block 49849422, 1,944,133 gas |
+| createRoot tx | `0x97b3b51bdda633d98966ed6dcf2809ad26dfeb5ae2fcd9355853a8490bc7143f`, status 0x1, block 49849422, 167,605 gas |
+| owner / deployer | `0xB6F4162192F753C9998B63893CBb48FA046906C3` |
+| TOKEN | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` (Base Sepolia USDC) |
+| root node 1 | key `0x390CF9aA0230728dB7E185782F2288E41892Ea89`, cap 50 USDC, maxPerCall 15 USDC, expiry 2026-11-01T01:28:38Z |
+| Basescan source | verified: `OverflowTreasury`, solc v0.8.28, cancun, optimizer 200 runs (Etherscan v2 `getsourcecode`, status 1) |
+| escrowFactory / escrowImplementation | `null` (P1.6) |
+
+The first export run failed in `parseDeployments` with `Invalid ISO datetime` on `deployedAt`: forge writes the
+broadcast `timestamp` in milliseconds (1792891768225) and `export-deployment.ts` multiplied it by 1000 again
+(year 58785). Fixed by treating values above 1e12 as milliseconds; nothing was re-broadcast. Regenerated from the
+existing `run-latest.json`: `packages/schemas/deployments/base-sepolia.json`, `src/deployments.ts`
+(`BASE_SEPOLIA_DEPLOYMENT`) and the three ABIs. Live-chain check: code size 8,747 bytes at the address, `owner()`,
+`TOKEN()`, `nodeCount() == 1`, `remaining(1) == 50000000`, both receipts status 0x1, all equal to the JSON.
+
+`pnpm status` (block 49855168): balance 0.00 USDC, owner and TOKEN as above, floor 0, nodeCount 1, node 1 remaining
+50.00 USDC. `pnpm typecheck` exit 0 (9 workspaces), `pnpm test` 6 files / 112 tests passed.
+
+### Open issues
+- Treasury holds 0 USDC; `pnpm dev:fund` needs test USDC on the deployer (faucet.circle.com), or the controller funds via Coinbase Wallet in the demo.
+- `escrowFactory`/`escrowImplementation` stay `null` until the escrow contracts are added to `Deploy.s.sol` (P1.6).
 
 ## 2026-10-24: escrow factory and tier-1 escrow
 

@@ -9,3 +9,4 @@ export * from "./ledger";
 export * from "./hashing";
 export * from "./chain";
 export * from "./abi";
+export * from "./deployments";

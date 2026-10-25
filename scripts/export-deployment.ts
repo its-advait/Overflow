@@ -20,7 +20,7 @@ type BroadcastTx = {
   transaction: { from: `0x${string}`; to?: `0x${string}` | null };
 };
 type BroadcastReceipt = { blockNumber: `0x${string}` | number; transactionHash: `0x${string}` };
-type Broadcast = { transactions: BroadcastTx[]; receipts: BroadcastReceipt[]; timestamp: number };
+type Broadcast = { transactions: BroadcastTx[]; receipts: BroadcastReceipt[]; timestamp: number /* unix ms in forge >= 1.x */ };
 
 /** Contracts exported as ABIs when their artifact exists. */
 const ABI_CONTRACTS = ["OverflowTreasury", "OverflowEscrowFactory", "OverflowEscrow"] as const;
@@ -114,7 +114,7 @@ function main(): void {
     owner,
     deployer: treasuryTx.transaction.from,
     deployBlock: deployBlock.toString(),
-    deployedAt: new Date(run.timestamp * 1000).toISOString(),
+    deployedAt: new Date(run.timestamp > 1e12 ? run.timestamp : run.timestamp * 1000).toISOString(), // forge writes ms
     txs,
   });
 

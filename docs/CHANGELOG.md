@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- fix(scripts): export-deployment treats forge's millisecond broadcast timestamp correctly; Base Sepolia deployment recorded in `packages/schemas/deployments/base-sepolia.json` (treasury `0xd3A7…8291`, verified on Basescan).
 - feat(contracts): escrow factory and tier-1 escrow: `OverflowEscrowFactory` (CREATE2 clones salted by `(orderId, termsHash)`, onchain `termsHash` check, `provenCheats`), `OverflowEscrow` (markFunded, revealKey, accept via a treasury node's EIP-712 signature, finalizePayout, claimTimeoutRefund, one terminal state), `MerkleLib` with domain-separated hashing and index-dependent proof lengths mirrored in `@overflow/recourse-crypto`; `uint32 chunkCount` added to `OrderTerms` and `TERMS_HASH_ABI`; 41 escrow + 6 Merkle tests and a 3-property invariant suite on real USDC.
 - chore(contracts): deploy, verify, export addresses: `Deploy.s.sol` (keystore-signed, createRoot or printed calldata), `@overflow/scripts` (`deploy.sh`, `export-deployment.ts`, `status.ts`, DEV-ONLY `dev-fund.ts`), `pnpm contracts:deploy|contracts:export|status|dev:fund`, generated `overflowTreasuryAbi`, `DeploymentsSchema` superset at `packages/schemas/deployments/base-sepolia.json`. Live Base Sepolia deploy pending the keystore password.
 - feat(contracts): OverflowTreasury core ported from Leash (policy tree, settle() check order, stateful ERC-1271 gate, signed delegation); 51 unit + 3 adversarial tests on real USDC v2.2; `docs/contract-invariants.md`; gas snapshot.

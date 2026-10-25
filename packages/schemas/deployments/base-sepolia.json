@@ -1,0 +1,16 @@
+{
+  "chainId": 84532,
+  "token": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+  "usdc": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+  "treasury": "0xd3a74fa991ca0b5627d30ef27dc699c134848291",
+  "escrowFactory": null,
+  "escrowImplementation": null,
+  "owner": "0xB6F4162192F753C9998B63893CBb48FA046906C3",
+  "deployer": "0xb6f4162192f753c9998b63893cbb48fa046906c3",
+  "deployBlock": "49849422",
+  "deployedAt": "2026-10-25T01:29:28.225Z",
+  "txs": {
+    "treasury": "0x5a78240fc7d6bdb5135332dbbf37dd9d17f8aaaca8335c3627d45a48678ad845",
+    "createRoot": "0x97b3b51bdda633d98966ed6dcf2809ad26dfeb5ae2fcd9355853a8490bc7143f"
+  }
+}
