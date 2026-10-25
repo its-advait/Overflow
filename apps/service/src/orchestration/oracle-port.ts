@@ -207,6 +207,14 @@ export function createOraclePort(opts: OraclePortOptions): OrchestrationPort {
       });
     },
 
+    async runMission() {
+      throw new NotWiredError("mission runner", "orchestration/mission-runner.ts: needs AGENT_ROOT_KEY, AGENT_KEYS, an RPC and a deployments file");
+    },
+
+    async pauseAgent() {
+      throw new NotWiredError("mission runner", "orchestration/mission-runner.ts: needs AGENT_ROOT_KEY, AGENT_KEYS, an RPC and a deployments file");
+    },
+
     async propose(mission: MissionRecord): Promise<ProposeResult> {
       const repos = createRepositories(opts.db);
       const open = (await repos.resourceRequests.listByMission(mission.id)).filter((r) => r.status === "open");

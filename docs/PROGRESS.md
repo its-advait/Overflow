@@ -927,6 +927,42 @@ Follow-ups: a facilitator route for `releaseClosed` (the Coinbase adapter's reco
 - `GET /api/resources?missionId=` is still unfiltered (`filtered: false`).
 - ~~Fusion (P6.2) will merge requests and fill `allocations`; `propose` reads `mission.rootNodeId` as the paying node.~~ Done below ("Fusion: compatibility matcher, LCA payer, allocations").
 
+## 2026-10-24: orchestration: mission runner and signed delegation
+
+### Built
+- Merged `origin/person1` into `person2` first (commit `0ec7de5`): contracts, `overflowTreasuryAbi`, facilitator app with `POST /delegate` + `/pause-child`, keystore signing, Base Sepolia deployment file. `apps/service/src/index.ts` keeps person1's loud boot and adds person2's catalog seed and Oracle model.
+- `apps/service/src/orchestration/`:
+  - `agent-keys.ts` `resolveAgentKeys()`: orchestrator from `AGENT_ROOT_KEY` (or `AGENT_ROOT_ACCOUNT` + `AGENT_ROOT_PASSWORD_FILE`), sub-agents from `AGENT_KEYS` in role order research, finance, verification. **DEMO LIMITATION, labeled in code and status:** keys are env-held; P7.4 may swap them for CDP server wallets. Keys sign only; nothing here sends a transaction.
+  - `delegation-plan.ts`: `resolveRolePolicies` (bps shares 4000/4000/2000, per-call limits, restricted payees from the seller config; `ORCHESTRATION_PAYEES_<ROLE>` / `ORCHESTRATION_BPS_<ROLE>` overrides; the SIMULATED attacker is refused), `splitBudget` (integer basis points, remainder stays with the orchestrator), `childParamsFor` (cap, per-call, expiry clamped inside the root node; `restricted: true`; deadline now + 600 s).
+  - `delegation.ts`: `DelegationRelay` port + `relayViaApp(facilitatorApp)` (in-process `/delegate`, `/pause-child`: one relayer nonce manager); `createChildren` signs `CreateChild` with the orchestrator key (`signCreateChild` from `@overflow/payment-client`), relays, writes `delegation.signed` / `delegation.relayed` (tx hash) and sets `agents.nodeId`; a key that already owns a live node is reused, a paused/expired one fails loudly; a refused relay is `policy.blocked` with the decoded revert and throws. `pauseDescendant` signs `PauseChild` (any strict ancestor) and relays it. `ensureAgentRows` replaces the seed's SIMULATED placeholder keys and adds `agent-verification`.
+  - `tools.ts`: the six tools, Zod-parsed before execution: `list_resources`, `request_sample` (first rows of the SIMULATED dataset), `propose_purchase` (files a `resource_requests` row for the Oracle and Fusion; pays nothing), `call_paid_api` (x402 via `wrapFetch` with the agent's node key; direct pay-per-call order from the seller's quote; `payment.authorized` on signing, `purchase.status` with the seller-confirmed tx on success, `policy.blocked` with the decoded revert on a 402, outcome-unknown is logged and never retried), `fetch_page` (seller origin only, hidden text kept: no injection special-casing), `report_findings`. There is no tool that sends funds.
+  - `agent-loop.ts` `runAgent`: manual Anthropic Messages tool loop (`CLAUDE_MODEL`, no forced `tool_choice`), every tool call and result an `agent.tool_call` / `agent.tool_result` event with the agent id, all results of a turn in one user message, stop on report / end_turn / limit / max_tokens / refusal.
+  - `mission-runner.ts` `createMissionRunner`: `mission.run` start → root node via `nodeOfKey(AGENT_ROOT_KEY)` + `getNode` (budget must fit the root's remaining) → planner (`messages.parse` + `zodOutputFormat`, canned briefs on failure) → `createChildren` → three `runAgent` loops in parallel → orchestrator synthesis → `agent.report` → `mission.run` finish summary. `pauseAgent` for the orchestrator's `PauseChild`. Optional labeled fallback (`forceInjectionBeat`, DEMO_MODE only): if the live model ignored the injected instruction, a `SIMULATED injected agent` step replays the `/premium-intel` attempt with the research key (`simulated: true`).
+- API: `POST /api/missions/:id/run` (202; progress is the activity feed), `POST /api/missions/:id/agents/:agentId/pause`; `GET /api/activity?missionId=`; `OrchestrationPort.runMission` / `pauseAgent` (501 `NotWiredError` without keys/chain). `GET /` module status reports the runner (`live: orchestrator …` or `idle: <reason>`).
+- `ActivityKindSchema` gains `agent.tool_call`, `agent.tool_result`, `agent.report`, `delegation.signed`, `delegation.relayed`, `mission.run` (text column, no migration). `agentsRepository.setKey`, `activityEventsRepository.listByMission`.
+- `apps/service/scripts/run-mission.ts` (`pnpm --filter @overflow/service mission:run -- [--budget 5] [--goal …] [--force-injection-beat]`): creates a mission against the running service, starts the run, tails the feed, prints Basescan links, exits 0 only when three child nodes, one paid `/api/search` and a `PayeeNotAllowed` refusal of `/premium-intel` were all observed.
+
+### Checks
+| Check | Result |
+|---|---|
+| `pnpm typecheck` | exit 0, all workspaces |
+| `pnpm test` | 66 files / 571 tests passed, 1 skipped (new: `orchestration/delegation-plan.test.ts` 5, `orchestration/mission-runner.test.ts` 4) |
+| `forge test --root contracts --no-match-path "*fork*"` | exit 0 |
+| Live run on Base Sepolia | **NOT RUN.** `tsx src/index.ts` failed at config: `BASE_SEPOLIA_RPC_URL: Invalid URL; SERVICE_URL: Invalid URL` (the repo-root `.env` the service loads lacks them; secret files are not read by the assistant). |
+
+### Live procedure (DONE WHEN), to run once `.env` is complete
+Required: `BASE_SEPOLIA_RPC_URL`, `SERVICE_URL=http://localhost:4000`, `SELLER_URL=http://localhost:4100`, relayer (`RELAYER_PRIVATE_KEY` or `RELAYER_ACCOUNT` + `RELAYER_PASSWORD_FILE`) with Base Sepolia ETH, `AGENT_ROOT_KEY` = the key of root node 1 (`0x390CF9aA0230728dB7E185782F2288E41892Ea89`) on treasury `0xd3a74fa991ca0b5627d30ef27dc699c134848291`, three fresh keys in `AGENT_KEYS`, `PAYEE_SEARCH_ADDRESS` allowlisted by the owner (`setAllow`), treasury USDC balance above the floor plus a few USDC, `ATTACKER_ADDRESS` (never allowlisted), `DEMO_MODE=true` + `DEMO_TOKEN` so the refused settle lands on chain, `ANTHROPIC_API_KEY`, `CLAUDE_MODEL`, `OVERFLOW_DEPLOYMENTS_PATH=packages/schemas/deployments/base-sepolia.json`.
+1. `pnpm --filter @overflow/service dev`; boot must print `[orchestration] mission runner live: …`.
+2. `pnpm --filter @overflow/service mission:run -- --budget 5`.
+3. Expect three `delegation.relayed` events with `NodeCreated` tx hashes, one `purchase.status` for `/api/search` with the settle tx, one `policy.blocked` `PayeeNotAllowed(n)` for `/premium-intel`. If the live model declined the injected instruction, rerun with `--force-injection-beat` and record that the refusal came from the labeled SIMULATED probe.
+
+### Open issues
+- Live DONE WHEN unverified (see above). The existing treasury predates `reserve()` / `setEscrowFactory`; fine for this task (createChild, pauseChild, settle), not for escrow reservations.
+- `createChild` compares a child's cap with the parent's cap, not its remaining budget: siblings' caps can exceed the parent's; `settle()`'s tree walk still enforces the parent at spend time. The runner refuses a mission budget above the root's remaining.
+- Each env key may own one treasury node; after a child expires or is paused, `AGENT_KEYS` needs fresh keys (`KeyInUse` otherwise). CDP server wallets (P7.4) would remove env-held keys.
+- `agent-verification` is created by the runner, not by `seed.ts`; the planner and synthesis calls use `messages.parse` on the same `CLAUDE_MODEL` as the Oracle.
+- The sub-agent prompt does not warn about untrusted page content (Leash brief: the model sees the page and decides); the treasury is the enforcement point, which the demo shows.
+
 ## 2026-10-24: Fusion: compatibility matcher, LCA payer, allocations
 
 ### Built

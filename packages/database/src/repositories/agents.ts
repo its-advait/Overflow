@@ -71,6 +71,12 @@ export function agentsRepository(db: Executor) {
       return r ? toRecord(r) : undefined;
     },
 
+    /** Replace a SIMULATED placeholder key with the real node key the agent signs with (never a private key). */
+    async setKey(id: string, key: string): Promise<AgentRecord | undefined> {
+      const [r] = await withDbErrors(() => db.update(agents).set({ key }).where(eq(agents.id, id)).returning());
+      return r ? toRecord(r) : undefined;
+    },
+
     async listByOrganization(organizationId: string): Promise<AgentRecord[]> {
       const rows = await db
         .select()

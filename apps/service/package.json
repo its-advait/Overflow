@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "spike:seller": "tsx src/sellers/spike/server.ts",
-    "sellers:demo": "tsx scripts/sellers-demo.ts"
+    "sellers:demo": "tsx scripts/sellers-demo.ts",
+    "mission:run": "tsx scripts/run-mission.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
