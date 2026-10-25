@@ -2,7 +2,7 @@
   "name": "@overflow/database",
   "version": "0.0.0",
   "private": true,
-  "description": "Postgres + Drizzle schema and client",
+  "description": "Postgres schema (Drizzle), migrations, seed and typed repositories; PGlite when no server is configured",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
@@ -11,14 +11,21 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "db:seed": "tsx scripts/seed.ts"
   },
   "dependencies": {
+    "@electric-sql/pglite": "^0.5.11",
+    "@overflow/schemas": "workspace:*",
     "drizzle-orm": "^0.45.4",
-    "postgres": "^3.4.9"
+    "postgres": "^3.4.9",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
-    "drizzle-kit": "^0.31.11"
+    "drizzle-kit": "^0.31.11",
+    "tsx": "^4.23.15"
   }
 }

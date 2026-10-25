@@ -15,7 +15,8 @@ import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { privateKeyToAccount } from "viem/accounts";
 import { explorerUrl, USDC } from "@overflow/schemas";
-import { authorizationDigest, b64decode, b64encode, randomNonce, signAuthorization, type Authorization, type TypedDataSigner } from "@overflow/payment-client";
+import { authorizationDigest, randomNonce, signAuthorization, type Authorization, type TypedDataSigner } from "@overflow/payment-client";
+import { b64decode, b64encode } from "@overflow/payment-client/adapters";
 import { resolveSigner } from "@overflow/payment-client/keystore";
 import { loadEnv, repoRoot } from "./lib/env";
 

@@ -143,7 +143,7 @@ describe("sweep reconciliation", () => {
     const sw = (await ledger.list()).find((e) => e.chainEvent === "Swept")!;
     expect(sw.lines[0]).toMatchObject({ account: "usdc-treasury", debitAtomic: "50000" });
     const [exc] = await exceptions.list();
-    expect(exc).toMatchObject({ type: "reconciliation-difference", amountAtomic: "30000", status: "open", purchaseId: "purchase-1" });
+    expect(exc).toMatchObject({ type: "RECONCILIATION_DIFF", amountAtomic: "30000", status: "open", purchaseId: "purchase-1" });
     expect(exc!.reason).toMatch(/30000 unexplained/);
   });
 
@@ -152,7 +152,7 @@ describe("sweep reconciliation", () => {
     const { r, ledger, exceptions, events } = setup(logs);
     expect(await r.tick()).toEqual({ booked: 0, corrected: 0, exceptions: 1 });
     expect(await ledger.list()).toEqual([]);
-    expect((await exceptions.list())[0]).toMatchObject({ type: "reconciliation-difference", amountAtomic: "7000" });
+    expect((await exceptions.list())[0]).toMatchObject({ type: "RECONCILIATION_DIFF", amountAtomic: "7000" });
     expect(events[0]).toMatchObject({ kind: "LateArrival", source: "derived", args: { from: STRANGER, unexplained: "true" } });
     expect(r.late(ESCROW).arrivedAtomic).toBe(0n);
   });

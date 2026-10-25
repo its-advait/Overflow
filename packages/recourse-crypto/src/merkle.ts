@@ -1,104 +1,163 @@
-import { concatHex, keccak256, type Hex } from "viem";
+import { concat, keccak256, type Hex } from "viem";
+import { Bytes32Schema } from "@overflow/schemas";
+import { toBytes } from "./bytes";
+import { CHUNK_BYTES } from "./record";
 
-/**
- * Domain-separated, index-ordered Merkle tree over chunk records. Mirrors contracts/src/MerkleLib.sol:
- *   leaf = keccak256(0x00 || data), node = keccak256(0x01 || left || right)
- * Levels are built left to right; an unpaired last node is promoted unhashed to the next level, so the
- * proof length depends on the leaf index (see expectedProofLength). Golden vectors in merkle.test.ts and
- * contracts/test/escrow/MerkleLib.t.sol keep the two implementations identical.
- */
+// ---------------------------------------------------------------------------
+// Merkle trees (README "Merkle trees"; the Solidity escrow mirrors these rules).
+//
+//   leaf   = keccak256(0x00 || chunk)              chunk is exactly 160 bytes
+//   parent = keccak256(0x01 || left || right)      in index order
+//   a level with an odd count carries its last node up unchanged
+//   proof  = sibling hashes bottom-up; a carried level contributes nothing
+//
+// Leaves and internal nodes live in different hash domains, and every verifier
+// knows chunkCount, so the proof length is pinned for each index. Together
+// these close the internal-node-as-leaf second preimage.
+// ---------------------------------------------------------------------------
 
-/** Record size in bytes (for example a 95-byte payload plus a 65-byte signature). */
-export const CHUNK_SIZE = 160 as const;
-export const LEAF_PREFIX = "0x00" as const;
-export const NODE_PREFIX = "0x01" as const;
+export const LEAF_PREFIX = 0x00;
+export const NODE_PREFIX = 0x01;
 
-export function hashLeaf(data: Hex): Hex {
-  return keccak256(concatHex([LEAF_PREFIX, data]));
+export interface MerkleTree {
+  leaves: Hex[];
+  /** layers[0] = leaves, layers[last] = [root]. */
+  layers: Hex[][];
+  root: Hex;
+  chunkCount: number;
 }
 
-export function hashNode(left: Hex, right: Hex): Hex {
-  return keccak256(concatHex([NODE_PREFIX, left, right]));
+/** Indices are chunk positions; 2^31 chunks is far beyond any dataset here. */
+const MAX_INDEX = 2 ** 31 - 1;
+
+function assertIndex(index: number, what = "index"): void {
+  if (!Number.isInteger(index) || index < 0 || index > MAX_INDEX) throw new Error(`${what} must be an integer in [0, 2^31)`);
 }
 
-/** keyCommitment = keccak256(key) for a bytes32 key. */
-export function keyCommitment(key: Hex): Hex {
-  if (!/^0x[0-9a-fA-F]{64}$/.test(key)) throw new Error("key must be bytes32");
-  return keccak256(key);
-}
-
-function assertIndex(i: number, n: number): void {
-  if (!Number.isInteger(n) || n < 1) throw new Error("n must be a positive integer");
-  if (!Number.isInteger(i) || i < 0 || i >= n) throw new Error(`index ${i} out of range for ${n} leaves`);
-}
-
-/** True when the node at `idx` is the unpaired last node of a level of `width` nodes. */
-function promoted(idx: number, width: number): boolean {
-  return idx === width - 1 && width % 2 === 1;
-}
-
-/** Number of sibling hashes a proof for leaf `i` of an `n`-leaf tree must contain. */
-export function expectedProofLength(i: number, n: number): number {
-  assertIndex(i, n);
-  let len = 0;
-  let width = n;
-  let idx = i;
-  while (width > 1) {
-    if (!promoted(idx, width)) len++;
-    idx >>= 1;
-    width = (width + 1) >> 1;
+function assertChunkCount(chunkCount: number): void {
+  if (!Number.isInteger(chunkCount) || chunkCount < 1 || chunkCount - 1 > MAX_INDEX) {
+    throw new Error("chunkCount must be a positive integer below 2^31");
   }
-  return len;
 }
 
-function nextLevel(level: readonly Hex[]): Hex[] {
-  const next: Hex[] = [];
-  for (let j = 0; j < level.length; j += 2) {
-    const l = level[j] as Hex;
-    const r = level[j + 1];
-    next.push(r === undefined ? l : hashNode(l, r));
+/** leaf = keccak256(0x00 || chunk). The chunk must be exactly 160 bytes. */
+export function hashLeaf(chunk: Hex | Uint8Array): Hex {
+  const bytes = toBytes(chunk);
+  if (bytes.length !== CHUNK_BYTES) throw new Error(`leaf chunk must be ${CHUNK_BYTES} bytes, got ${bytes.length}`);
+  return keccak256(concat([new Uint8Array([LEAF_PREFIX]), bytes]));
+}
+
+/** parent = keccak256(0x01 || left || right). */
+export function hashPair(left: Hex, right: Hex): Hex {
+  return keccak256(concat([new Uint8Array([NODE_PREFIX]), toBytes(Bytes32Schema.parse(left)), toBytes(Bytes32Schema.parse(right))]));
+}
+
+export function buildTree(leaves: readonly Hex[]): MerkleTree {
+  assertChunkCount(leaves.length);
+  const layers: Hex[][] = [leaves.map((l) => Bytes32Schema.parse(l))];
+  while ((layers[layers.length - 1] as Hex[]).length > 1) {
+    const prev = layers[layers.length - 1] as Hex[];
+    const next: Hex[] = [];
+    for (let i = 0; i < prev.length; i += 2) {
+      const left = prev[i] as Hex;
+      const right = prev[i + 1];
+      next.push(right === undefined ? left : hashPair(left, right));
+    }
+    layers.push(next);
   }
-  return next;
+  return { leaves: layers[0] as Hex[], layers, root: (layers[layers.length - 1] as Hex[])[0] as Hex, chunkCount: leaves.length };
 }
 
-/** Merkle root of already-hashed leaves (use hashLeaf first). */
-export function merkleRoot(leaves: readonly Hex[]): Hex {
-  if (leaves.length === 0) throw new Error("no leaves");
-  let level: Hex[] = [...leaves];
-  while (level.length > 1) level = nextLevel(level);
-  return level[0] as Hex;
+export function buildTreeFromChunks(chunks: readonly (Hex | Uint8Array)[]): MerkleTree {
+  return buildTree(chunks.map(hashLeaf));
 }
 
-/** Sibling hashes for leaf `i`, bottom-up, skipping levels where the node is promoted. */
-export function merkleProof(leaves: readonly Hex[], i: number): Hex[] {
-  assertIndex(i, leaves.length);
+/** Sibling hashes from the leaf up. A level where the node is the odd last one adds nothing. */
+export function getProof(tree: MerkleTree, index: number): Hex[] {
+  assertIndex(index);
+  if (index >= tree.chunkCount) throw new Error(`index ${index} out of range for ${tree.chunkCount} chunks`);
   const proof: Hex[] = [];
-  let level: Hex[] = [...leaves];
-  let idx = i;
-  while (level.length > 1) {
-    const sibling = level[idx ^ 1];
-    if (sibling !== undefined) proof.push(sibling);
-    level = nextLevel(level);
+  let idx = index;
+  for (let level = 0; level < tree.layers.length - 1; level++) {
+    const layer = tree.layers[level] as Hex[];
+    const sibling = idx ^ 1;
+    if (sibling < layer.length) proof.push(layer[sibling] as Hex);
     idx >>= 1;
   }
   return proof;
 }
 
-/** True iff `proof` (consumed exactly) lifts `leafHash` at index `i` of an `n`-leaf tree to `root`. */
-export function verifyProof(proof: readonly Hex[], root: Hex, leafHash: Hex, i: number, n: number): boolean {
-  if (!Number.isInteger(i) || !Number.isInteger(n) || i < 0 || i >= n) return false;
-  let h = leafHash;
-  let width = n;
-  let idx = i;
+/**
+ * Number of proof elements a correct proof has for `index` in a tree of
+ * `chunkCount` leaves with odd-node carry-up. Solidity mirror:
+ *
+ *   uint256 n = chunkCount; uint256 idx = index; uint256 len = 0;
+ *   while (n > 1) { if ((idx ^ 1) < n) len++; idx >>= 1; n = (n + 1) / 2; }
+ */
+export function expectedProofLength(index: number, chunkCount: number): number {
+  assertIndex(index);
+  assertChunkCount(chunkCount);
+  if (index >= chunkCount) throw new Error(`index ${index} out of range for ${chunkCount} chunks`);
+  let n = chunkCount;
+  let idx = index;
+  let len = 0;
+  while (n > 1) {
+    if ((idx ^ 1) < n) len++;
+    idx >>= 1;
+    n = Math.ceil(n / 2);
+  }
+  return len;
+}
+
+/**
+ * Recomputes the root for a known tree shape. Returns undefined when the proof
+ * length does not match the shape or the index is out of range. Solidity mirror:
+ *
+ *   node = leaf; n = chunkCount; idx = index; p = 0;
+ *   while (n > 1) {
+ *     if ((idx ^ 1) < n) { sib = proof[p++]; node = idx & 1 ? H(sib, node) : H(node, sib); }
+ *     idx >>= 1; n = (n + 1) / 2;
+ *   }
+ *   require(p == proof.length);
+ */
+export function computeRootFromProof(leaf: Hex, index: number, proof: readonly Hex[], chunkCount: number): Hex | undefined {
+  assertIndex(index);
+  assertChunkCount(chunkCount);
+  Bytes32Schema.parse(leaf);
+  if (index >= chunkCount) return undefined;
+  let node = leaf;
+  let n = chunkCount;
+  let idx = index;
   let p = 0;
-  while (width > 1) {
-    if (!promoted(idx, width)) {
+  while (n > 1) {
+    if ((idx ^ 1) < n) {
       const sibling = proof[p++];
-      if (sibling === undefined) return false;
-      h = idx % 2 === 0 ? hashNode(h, sibling) : hashNode(sibling, h);
+      if (sibling === undefined) return undefined;
+      node = idx & 1 ? hashPair(sibling, node) : hashPair(node, sibling);
     }
     idx >>= 1;
-    width = (width + 1) >> 1;
+    n = Math.ceil(n / 2);
   }
-  return p === proof.length && h.toLowerCase() === root.toLowerCase();
+  if (p !== proof.length) return undefined;
+  return node;
+}
+
+export interface VerifyProofInput {
+  root: Hex;
+  leaf: Hex;
+  index: number;
+  proof: readonly Hex[];
+  /** Chunk count from the escrow terms / manifest. Pins the proof length for `index`. */
+  chunkCount: number;
+}
+
+/** True iff `index < chunkCount`, `proof.length == expectedProofLength(index, chunkCount)` and the recomputed root matches. */
+export function verifyProof({ root, leaf, index, proof, chunkCount }: VerifyProofInput): boolean {
+  Bytes32Schema.parse(root);
+  assertIndex(index);
+  assertChunkCount(chunkCount);
+  if (index >= chunkCount) return false;
+  if (proof.length !== expectedProofLength(index, chunkCount)) return false;
+  const computed = computeRootFromProof(leaf, index, proof, chunkCount);
+  return computed !== undefined && computed.toLowerCase() === root.toLowerCase();
 }

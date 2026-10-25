@@ -11,7 +11,7 @@ export function createFacilitatorApp(deps: FacilitatorDeps, opts: { heartbeatMs?
   const app = new Hono();
   app.use("*", async (c, next) => {
     c.header("access-control-allow-origin", "*");
-    c.header("access-control-allow-headers", "content-type, x-demo-token");
+    c.header("access-control-allow-headers", "content-type, x-demo-token, idempotency-key");
     c.header("access-control-allow-methods", "GET, POST, OPTIONS");
     if (c.req.method === "OPTIONS") return c.body(null, 204);
     await next();

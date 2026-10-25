@@ -1,31 +1,41 @@
 import { serve } from "@hono/node-server";
-import { Hono } from "hono";
-import { CHAIN_ID, loadDeployments, PACKAGE_NAME as SCHEMAS } from "@overflow/schemas";
-import { verifyBoot } from "./chain/boot";
+import { createDatabase, seed } from "@overflow/database";
 import { resolveSigner } from "@overflow/payment-client/keystore";
+import { CHAIN_ID, loadDeployments, PACKAGE_NAME as SCHEMAS } from "@overflow/schemas";
+import { createApp } from "./api/index.js";
+import { verifyBoot } from "./chain/boot";
 import { viemChainClient } from "./chain/client";
+import { createActivityBus, createIndexer, createLogSource, resolveIndexerConfig, type Indexer } from "./chain/index.js";
 import { loadEnv, readConfig } from "./config";
 import { createFacilitatorApp } from "./facilitator/app";
 import { createBus, createLogPoller } from "./facilitator/events";
-import { createSweepReconciler, MemoryExceptions, MemoryLedger, MemoryPurchaseIndex } from "./reconciliation/sweeps";
+import { facilitatorViaApp } from "./facilitator/in-process.js";
 import { createRelayer } from "./facilitator/relayer";
 import { MemoryStore } from "./facilitator/store";
+import { createReconciliation, type Reconciliation } from "./ledger/index.js";
 import { ORCHESTRATION_STATUS } from "./orchestration/index.js";
-import { SELLERS_STATUS } from "./sellers/index.js";
-import { API_STATUS } from "./api/index.js";
+import { createSweepReconciler, MemoryExceptions, MemoryLedger, MemoryPurchaseIndex } from "./reconciliation/sweeps";
+import { createSellerApp, resolveSellerConfig, sellersStatus } from "./sellers/index.js";
 
 const log = (line: string) => console.log(`${new Date().toISOString()} ${line}`);
 
+/**
+ * One process, three listeners' worth of modules:
+ *   - the facilitator HTTP app (settle/reserve/release/delegate) with the ONLY relayer broadcaster;
+ *   - the REST API + SSE activity feed over the database, fed by the read-only chain indexer and the ledger;
+ *   - the SIMULATED sellers on their own port, settling through the facilitator in-process.
+ * Boot fails loudly before anything is served: chain id, USDC domain, deployments file, treasury code and wiring.
+ */
 async function main(): Promise<void> {
   loadEnv();
   const config = readConfig();
   const deployments = await loadDeployments(config.deploymentsPath);
+
   // Signer: a Foundry keystore decrypted in memory (RELAYER_ACCOUNT + RELAYER_PASSWORD_FILE) or a dev key. Never logged.
   const signer = resolveSigner({ ...config.relayer, label: "RELAYER" });
   const account = signer.account;
   const client = viemChainClient(config.rpcUrl, account);
 
-  // Fail loudly before serving anything.
   const boot = await verifyBoot(client, deployments);
   log(`[boot] chain ${boot.chainId}, USDC ${boot.token.address} "${boot.token.name}" v${boot.token.version} separator ${boot.token.domainSeparator}`);
   log(`[boot] treasury ${boot.treasury}, escrowFactory ${boot.escrowFactory ?? "none"}, head block ${boot.blockNumber}`);
@@ -34,13 +44,22 @@ async function main(): Promise<void> {
   if (ethWei === 0n) log("[boot] WARNING: relayer has no ETH; every relay will fail");
   if (config.demoMode) log("[boot] DEMO_MODE=true: /demo/bypass and forceBroadcast enabled (x-demo-token required); SIMULATED flows are labeled");
 
-  const bus = createBus();
-  const poller = createLogPoller({ client, treasury: boot.treasury, bus, fromBlock: boot.blockNumber, intervalMs: config.eventsPollMs, log });
-  const facilitator = createFacilitatorApp({
+  // Database: DATABASE_URL selects Postgres; otherwise PGlite at PGLITE_DATA_DIR (or in-memory). Migrate, then seed
+  // the SIMULATED demo company and its agents (idempotent).
+  const database = await createDatabase({ log: console.log });
+  await database.migrate();
+  log(`[database] migrations applied (dialect=${database.dialect}, from ${database.migrationsFolder})`);
+  const seeded = await seed(database.db);
+  log(`[seed] organization "${seeded.organization.name}" (SIMULATED) agents=${seeded.agents.length}`);
+
+  // Facilitator: the one relayer, the treasury log poller and the settle/reserve/release routes.
+  const facilitatorBus = createBus();
+  const poller = createLogPoller({ client, treasury: boot.treasury, bus: facilitatorBus, fromBlock: boot.blockNumber, intervalMs: config.eventsPollMs, log });
+  const facilitatorApp = createFacilitatorApp({
     client,
     relayer: createRelayer({ client, address: account.address, log }),
     store: new MemoryStore(),
-    bus,
+    bus: facilitatorBus,
     deployments,
     treasury: boot.treasury,
     usdc: deployments.usdc,
@@ -50,17 +69,79 @@ async function main(): Promise<void> {
     log,
   });
 
-  const app = new Hono();
-  app.get("/", (c) =>
-    c.json({
-      service: "@overflow/service",
-      chainId: CHAIN_ID,
+  // Chain indexer + ledger reconciliation: read-only, over the activity bus the API streams.
+  const activityBus = createActivityBus();
+  const indexerConfig = await resolveIndexerConfig();
+  let indexer: Indexer | undefined;
+  let reconciliation: Reconciliation | undefined;
+  let chainStatus: string;
+  let ledgerStatus: string;
+  if (indexerConfig.ok) {
+    const ic = indexerConfig.config;
+    const source = createLogSource(ic.rpcUrl);
+    await source.assertChain();
+    const materiality = process.env["RECONCILIATION_MATERIALITY_ATOMIC"];
+    const recon = createReconciliation({
+      db: database.db,
+      reader: source,
+      treasury: ic.treasury,
+      usdc: ic.usdc,
+      bus: activityBus,
+      ...(materiality ? { materialityAtomic: BigInt(materiality) } : {}),
+    });
+    reconciliation = recon;
+    indexer = createIndexer({
+      db: database.db,
+      source,
+      config: ic,
+      bus: activityBus,
+      afterTick: async (r) => {
+        if (r.logsInserted > 0) await recon.run("indexer", r.toBlock);
+      },
+    });
+    chainStatus = `indexing treasury ${ic.treasury} from block ${ic.deployBlock}`;
+    ledgerStatus = `journal posted from chain events; reconciliation after every poll with new logs (materiality ${materiality ?? "10000"} atomic)`;
+  } else {
+    chainStatus = `idle: ${indexerConfig.reason}`;
+    ledgerStatus = `idle: ${indexerConfig.reason}`;
+    log(`[chain] indexer idle: ${indexerConfig.reason}`);
+  }
+
+  // SIMULATED sellers on their own port (SELLER_URL). They settle through the facilitator app in-process, so the
+  // relayer key has one nonce manager. The attacker payee is never allowlisted.
+  const sellerConfig = resolveSellerConfig();
+  const sellerApp = createSellerApp({
+    config: sellerConfig,
+    facilitator: facilitatorViaApp(facilitatorApp, { demoToken: config.demoToken, log }),
+  });
+
+  const { app } = createApp({
+    db: database.db,
+    bus: activityBus,
+    ...(reconciliation ? { ports: { reconciliation: { run: (trigger) => reconciliation!.run(trigger) } } } : {}),
+    treasury: boot.treasury,
+    indexerStatus: () => indexer?.status() ?? { state: "idle", reason: indexerConfig.ok ? "not started" : indexerConfig.reason },
+    status: {
       treasury: boot.treasury,
-      modules: { facilitator: "live", api: API_STATUS, orchestration: ORCHESTRATION_STATUS, sellers: SELLERS_STATUS },
+      escrowFactory: boot.escrowFactory,
+      database: { dialect: database.dialect, migrationsFolder: database.migrationsFolder, migrated: true },
+      modules: {
+        api: "ready",
+        orchestration: ORCHESTRATION_STATUS,
+        facilitator: `live: relayer ${account.address} (${signer.source}); routes at / and /facilitator`,
+        sellers: sellersStatus(sellerConfig, true),
+        chain: chainStatus,
+        ledger: ledgerStatus,
+        sweeps: boot.escrowFactory ? `reconciling late arrivals and sweeps for factory ${boot.escrowFactory}` : "disabled: no escrow factory in deployments",
+        exceptions: `controller requests target treasury ${boot.treasury}; done only on indexed AllowSet/CapRaised/NodePaused`,
+      },
       dependsOn: [SCHEMAS],
-    }),
-  );
-  app.route("/", facilitator);
+    },
+  });
+  // Facilitator routes at the root (/settle, /reserve, /release, /verify, /delegate, /health) for the adapters and
+  // scripts, and again under /facilitator so its own SSE feed (/facilitator/events) does not shadow the API's /events.
+  app.route("/", facilitatorApp);
+  app.route("/facilitator", facilitatorApp);
 
   poller.start();
   if (boot.escrowFactory) {
@@ -70,7 +151,7 @@ async function main(): Promise<void> {
       factory: boot.escrowFactory,
       usdc: deployments.usdc,
       treasury: boot.treasury,
-      bus,
+      bus: facilitatorBus,
       purchases: new MemoryPurchaseIndex(),
       ledger: new MemoryLedger(),
       exceptions: new MemoryExceptions(),
@@ -79,7 +160,26 @@ async function main(): Promise<void> {
       log,
     }).start();
   }
-  serve({ fetch: app.fetch, port: config.port }, (info) => log(`[service] listening on http://localhost:${info.port} (facilitator routes at /)`));
+
+  const server = serve({ fetch: app.fetch, port: config.port }, (info) =>
+    log(`[service] chain ${CHAIN_ID} API + facilitator listening on http://localhost:${info.port}`),
+  );
+  const sellerServer = serve({ fetch: sellerApp.fetch, port: sellerConfig.port }, (info) =>
+    log(`[sellers] SIMULATED sellers listening on http://localhost:${info.port} (${sellerConfig.sellerUrl})`),
+  );
+  await indexer?.start();
+
+  const shutdown = (): void => {
+    poller.stop();
+    sellerServer.close();
+    server.close(() => {
+      void (indexer ? indexer.stop() : Promise.resolve())
+        .then(() => database.close())
+        .finally(() => process.exit(0));
+    });
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 }
 
 main().catch((err) => {

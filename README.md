@@ -66,8 +66,9 @@ see a `PaymentStatus`. One authorization per purchase, ever; `reconcilePayment` 
 ## Layout
 
 - `apps/web` Next.js App Router UI (Tailwind, shadcn/ui, lucide-react)
-- `apps/service` Node service: `api/`, `orchestration/`, `facilitator/`, `sellers/`, `chain/`
-- `packages/*` shared libraries: `schemas`, `oracle`, `fusion`, `payment-client`, `recourse-crypto`, `database`
+- `apps/service` Node service: `api/`, `orchestration/`, `facilitator/` (settle() core), `sellers/` (SIMULATED x402 APIs and attack fixtures on `SELLER_URL`; demo: `pnpm --filter @overflow/service sellers:demo`), `chain/`
+- `packages/*` shared libraries: `schemas`, `oracle`, `fusion`, `payment-client`, `recourse-crypto`, `database`, `datasets`
+- `data` SIMULATED datasets and seller catalog (`data/README.md`; regenerate with `pnpm datasets:generate`)
 - `contracts` Foundry project (solc 0.8.28, cancun, OpenZeppelin 5)
 - `scripts` operator scripts (`deploy.sh`, `export-deployment.ts`, `status.ts`, `dev-fund.ts`)
 - `docs` spec, progress, changelog

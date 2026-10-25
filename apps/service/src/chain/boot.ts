@@ -1,6 +1,6 @@
 import type { Address } from "viem";
 import { CHAIN_ID, USDC, overflowTreasuryAbi, type Deployments } from "@overflow/schemas";
-import { verifyTokenDomain, type TokenDomain } from "@overflow/payment-client";
+import { readTokenDomain, type ObservedTokenDomain } from "@overflow/payment-client";
 import type { ChainClient } from "./client";
 
 export class BootCheckFailed extends Error {
@@ -10,7 +10,7 @@ export class BootCheckFailed extends Error {
   }
 }
 
-export type BootReport = { chainId: number; token: TokenDomain; treasury: Address; escrowFactory: Address | null; blockNumber: bigint };
+export type BootReport = { chainId: number; token: ObservedTokenDomain; treasury: Address; escrowFactory: Address | null; blockNumber: bigint };
 
 /**
  * Fail loudly before serving: RPC chain id, USDC domain (name/version/DOMAIN_SEPARATOR), deployments file
@@ -25,9 +25,9 @@ export async function verifyBoot(client: ChainClient, d: Deployments): Promise<B
   if (d.usdc.toLowerCase() !== d.token.toLowerCase()) problems.push(`deployments usdc ${d.usdc} != token ${d.token}`);
   if (problems.length) throw new BootCheckFailed(problems);
 
-  let token: TokenDomain;
+  let token: ObservedTokenDomain;
   try {
-    token = await verifyTokenDomain(client, d.token);
+    token = await readTokenDomain(client, d.token);
   } catch (e) {
     throw new BootCheckFailed([e instanceof Error ? e.message : String(e)]);
   }

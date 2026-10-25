@@ -9,18 +9,17 @@ import {
   delegationDomain,
   pauseChildDigest,
   payeesHash,
-  randomNonce,
   recoverAuthorizationSigner,
   SignatureSchema,
   signAuthorization,
   signCreateChild,
   TokenDomainMismatch,
-  TRANSFER_WITH_AUTHORIZATION_TYPEHASH,
   usdcDomainSeparator,
-  verifyTokenDomain,
+  readTokenDomain,
   type Authorization,
   type TokenReader,
 } from "./typed-data";
+import { randomNonce, TRANSFER_WITH_AUTHORIZATION_TYPEHASH } from "./authorization";
 
 // Golden vectors shared with contracts/test/unit/TypedDataVectors.t.sol.
 const TREASURY = "0xd3A74fA991CA0B5627d30EF27dC699C134848291" as const;
@@ -93,13 +92,13 @@ describe("signing", () => {
   });
 });
 
-describe("verifyTokenDomain", () => {
+describe("readTokenDomain", () => {
   const good: Record<string, unknown> = { name: "USDC", version: "2", decimals: 6, DOMAIN_SEPARATOR: USDC.domainSeparator };
   const reader = (overrides: Record<string, unknown> = {}): TokenReader => ({
     readContract: async ({ functionName }) => ({ ...good, ...overrides })[functionName],
   });
   it("passes for the live USDC values", async () => {
-    const d = await verifyTokenDomain(reader());
+    const d = await readTokenDomain(reader());
     expect(d.domainSeparator).toBe(USDC.domainSeparator);
     expect(d.decimals).toBe(6);
   });
@@ -109,9 +108,9 @@ describe("verifyTokenDomain", () => {
     ["decimals", { decimals: 18 }],
     ["separator", { DOMAIN_SEPARATOR: `0x${"00".repeat(32)}` }],
   ])("fails loudly on a %s mismatch", async (_label, o) => {
-    await expect(verifyTokenDomain(reader(o))).rejects.toBeInstanceOf(TokenDomainMismatch);
+    await expect(readTokenDomain(reader(o))).rejects.toBeInstanceOf(TokenDomainMismatch);
   });
   it("fails on a different token address even with matching fields", async () => {
-    await expect(verifyTokenDomain(reader(), "0x1111111111111111111111111111111111111111")).rejects.toThrow(/address/);
+    await expect(readTokenDomain(reader(), "0x1111111111111111111111111111111111111111")).rejects.toThrow(/address/);
   });
 });

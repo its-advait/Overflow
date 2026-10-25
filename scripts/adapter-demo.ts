@@ -22,19 +22,15 @@ import { privateKeyToAccount } from "viem/accounts";
 import { createPublicClient, http } from "viem";
 import { baseSepolia } from "viem/chains";
 import { explorerUrl, USDC, type PurchaseOrder } from "@overflow/schemas";
+import { authorizationDigest, randomNonce, signAuthorization, type Authorization, type TypedDataSigner } from "@overflow/payment-client";
 import {
-  authorizationDigest,
   b64decode,
   b64encode,
   CoinbaseFacilitatorAdapter,
   MemoryPurchaseStore,
   OverflowFacilitatorAdapter,
-  randomNonce,
-  signAuthorization,
-  type Authorization,
   type PaymentRequirements,
-  type TypedDataSigner,
-} from "@overflow/payment-client";
+} from "@overflow/payment-client/adapters";
 import { resolveSigner } from "@overflow/payment-client/keystore";
 import { loadEnv, repoRoot, requireEnv } from "./lib/env";
 

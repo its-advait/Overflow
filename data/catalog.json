@@ -1,0 +1,296 @@
+{
+  "version": 1,
+  "simulated": true,
+  "description": "SIMULATED seller catalog for the Overflow demo. Every dataset is synthetic, redistributable EV-registration data signed by a simulated state registry feed; no seller, brand or number is real.",
+  "generator": "scripts/generate-datasets.mts",
+  "generatedFor": {
+    "asOf": "2026-10-15"
+  },
+  "sourceSigner": {
+    "label": "SIMULATED state registry feed",
+    "address": "0x5a0C6b05F691791F272F84Dcff00fdCda52433Bd"
+  },
+  "sellers": [
+    {
+      "id": "sim-seller-a",
+      "name": "SIMULATED seller A (Registry Data Co.)",
+      "simulated": true
+    },
+    {
+      "id": "sim-seller-b",
+      "name": "SIMULATED seller B (Mobility Insights)",
+      "simulated": true
+    }
+  ],
+  "regionCodes": "ISO 3166-2 style: US = national aggregate claim, US-<state> = state detail present in the rows",
+  "listings": [
+    {
+      "sellerId": "sim-seller-a",
+      "productId": "ev-registrations-national-monthly-2024-2026",
+      "coverage": {
+        "regions": [
+          "US",
+          "US-CA",
+          "US-TX",
+          "US-FL",
+          "US-NY",
+          "US-WA",
+          "US-NJ",
+          "US-IL",
+          "US-GA"
+        ],
+        "dateRange": {
+          "start": "2024-01-01",
+          "end": "2026-09-30"
+        },
+        "granularity": "monthly",
+        "fields": [
+          "month",
+          "state",
+          "brand",
+          "units"
+        ],
+        "format": "csv",
+        "asOf": "2026-10-15"
+      },
+      "license": "company-use",
+      "priceAtomic": "12000000",
+      "manifestHash": "0x5637216107b5909340e34593f54a82e57be0016f017829bc70f74e947983f436",
+      "seats": 10,
+      "simulated": true,
+      "id": "listing-national-monthly-2024-2026",
+      "title": "SIMULATED: US EV registrations, monthly, state detail, 2024-2026 (company-use)",
+      "exercises": "Satisfies both Fusion example agents: national, monthly, 2024-2026, state detail, company-use.",
+      "dataset": {
+        "dir": "datasets/ev-registrations-national-monthly-2024-2026",
+        "rowsCsv": "datasets/ev-registrations-national-monthly-2024-2026/rows.csv",
+        "recordsBin": "datasets/ev-registrations-national-monthly-2024-2026/records.bin",
+        "manifestJson": "datasets/ev-registrations-national-monthly-2024-2026/manifest.json",
+        "rowCount": 528,
+        "chunkCount": 528
+      }
+    },
+    {
+      "sellerId": "sim-seller-a",
+      "productId": "ev-registrations-california-monthly-2024-2026",
+      "coverage": {
+        "regions": [
+          "US-CA"
+        ],
+        "dateRange": {
+          "start": "2024-01-01",
+          "end": "2026-09-30"
+        },
+        "granularity": "monthly",
+        "fields": [
+          "month",
+          "state",
+          "brand",
+          "units"
+        ],
+        "format": "csv",
+        "asOf": "2026-10-15"
+      },
+      "license": "company-use",
+      "priceAtomic": "5000000",
+      "manifestHash": "0x724e21f05b47d36d2e6beede80becbbc9efb59f40c3754f3cd7bd273a7bb25f1",
+      "seats": 10,
+      "simulated": true,
+      "id": "listing-california-monthly-2024-2026",
+      "title": "SIMULATED: California EV registrations, monthly, 2024-2026 (company-use)",
+      "exercises": "Geography: fails the agent that needs the United States.",
+      "dataset": {
+        "dir": "datasets/ev-registrations-california-monthly-2024-2026",
+        "rowsCsv": "datasets/ev-registrations-california-monthly-2024-2026/rows.csv",
+        "recordsBin": "datasets/ev-registrations-california-monthly-2024-2026/records.bin",
+        "manifestJson": "datasets/ev-registrations-california-monthly-2024-2026/manifest.json",
+        "rowCount": 66,
+        "chunkCount": 66
+      }
+    },
+    {
+      "sellerId": "sim-seller-a",
+      "productId": "ev-registrations-national-annual-2024-2026",
+      "coverage": {
+        "regions": [
+          "US",
+          "US-CA",
+          "US-TX",
+          "US-FL",
+          "US-NY",
+          "US-WA",
+          "US-NJ",
+          "US-IL",
+          "US-GA"
+        ],
+        "dateRange": {
+          "start": "2024-01-01",
+          "end": "2026-09-30"
+        },
+        "granularity": "annual",
+        "fields": [
+          "year",
+          "state",
+          "brand",
+          "units"
+        ],
+        "format": "csv",
+        "asOf": "2026-10-15"
+      },
+      "license": "company-use",
+      "priceAtomic": "6000000",
+      "manifestHash": "0x6eca3ea10b34bd2a86d6492b2b5cf143442e669386419425f6e6c474f2936d62",
+      "seats": 10,
+      "simulated": true,
+      "id": "listing-national-annual-2024-2026",
+      "title": "SIMULATED: US EV registrations, annual, state detail, 2024-2026 (company-use)",
+      "exercises": "Resolution: annual cannot roll down to monthly or quarterly.",
+      "dataset": {
+        "dir": "datasets/ev-registrations-national-annual-2024-2026",
+        "rowsCsv": "datasets/ev-registrations-national-annual-2024-2026/rows.csv",
+        "recordsBin": "datasets/ev-registrations-national-annual-2024-2026/records.bin",
+        "manifestJson": "datasets/ev-registrations-national-annual-2024-2026/manifest.json",
+        "rowCount": 48,
+        "chunkCount": 48
+      }
+    },
+    {
+      "sellerId": "sim-seller-a",
+      "productId": "ev-registrations-national-monthly-2021-2022",
+      "coverage": {
+        "regions": [
+          "US",
+          "US-CA",
+          "US-TX",
+          "US-FL",
+          "US-NY",
+          "US-WA",
+          "US-NJ",
+          "US-IL",
+          "US-GA"
+        ],
+        "dateRange": {
+          "start": "2021-01-01",
+          "end": "2022-12-31"
+        },
+        "granularity": "monthly",
+        "fields": [
+          "month",
+          "state",
+          "brand",
+          "units"
+        ],
+        "format": "csv",
+        "asOf": "2026-10-15"
+      },
+      "license": "company-use",
+      "priceAtomic": "4000000",
+      "manifestHash": "0xe0eedaf89dcc7b827ee2ed5a62561fcb7481b24fc7b5b89fbef2cb9f1815358b",
+      "seats": 10,
+      "simulated": true,
+      "id": "listing-national-monthly-2021-2022",
+      "title": "SIMULATED: US EV registrations, monthly, state detail, 2021-2022 (company-use)",
+      "exercises": "Dates: wrong period; Oracle's coverage filter must reject it even though it is the cheapest.",
+      "dataset": {
+        "dir": "datasets/ev-registrations-national-monthly-2021-2022",
+        "rowsCsv": "datasets/ev-registrations-national-monthly-2021-2022/rows.csv",
+        "recordsBin": "datasets/ev-registrations-national-monthly-2021-2022/records.bin",
+        "manifestJson": "datasets/ev-registrations-national-monthly-2021-2022/manifest.json",
+        "rowCount": 384,
+        "chunkCount": 384
+      }
+    },
+    {
+      "sellerId": "sim-seller-b",
+      "productId": "ev-registrations-national-monthly-2024-2026",
+      "coverage": {
+        "regions": [
+          "US",
+          "US-CA",
+          "US-TX",
+          "US-FL",
+          "US-NY",
+          "US-WA",
+          "US-NJ",
+          "US-IL",
+          "US-GA"
+        ],
+        "dateRange": {
+          "start": "2024-01-01",
+          "end": "2026-09-30"
+        },
+        "granularity": "monthly",
+        "fields": [
+          "month",
+          "state",
+          "brand",
+          "units"
+        ],
+        "format": "csv",
+        "asOf": "2026-10-15"
+      },
+      "license": "company-use",
+      "priceAtomic": "13000000",
+      "manifestHash": "0x5637216107b5909340e34593f54a82e57be0016f017829bc70f74e947983f436",
+      "seats": 10,
+      "simulated": true,
+      "id": "listing-national-monthly-2024-2026-seller-b",
+      "title": "SIMULATED: US EV registrations, monthly, state detail, 2024-2026 (company-use, seller B)",
+      "exercises": "Duplicate of the national monthly set from a second seller; same manifestHash, higher price, so ranking prefers seller A.",
+      "dataset": {
+        "dir": "datasets/ev-registrations-national-monthly-2024-2026",
+        "rowsCsv": "datasets/ev-registrations-national-monthly-2024-2026/rows.csv",
+        "recordsBin": "datasets/ev-registrations-national-monthly-2024-2026/records.bin",
+        "manifestJson": "datasets/ev-registrations-national-monthly-2024-2026/manifest.json",
+        "rowCount": 528,
+        "chunkCount": 528
+      }
+    },
+    {
+      "sellerId": "sim-seller-a",
+      "productId": "ev-registrations-national-monthly-2024-2026",
+      "coverage": {
+        "regions": [
+          "US",
+          "US-CA",
+          "US-TX",
+          "US-FL",
+          "US-NY",
+          "US-WA",
+          "US-NJ",
+          "US-IL",
+          "US-GA"
+        ],
+        "dateRange": {
+          "start": "2024-01-01",
+          "end": "2026-09-30"
+        },
+        "granularity": "monthly",
+        "fields": [
+          "month",
+          "state",
+          "brand",
+          "units"
+        ],
+        "format": "csv",
+        "asOf": "2026-10-15"
+      },
+      "license": "single-user",
+      "priceAtomic": "10000000",
+      "manifestHash": "0x5637216107b5909340e34593f54a82e57be0016f017829bc70f74e947983f436",
+      "seats": 1,
+      "simulated": true,
+      "id": "listing-national-monthly-2024-2026-single-user",
+      "title": "SIMULATED: US EV registrations, monthly, state detail, 2024-2026 (single-user license)",
+      "exercises": "License: single-user, one seat; Fusion must not merge two agents onto it.",
+      "dataset": {
+        "dir": "datasets/ev-registrations-national-monthly-2024-2026",
+        "rowsCsv": "datasets/ev-registrations-national-monthly-2024-2026/rows.csv",
+        "recordsBin": "datasets/ev-registrations-national-monthly-2024-2026/records.bin",
+        "manifestJson": "datasets/ev-registrations-national-monthly-2024-2026/manifest.json",
+        "rowCount": 528,
+        "chunkCount": 528
+      }
+    }
+  ]
+}

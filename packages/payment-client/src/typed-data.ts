@@ -18,6 +18,7 @@ import {
   USDC_EIP712_DOMAIN,
   UintStringSchema,
 } from "@overflow/schemas";
+import { TRANSFER_WITH_AUTHORIZATION_TYPES } from "./authorization";
 
 /**
  * EIP-712 typed data shared by the facilitator, the demo scripts and (later) the agents.
@@ -41,21 +42,6 @@ export interface TypedDataSigner {
     message: Record<string, unknown>;
   }): Promise<Hex>;
 }
-
-export const TRANSFER_WITH_AUTHORIZATION_TYPES = {
-  TransferWithAuthorization: [
-    { name: "from", type: "address" },
-    { name: "to", type: "address" },
-    { name: "value", type: "uint256" },
-    { name: "validAfter", type: "uint256" },
-    { name: "validBefore", type: "uint256" },
-    { name: "nonce", type: "bytes32" },
-  ],
-} as const;
-
-/** keccak256("TransferWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce)") */
-export const TRANSFER_WITH_AUTHORIZATION_TYPEHASH =
-  "0x7c7c6cdb67a18743f49ec6fa9b35f50d52ed05cbed4cc592e13b44501c1a2267" as const;
 
 export const AuthorizationSchema = z.object({
   from: AddressSchema,
@@ -120,13 +106,6 @@ export async function recoverAuthorizationSigner(a: Authorization, signature: He
     message: message(a),
     signature,
   });
-}
-
-/** Fresh 32-byte nonce; USDC marks it used after one transfer. Never a counter. */
-export function randomNonce(): Hex {
-  const b = new Uint8Array(32);
-  crypto.getRandomValues(b);
-  return `0x${Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("")}`;
 }
 
 // ---------------------------------------------------------------- treasury delegations
@@ -249,22 +228,22 @@ export async function signPauseChild(
 
 // ---------------------------------------------------------------- token domain check
 
-/** The only chain reads verifyTokenDomain needs; tests pass a fake. */
+/** The only chain reads readTokenDomain needs; tests pass a fake. */
 export interface TokenReader {
   readContract(args: { address: Address; abi: readonly unknown[]; functionName: string; args?: readonly unknown[] }): Promise<unknown>;
 }
 
-export const USDC_DOMAIN_ABI = [
+const TOKEN_DOMAIN_ABI = [
   { type: "function", name: "name", stateMutability: "view", inputs: [], outputs: [{ type: "string" }] },
   { type: "function", name: "version", stateMutability: "view", inputs: [], outputs: [{ type: "string" }] },
   { type: "function", name: "decimals", stateMutability: "view", inputs: [], outputs: [{ type: "uint8" }] },
   { type: "function", name: "DOMAIN_SEPARATOR", stateMutability: "view", inputs: [], outputs: [{ type: "bytes32" }] },
 ] as const;
 
-export type TokenDomain = { name: string; version: string; decimals: number; domainSeparator: Hex; address: Address };
+export type ObservedTokenDomain = { name: string; version: string; decimals: number; domainSeparator: Hex; address: Address };
 
 export class TokenDomainMismatch extends Error {
-  constructor(public readonly mismatches: string[], public readonly observed: TokenDomain) {
+  constructor(public readonly mismatches: string[], public readonly observed: ObservedTokenDomain) {
     super(`USDC domain mismatch: ${mismatches.join("; ")}`);
     this.name = "TokenDomainMismatch";
   }
@@ -273,11 +252,12 @@ export class TokenDomainMismatch extends Error {
 /**
  * Read name(), version(), decimals() and DOMAIN_SEPARATOR() from the token (USDC has no eip712Domain()) and
  * require them to match the pinned USDC constants and the separator viem derives from them. Throws on mismatch.
+ * (The service boot check uses this; verifyTokenDomain() in token-domain.ts is the x402 client's equivalent.)
  */
-export async function verifyTokenDomain(client: TokenReader, token: Address = USDC.address): Promise<TokenDomain> {
-  const read = (fn: string) => client.readContract({ address: token, abi: USDC_DOMAIN_ABI, functionName: fn });
+export async function readTokenDomain(client: TokenReader, token: Address = USDC.address): Promise<ObservedTokenDomain> {
+  const read = (fn: string) => client.readContract({ address: token, abi: TOKEN_DOMAIN_ABI, functionName: fn });
   const [name, version, decimals, sep] = await Promise.all([read("name"), read("version"), read("decimals"), read("DOMAIN_SEPARATOR")]);
-  const observed: TokenDomain = {
+  const observed: ObservedTokenDomain = {
     name: String(name),
     version: String(version),
     decimals: Number(decimals),

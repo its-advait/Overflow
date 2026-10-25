@@ -1,6 +1,7 @@
 import type { Address, Hex } from "viem";
 import { assertTransition, explorerUrl, type PaymentPath, type PaymentStatus, type PurchaseOrder, type PurchaseStatus } from "@overflow/schemas";
-import { authorizationDigest, randomNonce, signAuthorization, type Authorization, type TypedDataSigner } from "../typed-data";
+import { randomNonce } from "../authorization";
+import { authorizationDigest, signAuthorization, type Authorization, type TypedDataSigner } from "../typed-data";
 import type { PurchaseStore } from "./store";
 import {
   AlreadySubmittedError,

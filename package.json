@@ -25,10 +25,12 @@
     "spike:seller": "pnpm --filter @overflow/service spike:seller",
     "spike:coinbase": "pnpm --filter @overflow/scripts coinbase-spike",
     "status": "pnpm --filter @overflow/scripts status",
-    "dev:fund": "pnpm --filter @overflow/scripts dev-fund"
+    "dev:fund": "pnpm --filter @overflow/scripts dev-fund",
+    "datasets:generate": "tsx scripts/generate-datasets.mts"
   },
   "devDependencies": {
     "typescript": "^5.9.3",
-    "vitest": "^4.0.0"
+    "vitest": "^4.0.0",
+    "tsx": "^4.23.15"
   }
 }

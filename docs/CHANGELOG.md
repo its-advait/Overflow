@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- merge: `main` (datasets + catalog, database, REST API, chain indexer + SSE, ledger, exceptions, direct-API sellers, oracle, x402 client) integrated into `person1`. One recourse-crypto (`main`'s modules, `person1`'s forge-pinned vectors ported), one payment-client barrel (adapters at `@overflow/payment-client/adapters`), one relayer (seller paywall settles through the facilitator app in-process), one service entry point.
 - fix(contracts): T18, the ERC-1271 gate refuses a reserved authorization once its escrow is Settled/Refunded (USDC reverts, nonce unused); `releaseClosed()` refunds such a reservation before `validBefore`, exactly once. `Reservation` gained `to`/`toIsEscrow`; errors `NotEscrowReservation`, `EscrowStillOpen`, `AuthorizationUsed`. `sweep()` kept as defense in depth.
 - feat(service): sweep reconciliation indexes `OrderCreated`, terminal events, `Swept` and USDC `Transfer` into closed escrows into balanced idempotent ledger entries with confirmation depth and reorg corrections; derived `LateArrival` and chain `Swept` on `/events`. `ChainEventKindSchema` += `Swept`, `LateArrival`.
 - test(contracts): `test_xorRoundTrip` builds 160-byte chunks from `bytes32[5]` instead of rejecting random lengths.

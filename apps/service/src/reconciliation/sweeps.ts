@@ -162,7 +162,7 @@ export function createSweepReconciler(opts: {
       const id = `exc:${k}`;
       const opened = await opts.exceptions.open({
         id,
-        type: "reconciliation-difference",
+        type: "RECONCILIATION_DIFF",
         reason: `USDC ${amount} reached closed escrow ${info.escrow} from ${from}, not from the treasury; not booked`,
         amountAtomic: amount,
         status: "open",
@@ -220,7 +220,7 @@ export function createSweepReconciler(opts: {
     if (excess > 0n) {
       exception = await opts.exceptions.open({
         id: `exc:${k}`,
-        type: "reconciliation-difference",
+        type: "RECONCILIATION_DIFF",
         reason: `sweep() of escrow ${info.escrow} moved ${value.toString()} but only ${out.toString()} of treasury late arrivals were observed; ${excess.toString()} unexplained`,
         amountAtomic: excess.toString(),
         status: "open",

@@ -8,3 +8,5 @@ packages:
 allowBuilds:
   esbuild: true
   unrs-resolver: true
+  # Only prints a CDP terms notice; nothing to build. Skipped so installs stay non-interactive.
+  "@coinbase/x402": false

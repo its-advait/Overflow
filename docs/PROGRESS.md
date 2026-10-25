@@ -149,6 +149,28 @@
 - Signing uses Foundry keystores (`overflow-deployer`) plus a chmod-600 password file instead of a raw key in `.env`; the `*_KEY` slots in `.env` hold addresses only.
 - The deployments JSON lives in `packages/schemas/deployments/` (prompt) rather than the repo root (P0.2 draft) so the package can import it statically; field names follow the prompt, P0.2 names stay accepted.
 - `dev-fund` is labeled DEV ONLY in code and output; in the demo the controller funds through Coinbase Wallet.
+## 2026-10-24: `@overflow/recourse-crypto` chunking, keys, Merkle proofs, golden vectors
+
+### Built
+- `packages/recourse-crypto/README.md` documents the record format as a contract: chunk = 160 bytes = payload (95) + signature (65, `r||s||v`, v in {27,28}); payload = `0x01` + uint64 big-endian timestamp + 86 bytes of one UTF-8 CSV row right-padded with `0x00`; signature = raw ECDSA over `keccak256(payload)` with no EIP-191 prefix (viem `sign({ hash })`, RFC 6979 deterministic).
+- `src/record.ts`: `encodePayload` (rejects rows over 86 bytes and rows containing NUL), `decodePayload`, `payloadHash`, `signPayload`, `buildRecordChunk`, `splitChunk`/`parseChunk`, `recoverRecordSigner`, `verifyRecordPromise` (wrong-source / stale-timestamp / malformed), `splitDataset`/`joinChunks`.
+- `src/keys.ts`: `perBuyerKey = keccak256(encodePacked(bytes32 secret, bytes32 orderId, address buyer))`, `chunkKey(k, uint256 i)`, `keystreamBlock(k_i, uint256 j)`, 160-byte keystream = blocks 0..4, XOR encrypt/decrypt, `keyCommitment = keccak256(k)`, dataset helpers.
+- `src/merkle.ts`: leaf = `keccak256(chunk)`, parent = `keccak256(left || right)`, odd last node carried up unchanged, proofs skip carried levels. `verifyProof` works with or without the leaf count (see design choice below); `expectedProofLength`, `computeRootFromProof`.
+- `src/commit.ts`: `commitDataset` -> `rootPlain`, `rootCipher`, `keyCommitment`, `leafCount`, `k`, both chunk/leaf arrays and trees; `verifyCiphertext`, `verifyPlainLeaves` for the buyer before funding.
+- `src/sample.ts`: `pickSampleIndices(n, count, randomBytes)` (keccak256(random || uint256 j) mod n, unique, draw order), `revealChunkKeys`, `verifySample` (cipher proof, plain proof, decrypt-and-hash).
+- `src/complaint.ts`: `buildMismatchComplaint` -> `{ i, cipherChunk, cipherProof, plainLeaf, plainProof }`, `buildPromiseComplaint` -> `{ i, plainChunk, plainProof }` (+ verdict). Both throw `ComplaintNotWarrantedError` when the contract would revert. `checkMismatch` exposes the contract's derivation.
+- `src/vectors.ts` + `scripts/gen-vectors.ts` (`pnpm --filter @overflow/recourse-crypto vectors`): SIMULATED 7-chunk dataset, label-derived throwaway keys, every intermediate value, one swapped chunk (index 3) with ready `complainMismatch` args, one wrong-source record (index 5) with ready `complainPromise` args. Written to `packages/recourse-crypto/test/vectors.json` and copied to `contracts/test/fixtures/recourse-vectors.json`.
+- `src/cli.ts` (`pnpm --filter @overflow/recourse-crypto cli -- <cmd>`): `records`, `commit`, `encrypt`, `sample`, `decrypt`, `prove`. Added `tsx` as a devDependency for the script and CLI.
+
+### Design choices
+- **Proof shape without the leaf count.** Because the odd node is carried up unchanged, proof lengths vary by index. `verifyProof(root, leaf, index, proof)` still works without `n`: depth = `max(bitLength(index), proof.length)` and the missing levels are the topmost even-position levels of the path (a node that is last at one level is last at every level above). Algorithm is written out in the README for the Solidity mirror.
+- **Second-preimage caveat.** Without `n`, a bare 32-byte leaf that is really an internal node verifies with a shorter proof. Chunk-backed leaves (`cipherChunk`, `plainChunk`) are immune; the bare `plainLeaf` in `complainMismatch` is not. The contract must pin the shape: store `chunkCount` and check the proof length, or require `cipherProof.length == plainProof.length`. TS callers should pass `leafCount` (from the manifest) whenever known; `verifySample` and the vectors tests do.
+- Complaint builders validate locally and refuse to build a complaint the contract would reject, so the UI never shows a "refund pending" for an allegation the chain will revert.
+- `leafCount` is part of the manifest, not the roots; `commitDataset` returns it.
+
+### Stubbed or simulated
+- All vector key material and the dataset are labeled SIMULATED; no real source signer exists yet.
+- Not wired to the seller endpoints, the escrow contract, or the UI yet.
 
 ### Verified (real output, 2026-10-24)
 | Check | Result |
@@ -206,6 +228,27 @@ existing `run-latest.json`: `packages/schemas/deployments/base-sepolia.json`, `s
 - `chunkCount` is bound by `termsHash` (and therefore by `orderId` and the CREATE2 salt), per the user's decision; the teammate's `TERMS_HASH_ABI` was extended as a superset.
 - A refund returns price and bond to the treasury's USDC but leaves the paying node's `spent` charged (asserted in `test_timeoutRefund_restoresTreasuryUsdc`), per the spec's refund semantics.
 - The internal-node-as-leaf attack fails on the exact proof-length check first and on the domain-separated hash if padded; a 32-byte node can never pass as a 160-byte chunk either.
+| `pnpm install --offline` | exit 0 (tsx linked from the store) |
+| `pnpm typecheck` | exit 0, all workspaces Done |
+| `pnpm test` | exit 0, 11 files / 138 tests passed (35 new: record round trips and rejections, key derivation vs raw keccak, proofs for every index for 1..20 leaves incl. the odd-level case, sample verification and failure reasons, detected swapped chunk, detected wrong-source and stale records, vector regeneration byte-identical and fixture copy identical) |
+| `pnpm --filter @overflow/recourse-crypto vectors` twice | identical files, `git status` clean for both JSON files |
+| CLI smoke (records -> commit -> encrypt -> sample -> decrypt -> prove) | plaintext round trip `cmp` identical; single-chunk decrypt with a revealed `k_i` matches |
+
+### Open issues
+- Engineer B: `OverflowEscrow` must either store `chunkCount` or enforce `cipherProof.length == plainProof.length` in `complainMismatch` (see caveat above), and should add a Foundry test that replays `contracts/test/fixtures/recourse-vectors.json`.
+- Plain leaves of short CSV rows are low-entropy; a published leaf list is brute-forceable. Acceptable for synthetic demo data; note in limitations.
+
+## 2026-10-24: `@overflow/recourse-crypto` domain-separated, shape-pinned Merkle proofs
+
+### Built
+- `hashLeaf(chunk) = keccak256(0x00 || chunk)` and rejects any chunk that is not exactly 160 bytes; `hashPair(l, r) = keccak256(0x01 || l || r)`. `LEAF_PREFIX`/`NODE_PREFIX` exported.
+- `expectedProofLength(index, chunkCount)` for the odd-node carry-up tree; `verifyProof({ root, leaf, index, proof, chunkCount })` now requires `chunkCount`, rejects `index >= chunkCount`, and rejects any proof whose length differs from the expected one. `computeRootFromProof(leaf, index, proof, chunkCount)` walks the known shape; the shape-inferring verifier from the previous entry is gone.
+- `verifySample` requires `chunkCount`; `verifyCiphertext`/`verifyPlainLeaves` take `chunkCount` and require exactly that many entries. `leafCount` renamed to `chunkCount` everywhere, including the vectors JSON.
+- Vectors regenerated (`test/vectors.json`, `contracts/test/fixtures/recourse-vectors.json`): all leaves, roots and proofs changed; keys, ciphertext and signatures did not. README Merkle section rewritten with pseudo-Solidity for `expectedProofLength` and `verify`.
+
+### Design choices
+- Two independent defenses: the `0x00`/`0x01` prefixes keep leaf and node hashes in separate domains, and the pinned proof length means a shorter proof presenting an internal node as a leaf is rejected before any hashing. The attack test in `merkle.test.ts` is kept and now asserts failure.
+- The escrow must read `chunkCount` from its own stored terms or committed manifest, never from the complainant's calldata.
 
 ### Verified (real output, 2026-10-24)
 | Check | Result |
@@ -232,6 +275,36 @@ existing `run-latest.json`: `packages/schemas/deployments/base-sepolia.json`, `s
 - Step 5: restricted nodes are checked against the escrow's seller (`nodeAllow[n][escrow.seller()]`), so a delegation that allows a seller covers every per-order escrow of that seller. Documented as T15 in `docs/contract-invariants.md`; T14 and E9 now point at the implementation.
 - `OverflowEscrow` gains `buyer()`, `seller()`, `amount()` getters (the treasury uses them). Treasury ABI re-exported (57 entries).
 - `contracts/test/unit/TreasuryEscrowPayee.t.sol` (12 tests, real USDC): agent funds an escrow through `settle()` with no `setAllow`, then `markFunded`; wrong amount (both directions, no partial charge); escrow with a different buyer; flagged seller on the escrow path, on a fresh order, and on the direct path; other sellers unaffected; factory unset; owner-only `setEscrowFactory` with event; restricted child pays an escrow of its allowed seller, rejects another seller's escrow (also through an unrestricted grandchild), and an allowlist of `payeeA` does not admit the escrow.
+| `pnpm typecheck` | exit 0, 8 workspaces Done |
+| `pnpm test` | exit 0, 11 files / 139 tests passed (includes the second-preimage attack now failing, 160-byte rejection, expectedProofLength == getProof length for 1..40 leaves) |
+| `pnpm --filter @overflow/recourse-crypto vectors` twice | identical; fixture copy byte-identical (`cmp`) |
+
+### Open issues
+- Engineer B: `OverflowEscrow` needs `chunkCount` in storage (OrderTerms or manifest-bound) to call `verify`; the README pseudo-Solidity is the reference. Replay `contracts/test/fixtures/recourse-vectors.json` in a Foundry test.
+
+## 2026-10-24: `@overflow/payment-client` x402 quote checks and EIP-3009 signing
+
+### Built
+- `src/x402.ts`: x402 **v2** wire format from github.com/x402-foundation/x402 (`specs/x402-specification-v2.md`, `specs/transports-v2/http.md`, `specs/schemes/exact/scheme_exact_evm.md`). Header names `PAYMENT-REQUIRED` (server -> client, base64 JSON `PaymentRequired`), `PAYMENT-SIGNATURE` (client -> server, base64 JSON `PaymentPayload`), `PAYMENT-RESPONSE` (base64 JSON `SettlementResponse`). Zod schemas for `PaymentRequirements { scheme, network (CAIP-2), amount, asset, payTo, maxTimeoutSeconds, extra }`, `PaymentRequired { x402Version: 2, error?, resource, accepts[], extensions? }`, `PaymentPayload { x402Version: 2, resource?, accepted, payload: { signature, authorization } }`, and `SettlementResponse`. `parsePaymentRequired(response)` reads the header only (bodies are a server concern per the transport spec), `parsePaymentPayload`, `parsePaymentResponse` (null when absent, throws when malformed).
+- `src/token-domain.ts`: `verifyTokenDomain(publicClient)` reads `name()`, `version()`, `decimals()`, `DOMAIN_SEPARATOR()` (and `getChainId()` when available) and throws `TokenDomainMismatchError` listing every field that is not `USDC` / `2` / `6` / the separator computed for `{USDC, 2, 84532, token}`.
+- `src/quote.ts`: `checkQuote(requirements, order, { approvedDirectSellers })` in this order: scheme `exact`; network `eip155:84532`; `order.tokenAddress` and `asset` == USDC; `payTo` == `order.escrowAddress`, or an approved direct seller that is also `order.sellerAddress`; `amount` == `order.amountAtomic` as integers (not `<=`); `extra.name`/`extra.version` == `USDC`/`2`; `extra.assetTransferMethod` absent or `eip3009`. Any failure throws `QuoteMismatchError { field, expected, actual }`. Returns a branded `CheckedQuote`. `selectRequirements(paymentRequired)` picks the `accepts[]` entry we can pay.
+- `src/authorization.ts` (ported from `reference/leash/packages/leash-client`): `buildAuthorization` with `validAfter = now - 5` (USDC requires `block.timestamp > validAfter` strictly), `validBefore = now + min(ttl, reservationWindow)` (default window 600 s from the spec), random 32-byte nonce, `from` = the treasury. `authorizationDigest` (viem `hashTypedData`), `authorizationStructHash`, `authorizationDigestFromSeparator`, `isAuthorizationLive` (mirrors FiatTokenV2's two strict checks). `signTransfer({ nodeAccount, treasury, to, value, ttlSeconds, ... })` refuses when the node key is the treasury or the domain is not USDC v2 on 84532, signs, and verifies the signature recovers to the node key before returning `{ authorization, authorizationJson, typedData, digest, signature, signer }`. `NodeSigner` is structural (`{ address, signTypedData }`) so a CDP server wallet can replace a viem `LocalAccount`.
+- `src/header.ts`: `buildPaymentPayload({ accepted, resource, signed })` (refuses if `accepted` disagrees with what was signed) and `buildPaymentHeader(payload)` -> `{ name: "PAYMENT-SIGNATURE", value }`.
+- `src/fetch.ts`: `wrapFetch(fetch, { nodeAccount, treasury, adapter, domain?, reservationWindowSeconds?, now? })`. Non-402 passes through. For a 402: parse, `selectRequirements`, `adapter.resolveOrder` (null -> return the 402 unpaid), `checkQuote` (throws before any signing), sign, `adapter.onAuthorized` (persist the digest **before** the paid request), exactly one paid request, `adapter.onPaymentResult` with the decoded `PAYMENT-RESPONSE`. A transport failure after sending throws `PaymentOutcomeUnknownError(digest)`; nothing in this package retries.
+- `src/golden.ts` + `scripts/gen-golden.ts` (`pnpm --filter @overflow/payment-client golden`): fixed SIMULATED vector (treasury `0x1111...`, to `0x2222...`, 20000 atomic, validAfter 1791700000, validBefore 1791700120, nonce `keccak256("overflow.golden.nonce")`, test key `keccak256("overflow.golden.key")`) written to `packages/payment-client/test/golden.json` and `contracts/test/fixtures/payment-client-golden.json`. Digest `0xb2d39a5bf926c7a6e8c9447445a9b38006b415db638e540792757a03b40e2dc8`, pinned on both sides.
+- `contracts/test/PaymentClientGolden.t.sol`: recomputes the USDC domain separator, the struct hash and the digest in Solidity, asserts the pinned constant, replays the JSON fixture (`vm.parseJson*`), and checks `vm.sign` produces the identical signature (RFC 6979) that `ecrecover`s to the fixture signer. `foundry.toml` gained `fs_permissions = [{ access = "read", path = "./test/fixtures" }]`.
+- `scripts/settle-live.ts` (`pnpm --filter @overflow/payment-client settle:live -- --to 0x... [--amount 10000] [--dry-run] [--treasury 0x...]`): loads the repo `.env`, verifies the live USDC domain, signs with `AGENT_KEYS[0]`, then (unless `--dry-run`) simulates and sends `treasury.settle()` with `RELAYER_PRIVATE_KEY`, decodes the `Paid` event, and confirms on chain via `USDC.authorizationState(treasury, nonce)` and the payee balance delta. Custom treasury reverts are decoded by name. The treasury ABI is the spec's signature; adjust if Engineer B's contract differs.
+
+### Design choices
+- Header-only 402 decoding (no body fallback), matching the x402 TS reference client for v2.
+- `amount` must equal the order exactly; `extra.assetTransferMethod` other than `eip3009` (Permit2, ERC-7710) is refused because the treasury only understands `transferWithAuthorization`.
+- Direct (non-escrow) payees need two things: the owner's allowlist passed as `approvedDirectSellers`, and equality with `order.sellerAddress`. The treasury enforces its own allowlist on chain; this is the offchain pre-check.
+- `wrapFetch` never retries the paid request and reports the outcome through `adapter.onPaymentResult`; reconciliation belongs to the service's `reconcilePayment` (P7.2). Request bodies must be re-readable.
+- Optional wire fields use `z.preprocess(dropNull, ...optional())` so explicit `null` from other implementations is accepted and the TypeScript output keys stay optional.
+
+### Stubbed or simulated
+- `test-fixtures.ts` orders, sellers and the golden key are SIMULATED and labeled.
+- No `PaymentAdapter` implementation yet (`OverflowFacilitatorAdapter` / `CoinbaseFacilitatorAdapter` are P7.x); `wrapFetch` takes the small `PaymentFetchAdapter` hook interface they will implement.
 
 ### Verified (real output, 2026-10-24)
 | Check | Result |
@@ -258,6 +331,39 @@ existing `run-latest.json`: `packages/schemas/deployments/base-sepolia.json`, `s
 
 ### Live treasury compatibility
 The Base Sepolia treasury at `0xd3A74fA991CA0B5627d30EF27dC699C134848291` was checked by selector against its bytecode: it has `settle` and `isValidSignature` but lacks `reserve`, `release`, `setEscrowFactory`, `reservedTotal` and `setReservationWindow`. It has no proxy, so it cannot be upgraded; it must be replaced by a fresh deployment (with the escrow factory, P1.6 hook in `Deploy.s.sol`). Not done in this task; nothing was broadcast.
+| `pnpm typecheck` | exit 0, 8 workspaces Done |
+| `pnpm test` | exit 0, 18 files / 198 tests passed (59 new: every `checkQuote` failure incl. one-atomic-unit deltas and lowercase addresses, spec example headers decoded byte-for-byte, strict `validAfter`/`validBefore` boundaries, reservation-window cap, nonce uniqueness, from = treasury, refusals, digest == manual `0x1901` construction, golden vector regeneration byte-identical, `wrapFetch` single paid attempt / no second request on mismatch / unknown-outcome path) |
+| `forge test` | 5 passed, 0 failed (3 new in `PaymentClientGoldenTest`: typehash + domain, pinned digest, fixture digest and signature) |
+| `settle:live --dry-run` against `https://sepolia.base.org` with a throwaway key | live USDC returned `USDC`, `2`, `6`, separator `0x71f17a3b...9818` (matches pinned); signed authorization with `from` = treasury, signer = node key |
+
+### Open issues
+- **`settle()` on Base Sepolia not run.** No `OverflowTreasury` is deployed yet (`contracts/src` is empty on this branch and `main`; no `deployments/base-sepolia.json`), and the local `.env` has no RPC URL or keys. Once Engineer B deploys and registers a node key from `AGENT_KEYS`, run `pnpm --filter @overflow/payment-client settle:live -- --to <allowlisted payee>` and paste the Basescan link here.
+- `PaymentFetchAdapter.resolveOrder` is where the service must map a 402 to a `PurchaseOrder` in `RESERVED`; the state transitions themselves are not in this package.
+
+## 2026-10-24: `@overflow/database` schema, migrations, repositories
+
+### Built
+- `packages/schemas/src/tables.ts`: row schemas for every table that lacked one: `OrganizationSchema`, `AgentRecordSchema`, `MissionRecordSchema`, `ResourceRequestRecordSchema`, `ResourceRecordSchema`, `PurchaseGroupSchema`, `AllocationRecordSchema`, `PurchaseRecordSchema` (= `PurchaseOrderSchema` + `idempotencyKey`, `purchaseGroupId`, `oracleReason`, `updatedAt`, keeps the allocation-sum refinement), `ChainTransactionSchema`, `EscrowOrderSchema` + `ESCROW_STATUSES`/`ESCROW_TRANSITIONS`, `FinancialEntrySchema` (debit account != credit account), `ReservationRecordSchema`, `SampleRecordSchema`, `SellerHistorySchema`. `ActivityEventSchema`, `ExceptionRecordSchema`, `ControllerRequestSchema` are used as-is.
+- `packages/database/src/schema.ts`: 17 Drizzle `pg-core` tables (`organizations`, `missions`, `agents`, `resource_requests`, `resources`, `purchase_groups`, `allocations`, `purchases`, `chain_transactions`, `escrow_orders`, `financial_entries`, `activity_events`, `reservations`, `samples`, `seller_history`, `exceptions`, `controller_requests`). Every money column is `numeric(78,0)` read as a decimal string with a `>= 0` check; no `real`/`double precision` anywhere. `pgEnum` for purchase and escrow status; other statuses are text validated by Zod at the boundary.
+- Constraints: `purchases.idempotency_key` UNIQUE; partial unique index `purchases_active_mission_resource_uidx ON (mission_id, resource_id) WHERE status NOT IN (<TERMINAL_STATUSES>)`; `chain_transactions (tx_hash, log_index)` UNIQUE; `financial_entries.source_event_id` UNIQUE NOT NULL with `debit_account`, `credit_account`, `amount`, `memo` NOT NULL, `purchase_id` FK and a `debit_account <> credit_account` check; `reservations.digest` UNIQUE; `escrow_orders.purchase_id` and `escrow_address` UNIQUE; FKs between every related pair.
+- `drizzle/0000_init.sql` + `meta/` generated by `drizzle-kit generate` (committed). `pnpm --filter @overflow/database db:generate` reports "No schema changes" against the committed migration.
+- `src/client.ts`: `createDatabase()` picks the `postgres` driver when `DATABASE_URL` is set, otherwise PGlite (`PGLITE_DATA_DIR`, or in-memory). Returns `{ db, dialect, migrate, close }`; `selectDialect()` is exported and unit-tested. `migrate()` applies the same `drizzle/` folder on either driver.
+- `src/errors.ts`: `UniqueViolationError` (SQLSTATE 23505, constraint name recovered from `constraint_name`/`constraint`/message, through Drizzle's `cause` chain), `NotFoundError`, `isUniqueViolation`, `withDbErrors`.
+- `src/repositories/*`: one typed repository per table, `createRepositories(db)` bundles them. Every function validates input with the row schema and parses output through it before returning. Notable: `purchases.create` is idempotent on `idempotencyKey` (`onConflictDoNothing` then re-read) and surfaces a (mission, resource) collision as `UniqueViolationError` naming the partial index; `purchases.transition` locks the row (`FOR UPDATE`) and uses `assertTransition` from schemas; `chainTransactions.record` is idempotent on (tx_hash, log_index) and reports `inserted: false` on replay; `financialEntries.post` is strict (duplicate source event throws) and `balance()` sums with `bigint`; `escrowOrders.setStatus` follows `ESCROW_TRANSITIONS`; `sellerHistory.upsertIncrement` adds counters atomically in SQL; `controllerRequests.resolve("executed")` requires the confirmed `txHash`.
+- `src/seed.ts` + `scripts/seed.ts`, `scripts/migrate.ts`: one SIMULATED organization (`COMPANY_NAME`, default "Larkspur Research Partners", `simulated: true`), departments `research` and `finance`, three agents (orchestrator, research analyst, finance analyst) with labeled placeholder keys. Idempotent (fixed ids).
+- `.env.example`: added `PGLITE_DATA_DIR` and `COMPANY_NAME`.
+
+### Design choices
+- **PGlite instead of SQLite as the no-server fallback.** No Postgres or Docker is installed on this machine, so the prompt's "SQLite behind the same Drizzle interface" clause applied. PGlite is in-process Postgres (WASM): the same `pg-core` schema, the same migration SQL, partial unique indexes, `numeric(78,0)`, `FOR UPDATE` and `jsonb` all run unchanged, so there is exactly one schema definition. A SQLite fallback would have needed a second `sqlite-core` schema and lost the partial index. The selected dialect is logged at startup and returned from `createDatabase`; nothing falls back silently.
+- `financial_entries` is the per-row form the prompt specifies (`debit_account`, `credit_account`, `amount`, `memo`, `source_event_id`). `JournalEntrySchema` (multi-line) stays in schemas as the presentation form. `source_event_id` is required and unique for every row: chain-derived entries use the `chain_transactions.id`, corrections and funding entries use a synthetic id, so "every event books exactly once" is enforced by the database.
+- Partial-index predicate is rendered from `TERMINAL_STATUSES` as SQL literals (`sql.raw`); drizzle-kit cannot inline bound parameters into an index `WHERE`. The statuses are a fixed enum, not user input.
+- Timestamps are `timestamptz` with Drizzle `mode: "date"`; repositories convert to ISO strings so `IsoDateTimeSchema` accepts them (Drizzle's string mode emits a space-separated format Zod rejects).
+- `samples.confidence` (a model score, not money) is stored as text and parsed to a number on read, so an audit for float columns finds none.
+- Per-package `vitest run` inherits the root `projects` config and fails on path resolution; run tests from the root (`pnpm test` or `pnpm vitest run packages/database`).
+
+### Stubbed or simulated
+- The seed company, its departments and the three agent keys are SIMULATED placeholders (`0x…0A01/0A02/0A03`); the service must replace keys when real nodes are created.
+- No service code uses the repositories yet; the service only imports the package for typecheck/bundle.
 
 ### Verified (real output, 2026-10-24)
 | Check | Result |
@@ -282,6 +388,28 @@ The Base Sepolia treasury at `0xd3A74fA991CA0B5627d30EF27dC699C134848291` was ch
 - Test harness `EscrowBase` now commits real ciphertext (`_cipher(i)`, `_cipherLeaves(n)`); existing complaint-structure tests moved onto it (`test_complaint_wellFormed_honestSeller` now expects `ChunkMatches` for tier 2 and `NotImplemented` for tier 3).
 - `contracts/test/escrow/EscrowMismatch.t.sol` (7 tests): a seller commits honest plaintext hashes but serves a swapped ciphertext for chunk 2; the treasury funds the escrow through `settle()`; the proof refunds price + bond to the treasury, flags the seller, leaves the agent's allowance charged; a correct chunk complaint reverts (cheating and honest sellers); complaints before reveal and after the window revert and an unchallenged cheat pays out; a second complaint after the refund reverts; tampered chunk or foreign plain leaf revert `BadProof`; internal-node-as-leaf reverts (length, then hash); the flagged seller is then blocked by the treasury for new escrows via `settle` and `reserve` and for direct payment (P1.4 `PayeeFlagged`).
 - Escrow ABI re-exported (52 entries).
+| `pnpm test` | exit 0, 24 files / 228 tests passed (database: 5 files / 26 tests; schemas: 6 files / 107 tests) |
+| `pnpm typecheck` | exit 0, all workspaces Done |
+| `pnpm --filter @overflow/database db:generate` | "No schema changes, nothing to migrate" |
+| `PGLITE_DATA_DIR=<scratch> pnpm --filter @overflow/database db:migrate` | `dialect=pglite`, "migrations applied" |
+| `... db:seed` twice | both runs: `seeded organization "Larkspur Research Partners" (SIMULATED) departments=research,finance agents=3`; second run added nothing |
+| `pnpm --filter @overflow/service build` | tsup ESM build success (PGlite does not break the bundle) |
+| duplicate purchase | same `idempotencyKey` returns the same row; new key for an active (mission, resource) throws `UniqueViolationError("purchases_active_mission_resource_uidx")`; after `REJECTED`, a new active purchase is accepted |
+| duplicate event | `chainTransactions.record` replay returns `inserted: false`; raw duplicate insert violates `chain_transactions_tx_hash_log_index_unique`; duplicate `financialEntries.post` throws `UniqueViolationError("financial_entries_source_event_id_unique")` |
+
+### Open issues
+- No real Postgres server was exercised here; the `postgres-js` branch of `createDatabase` is covered only by the dialect-selection unit test. Run `DATABASE_URL=... pnpm --filter @overflow/database db:migrate` against a server before the demo.
+- ~~`DEFAULT_MIGRATIONS_FOLDER` resolves relative to the package source; a bundled service must set `OVERFLOW_MIGRATIONS_DIR`.~~ Fixed below (same day).
+- Enum changes (`purchase_status`, `escrow_status`) need a new migration; text statuses do not.
+
+## 2026-10-24: bundled service finds its migrations
+
+### Built
+- `apps/service/tsup.config.ts` copies `packages/database/drizzle` to `dist/drizzle` after every build (`onSuccess`). `pnpm --filter @overflow/service start` is now `OVERFLOW_MIGRATIONS_DIR=dist/drizzle node dist/index.js`, so the bundle needs no manual setup.
+- `apps/service/src/index.ts` opens the database with `createDatabase()`, applies migrations before listening, reports `{ dialect, migrationsFolder, migrated: true }` in its status JSON (real state, not a flag), and closes the database on SIGINT/SIGTERM.
+- `createDatabase` resolves the folder to an absolute path, exposes it as `handle.migrationsFolder`, and fails fast with `no migrations found at <path> (set OVERFLOW_MIGRATIONS_DIR ...)` when `meta/_journal.json` is missing, instead of letting the migrator throw a less specific error.
+- `apps/service/package.json` now lists `@electric-sql/pglite`, `drizzle-orm` and `postgres` directly: tsup bundles `@overflow/database` but leaves the drivers external, and pnpm's strict `node_modules` only resolves them for packages that declare them.
+- `.env.example`: `OVERFLOW_MIGRATIONS_DIR` documented (empty = default `packages/database/drizzle`; built service uses `dist/drizzle`).
 
 ### Verified (real output, 2026-10-24)
 | Check | Result |
@@ -306,6 +434,41 @@ The Base Sepolia treasury at `0xd3A74fA991CA0B5627d30EF27dC699C134848291` was ch
 - Bonds were already enforced by P1.3 (`markFunded` requires price + bond; payout sends both to the seller; refund/timeout sweep everything to the buyer). This task adds the explicit flow tests; no contract change was needed.
 - `@overflow/recourse-crypto`: `splitRecord`, `buildRecord`, `buildPayload(timestamp, 87 data bytes)`, `payloadHash`, `promiseBroken(record, sourceKey | null, minTimestamp)` (offchain mirror of the contract's decision, viem `recoverAddress`), README section for tier 3. `recordTimestamp` accepts a record or a bare payload.
 - Tests: `contracts/test/escrow/EscrowPromise.t.sol` (13): wrong-source record refunds (treasury funded via `settle`, bond to the buyer, allowance stays charged, anyone may relay), stale record refunds, malformed signature refunds, valid record complaint reverts for every chunk and a forged record fails `BadProof`, timestamp-only promise ignores the signer, no-promise terms revert, complaints before reveal / after the window revert, bond to seller on payout, bond to buyer on cheat, bond to buyer on ghost (no cheat flag), `markFunded` underfunded without the bond, flagged seller cannot create (`SellerFlagged`, no clone deployed) or be paid (earlier order and direct), cheat count accumulates across orders. `TreasuryEscrowPayee::test_flaggedSeller_escrowPathReverts` updated for the new create rule; `test_complaint_wellFormed_honestSeller` now expects `NoPromise` for tier 3. ABIs re-exported (escrow 53 entries, factory 17).
+| `pnpm --filter @overflow/service build` | tsup success, `copied packages/database/drizzle -> dist/drizzle`; `dist/drizzle/{0000_init.sql,meta/_journal.json,meta/0000_snapshot.json}` present |
+| `PGLITE_DATA_DIR=<fresh dir> pnpm --filter @overflow/service start` | logs `dialect=pglite`, `migrations applied (dialect=pglite, from .../apps/service/dist/drizzle)`, listens; `GET /` returns `database: { dialect: "pglite", migrationsFolder: ".../apps/service/dist/drizzle", migrated: true }`; the directory is populated with a PGlite cluster |
+| `node dist/index.js` with `OVERFLOW_MIGRATIONS_DIR` unset | exits 1 with `no migrations found at .../apps/service/drizzle (set OVERFLOW_MIGRATIONS_DIR to the drizzle/ folder)` |
+| `pnpm typecheck` | exit 0 |
+| `pnpm test` | 228 passed |
+
+### Open issues
+- `pnpm start` sets the variable with POSIX `VAR=value cmd` syntax; on Windows use `cross-env` or set it in the shell.
+- Still no real Postgres server exercised; see the previous section.
+
+## 2026-10-24: REST API and purchase state machine
+
+### Built
+- `apps/service/src/orchestration/purchase-service.ts`: `createPurchaseService(db)` with `propose()` and `transition(purchaseId, to, evidence)`, the only code path that changes a purchase's status. One `db.transaction` per call: load, `assertTransition` (schemas), evidence rules, `purchases.transition`, store the digest / append the tx hash the evidence carries, write exactly one `activity_events` row whose message is `"<from> -> <to>: <reason> [<source.kind>:<source.reference>]"`. `TransitionEvidenceSchema` = `{ reason, source: { kind: api|adapter|chain|reconciliation|seller|oracle, reference }, txHash?, authorizationDigest?, decodedRevert?, agentId?, simulated }`. Event kinds: `RESERVED`/`PAYMENT_PENDING` → `payment.authorized`, `ESCROW_FUNDED` → `escrow.funded`, `SETTLED` → `escrow.settled`, `REFUNDED` → `escrow.refunded`, `REJECTED` → `policy.blocked`, else `purchase.status`.
+- Evidence rules (each refused with `TransitionEvidenceError`, nothing written): `ESCROW_FUNDED`/`SETTLED`/`REFUNDED` need a `txHash` and a `chain` or `reconciliation` source; `REJECTED` needs `decodedRevert`; `PAYMENT_PENDING` needs `authorizationDigest`; leaving `PAYMENT_UNKNOWN` needs a `reconciliation` source.
+- `apps/service/src/api/` (Hono 4.13.13 + `@hono/node-server` 2.1.5, both already in the lockfile): `POST /api/missions`, `POST /api/missions/:id/plan`, `GET /api/resources`, `POST /api/purchases/propose`, `POST /api/purchases/:id/authorize`, `GET /api/purchases/:id`, `GET /api/escrow/:id` (purchase id or escrow address), `GET /api/agents` (nested tree, `node: null` until the chain module fills it), `POST /api/agents/:id/pause`, `GET /api/activity`, `GET /api/ledger`, `GET /api/reconciliation`. Every body, query and param is Zod-parsed; every 2xx is parsed through its response schema before sending (`respond()`), so a shape drift is a 500 and never a wrong 200. One error envelope `{ error: { code, message, details?, requestId } }`; 400 validation, 404, 409 (`invalid_transition {from,to}`, `missing_evidence`, `quote_mismatch {field,expected,actual}`, `active_purchase_exists`, `no_root_node`, `no_node_yet`), 422 `idempotency_key_reused`, 501 `not_wired`.
+- `api/ports.ts`: `OrchestrationPort` (plan, propose; P4.1/P4.2), `PaymentAdapter` (spec's four methods plus `path`; `preparePayment` takes the branded `CheckedQuote`, so an adapter cannot sign an unchecked quote; P7.x), `PolicyPort.allowlistedPayees()` (chain), `ReconciliationPort.latest()` (P4.4). `defaultPorts()` throws `NotWiredError` → HTTP 501 naming the port and the prompt it lands in. No default returns success.
+- Authorize flow: `Idempotency-Key` required → load order (must be `PROPOSED`) and resource → adapter for `order.paymentPath` (501 if none) → `adapter.getPaymentRequirements` → `checkQuote` (payment-client) with the policy port's allowlist → on mismatch `FAILED_BEFORE_FUNDING` with the reason, 409, nothing signed → `preparePayment` → `RESERVED` (digest, reserve tx if any) → `PAYMENT_PENDING` **before** `submitPayment` → `rejected` → `REJECTED` + `decodedRevert`; `unknown` → `PAYMENT_UNKNOWN`; `submitted` → tx hash appended only. The route never sets `ESCROW_FUNDED`; that needs a confirmed chain event through the indexer.
+- Idempotency: `packages/database` gained `idempotency_keys` (`key` PK, `scope`, `request_hash`, `status_code`, `response jsonb`, `created_at`), migration `0001_idempotency_keys`, `IdempotencyRecordSchema`, repository `put()` (insert-if-absent, returns `{ inserted, row }`) / `get()`. `api/idempotency.ts` hashes the canonical `{scope, method, path, body}` (a cache key, not signed material) and replays the stored status and body on a repeat; same key with a different request → 422; the response carries `replayed: true|false`.
+- `POST /api/agents/:id/pause` inserts a `ControllerRequest { kind: "pause", nodeId }` (`requestedBy` = session principal), writes `controller.requested`, returns 202. 409 when the agent has no onchain node. There is no paused column, flag or cache anywhere; the treasury's `NodePaused` event is the only source.
+- `api/session.ts`: one demo session `{ organizationId: OVERFLOW_ORG_ID ?? "org-demo", principal: "owner", ownerAddress: OWNER_ADDRESS | null }`, no credentials; every query is scoped to the organization. Owner actions only create controller requests whose `txHash` is set after the Coinbase Wallet approval confirms (P4.5).
+- `apps/service/src/index.ts`: migrate → idempotent `seed()` (logs the SIMULATED company) → `createApp` → `serve()`. `GET /` keeps the status JSON (`scaffold: false`, real module states). CORS allows `content-type` and `idempotency-key`.
+- `.env.example`: `OVERFLOW_ORG_ID`.
+
+### Design choices
+- Hono over Express: `app.request()` lets the route tests run without a port, and both packages were already in the lockfile via `@modelcontextprotocol/sdk`, so no new network dependency.
+- The API never fakes a result for a port that is not built: 501 `not_wired` with the prompt number. `GET /api/reconciliation` returns 200 with `lastRun: null` and a note, because the UI polls it.
+- Quote mismatch ends the purchase (`FAILED_BEFORE_FUNDING`) rather than leaving it `PROPOSED`; the partial unique index then allows a fresh proposal for the same resource. Agreed with the user.
+- Idempotency results live in the database, not memory, so a repeat after a restart still replays the original result instead of hitting the state machine's 409.
+- There is no `/api/execute`, and no route accepts calldata, ABI data or raw transactions; the test asserts `/api/execute` is 404.
+
+### Stubbed or simulated
+- Oracle/Fusion (`plan`, `propose`), payment adapters, the policy allowlist reader and the reconciliation job are ports with 501 / empty defaults. The route tests use a labeled SIMULATED fake adapter.
+- `GET /api/agents` returns offchain records only; `node` is `null` (no fabricated cap/spent/paused).
+- Seeded agent keys are still the SIMULATED placeholders; `POST /api/missions` without `rootNodeId` answers 409 until the orchestrator node exists onchain.
 
 ### Verified (real output, 2026-10-24)
 | Check | Result |
@@ -333,6 +496,39 @@ The Base Sepolia treasury at `0xd3A74fA991CA0B5627d30EF27dC699C134848291` was ch
 ### Fix found by the invariants
 - The treasury would pay a settled or refunded escrow (the payee rule checked factory, buyer, seller flag and amount but not status). A closed escrow has no sweep, so the USDC would be stranded and the agent's allowance burned. `_authorize` now reverts `EscrowClosed(escrow)` inside the escrow branch of step 4; the normative check order is unchanged. Unit test `test_closedEscrow_isNotAPayee` (settle and reserve). Treasury ABI re-exported (71 entries).
 - Not fixed, documented: a reservation approved while an order was open can be executed by the facilitator after the order closes, landing USDC in the closed escrow with no sweep. Candidate P2 fix: an escrow `sweep()` to the buyer after a terminal state.
+| `pnpm --filter @overflow/database db:generate` | "No schema changes, nothing to migrate" after `0001_idempotency_keys` |
+| `pnpm typecheck` | exit 0, all workspaces Done |
+| `pnpm test` | exit 0, 27 files / 253 tests passed (service: 2 files / 22 tests: validation 400s, non-JSON body, mission create + `no_root_node`, 501 for plan/propose, reconciliation `lastRun: null`, reads, `/api/execute` 404, missing key 400, authorize once + replay with adapter called once, reused key 422, second key 409 `{from: PAYMENT_PENDING, to: RESERVED}`, REJECTED purchase 409 with no new event, attacker `payTo` → `quote_mismatch` + `FAILED_BEFORE_FUNDING` + adapter never signs, no adapter → 501 and status unchanged, pause 409/202 with pending request and no "paused" anywhere; PurchaseService: propose event, legal move, illegal move writes nothing, evidence rules, decoded revert, duplicate active purchase; database: idempotency put/get/first-wins, 18 tables) |
+| `pnpm --filter @overflow/service build` | tsup ESM success; migrations copied |
+| `PGLITE_DATA_DIR=<scratch> tsx src/index.ts` + curl | `GET /` `scaffold: false`, `api: "ready"`; `GET /api/agents` 3 seeded agents; pause → 409 `no_node_yet`; `POST /api/execute` → 404; `POST /api/missions` → 201; `POST /api/purchases/propose` → 501 `not_wired (lands in P4.2)`; `GET /api/reconciliation` → `lastRun: null` with note |
+
+### Open issues
+- `GET /events` (SSE) from the spec's API table belongs to the facilitator module and is not here.
+- The `PaymentAdapter` signatures (`preparePayment(purchaseId, CheckedQuote)`, `submitPayment` outcome union) are the contract P7.x must implement; the chain indexer must drive `ESCROW_FUNDED`/`SETTLED`/`REFUNDED` through `PurchaseService.transition` with `source.kind: "chain"` and the tx hash.
+- `GET /api/resources?missionId=` is accepted but not yet filtered by Oracle's coverage check (`filtered: false` says so).
+- No authentication on the demo session; fine on localhost, not for exposure.
+
+## 2026-10-24: chain event indexer and SSE stream
+
+### Built
+- `apps/service/src/chain/abi.ts`: **provisional** human-readable ABI (viem `parseAbi`) for the treasury (nine events, sixteen errors), the factory (`OrderCreated`) and the escrow (`OrderFunded`, `KeyRevealed`, `Accepted`, `PaidOut`, `Refunded(orderId, amount, reason)`, `CheatProven(seller, index)`). The six Leash-era treasury events are copied from `origin/person1:contracts/src/IOverflowTreasury.sol`; `Reserved`, `ReservationReleased`, `EscrowFactorySet` and every factory/escrow event are derived from the spec because no Solidity for them exists on any branch. `abi.test.ts` snapshots every signature; `REVERT_REASONS` carries the spec's Blocked-lane wording.
+- `chain/config.ts`: `resolveIndexerConfig()` = `BASE_SEPOLIA_RPC_URL` + `loadDeployments()` (`deployments/base-sepolia.json`, override `OVERFLOW_DEPLOYMENTS_PATH`) + `INDEXER_POLL_MS` (2000) / `INDEXER_REORG_DEPTH` (12) / `INDEXER_CHUNK_BLOCKS` (190, the public RPC's `eth_getLogs` range cap). Returns `{ ok:false, reason }` instead of inventing anything.
+- `chain/client.ts`: `LogSource` structural interface + `createLogSource(rpcUrl)` (viem, `assertChain()` checks 84532). `chain/decode.ts`: `decodeLog` (bigints → decimal strings), `decodeTreasuryRevert` (viem cause chain, raw data, Solidity `Error(string)`/`Panic`, fallback `Unknown("<short message>")`).
+- `chain/indexer.ts`: `createIndexer({ db, source, config, bus })` with `start/stop/tick/status`. Each poll re-reads from `max(deployBlock, cursor + 1 − reorgDepth)` to head in chunks; an `OrderCreated` inside a chunk re-queries that chunk for the new escrow; every log is one transaction: `chainTransactions.record` (idempotent on `(tx_hash, log_index)`; replay → no effects) then the handler in a savepoint (a state-machine refusal keeps the chain row, warns, writes nothing else). Stored logs the chain no longer returns in the window get `confirmed=false` + an `indexer.unconfirmed` event; reappearing ones are re-confirmed. Cursor `indexer:base-sepolia` in the new `indexer_cursors` table (migration `0002_indexer_cursors`, plus indexes on `purchases.order_id_bytes32`/`escrow_address` and `chain_transactions.block_number`/`event_name`). Escrows are reloaded from stored `OrderCreated` rows on restart.
+- `chain/handlers.ts`: `OrderFunded → ESCROW_FUNDED`, `KeyRevealed → DELIVERY_PENDING`, `PaidOut → SETTLED`, `Refunded → REFUNDED`, `ReservationReleased(budgetRestored) → RELEASED`, all through `PurchaseService.transition` with `source.kind: "chain"` (`reconciliation` only when leaving `PAYMENT_UNKNOWN`) and the tx hash; the escrow mirror moves in the same call (`evidence.escrow`). `Paid` and `Reserved` only link and record (authorization ≠ funding ≠ settlement). `NodeCreated` sets `agents.nodeId` by key; `KeyRevealed` scores on-time/late reveals; `CheatProven` flags the seller. Unmatched escrow events are recorded and labeled "no matching purchase".
+- `orchestration/purchase-service.ts`: accepts an `Executor` (joins the indexer's transaction), `evidence.escrow { status, revealedKey?, refundReason? }` applied via `escrowOrders.setStatus` when a row exists, and a `publish` hook called after commit. `chain/failed.ts`: `recordFailedTransaction()` → decoded revert, `REJECTED` through the service when a live purchase is named, else a standalone `policy.blocked` event with `decodedRevert`/`txHash`.
+- `chain/bus.ts` + `api/routes/events.ts`: in-process `ActivityBus`; `GET /events` (Hono `streamSSE`) sends `event: indexer` (real status), replays history (`Last-Event-ID` → `activityEvents.listAfter`, `?since=` → `listSince`, else last `replay` events), then live committed events with `id:` = event id; 15 s heartbeat; unsubscribes on abort. `GET /` now includes `indexer` and `modules.chain`.
+- Repositories added: `indexerCursors.get/set`, `purchases.listByOrderId/listByEscrowAddress/getByAuthorizationDigest`, `chainTransactions.listByEvent/listInBlockRange/setConfirmed/setPurchaseId`, `activityEvents.listAfter/listSince`; `agents.getByKey` is case-insensitive. `ActivityKind` gains `treasury.*`, `escrow.created/revealed/accepted`, `seller.flagged`, `indexer.unconfirmed`. `InvalidEscrowTransitionError` → HTTP 409.
+- `chain/fixtures/build-fixture.ts` → `base-sepolia-logs.json`: SIMULATED recorded log set (18 logs, blocks 101–111) encoded from the provisional ABI with the service test addresses. `chain/fake-source.ts`: test `LogSource`.
+
+### Design choices
+- Per-log transaction with the handler in a savepoint: the ledger's "one row per event" and the state machine's refusals never fight; a refused `PaidOut` for a never-funded purchase leaves the chain row and the purchase status untouched.
+- `confirmed` is now truthful (reorg withdraws it) instead of a constant `true`.
+- No `financial_entries` are posted here (ledger prompt); `controller_requests` are not resolved from `NodePaused`/`CapRaised` (P4.5).
+
+### Stubbed or simulated
+- The ABI is provisional until the contracts land; the fixture is encoded, not recorded from a deployment (its JSON says `simulated: true`).
+- No deployments file or deployed contract exists, so the indexer runs idle on this machine.
 
 ### Verified (real output, 2026-10-24)
 | Check | Result |
@@ -361,6 +557,40 @@ The Base Sepolia treasury at `0xd3A74fA991CA0B5627d30EF27dC699C134848291` was ch
   - `src/index.ts`: loadEnv → config → deployments → `verifyBoot` → relayer/bus/poller → serve; `GET /` keeps the status object.
 - `contracts/script/Deploy.s.sol`: also deploys `OverflowEscrowFactory` (its constructor deploys the escrow implementation), `setEscrowFactory`, optional `setAllow(DEMO_PAYEE_ADDRESS)`, prints `setEscrowFactory` calldata when the owner is not the deployer. `.env.example`: `DEMO_PAYEE_ADDRESS`, `DEMO_TOKEN`, `EVENTS_POLL_MS`.
 - `scripts/facilitator-demo.ts` → `pnpm demo:facilitator`: settle to the demo payee, `/verify` + forced `/settle` for the SIMULATED attacker, `/demo/bypass`, 409 replay; writes `docs/demo-facilitator.md` with Basescan links from real responses. `pnpm service` runs the service.
+| `pnpm --filter @overflow/database db:generate` | wrote `0002_indexer_cursors`; re-run "No schema changes" |
+| `pnpm typecheck` | exit 0 |
+| `pnpm test` | 32 files / 270 tests passed (new: abi 3, decode 5, indexer 4, failed 2, events 3; database migrations test now expects 19 tables) |
+| indexer fixture replay | 18 logs → 18 `chain_transactions`; p1 `PAYMENT_PENDING → SETTLED` (escrow `Settled`, key `0x…77`), p2 `→ REFUNDED` (escrow `Refunded`, reason "timeout: no reveal before deadline"), p3 stays `PROPOSED` with its `PaidOut` recorded and refused; reservation `d2` released; `agent-orchestrator.nodeId = 1`; seller `onTimeReveals 1, provenCheats 1, flagged`; cursor 115; 3 escrows tracked; the chunk 100–104 was re-queried for escrow 1 |
+| restart | second indexer on the same DB: `fromBlock 104`, 0 inserted, 0 new activity, 3 escrows rediscovered |
+| reorg | dropping `NodePaused` (block 110) → `confirmed=false` + one `indexer.unconfirmed`; restoring it → re-confirmed, 0 inserted |
+| `GET /events` | `indexer` frame, replayed `purchase.proposed`, live `payment.authorized` from a real `transition()`; `Last-Event-ID` replays one later event; `?since=yesterday` → 400; listener count 0 after abort |
+| `tsx src/index.ts` (PGlite, no RPC) + curl | `GET /` → `modules.chain: "idle: BASE_SEPOLIA_RPC_URL is not set"`, `indexer.state: "idle"`; `curl -N /events` → `event: indexer` idle frame |
+| `resolveIndexerConfig` with RPC set, no file | `ok:false, reason: "deployments file not found at …/deployments/base-sepolia.json …"` |
+| `createLogSource("https://sepolia.base.org")` probe | `assertChain` ok, head 49873975, 7 USDC logs in the last 20 blocks, block timestamp read |
+| `pnpm --filter @overflow/service build` | tsup success, migrations copied |
+
+### Open issues
+- **Live Base Sepolia check not run**: no Overflow contract is deployed and `deployments/base-sepolia.json` does not exist. Once person1 deploys: set `BASE_SEPOLIA_RPC_URL`, start the service, run `settle()`, watch `curl -N localhost:4000/events` for `treasury.paid`.
+- The provisional event signatures (`Reserved`, `ReservationReleased`, `EscrowFactorySet`, factory and escrow events) must be matched by the contracts or edited in `chain/abi.ts` + `abi.test.ts`.
+- Escrow-order rows are expected from the sellers/order prompt; without one, the purchase still moves and the indexer warns.
+- `PolicyPort.allowlistedPayees()` could now read `AllowSet` rows; not wired.
+
+## 2026-10-24: journal posting and reconciliation (G5)
+
+### Built
+- `apps/service/src/ledger/posting.ts`: the spec's journal table as posting rules, run inside the indexer's per-log transaction **after** the handler savepoint, so the books follow the chain even when the purchase state machine refuses a move. One logical entry per chain event, `eventKey = "<txHash>:<logIndex>"`; a department split is one row per department (`sourceEventId = "<eventKey>#<department>"`, unique). Rules: USDC `Transfer` into the treasury from a non-escrow → Dr usdc-treasury / Cr owner-contribution; `OrderFunded` → Dr escrow-deposit / Cr usdc-treasury; `PaidOut` → Dr data-expense per department (Fusion allocations summed per department, integer-scaled if the chain amount differs, remainder on the last line, total unchanged) / Cr escrow-deposit, only when the order has a deposit line; `Refunded` → Dr usdc-treasury / Cr escrow-deposit (never an expense); `BondForfeited` → Dr usdc-treasury / Cr other-income-seller-forfeiture; USDC `Transfer` out of the treasury to a non-escrow payee with a waiting purchase → Dr data-expense per department / Cr usdc-treasury (direct x402 purchase). `Paid`, `Reserved`, `ReservationReleased` and transfers between the treasury and a known escrow post nothing. Replays post nothing (`listByEventKey` check plus the unique `source_event_id`).
+- `ledger/reconciliation.ts`: `createReconciliation({ db, reader, treasury, usdc, materialityAtomic = 10000 })`. `run(trigger, blockNumber?)` reads balances at the indexer cursor block and checks (1) `balanceOf(treasury)` vs the usdc-treasury net, (2) every escrow order: open `Funded`/`Revealed` → `balanceOf(escrow) − bond` vs its deposit line, `Created` → line must be 0, closed → line nets to 0, (3) every confirmed `PaidOut`/`Refunded` has an entry for its event key and every `Paid` has exactly one entry group in its transaction. Material differences (> 0.01 USDC, or any missing entry) open `exceptions` rows (`type: reconciliation-difference`, new `subject` column; an open subject is never duplicated), write `exception.opened`, and the run is stored in the new `reconciliation_runs` table with `reconciliation.ok` / `reconciliation.difference` on the feed. Runs after every indexer poll that stored new logs (`createIndexer({ afterTick })`) and on demand via `POST /api/reconciliation/run`.
+- Indexer now also fetches USDC `Transfer` logs with topic filters (`from == treasury`, `to == treasury`): the controller's funding and the Coinbase-path direct purchase have no treasury event. `LogSource.getLogs` takes `topics`; `createLogSource` also implements `BalanceReader.balanceOf` (viem `erc20Abi`, pinned to a block). `IndexerConfig.usdc` comes from `deployments.usdc`.
+- Provisional ABI additions: `Transfer(address,address,uint256)` (USDC) and `BondForfeited(bytes32 indexed orderId, address indexed seller, uint256 bond)` on the escrow; `Refunded.amount` is documented as the price only. Handlers: `Transfer` (`usdc.transfer` note, links the waiting purchase), `BondForfeited` (`escrow.bond-forfeited`), `OrderCreated` now increments `seller_history.orders` and records `sellerId`. `chain/lookup.ts` holds the shared lookups (`purchaseForOrder`, `isKnownEscrow`, `waitingPurchaseForPayee`, `orderCreatedFor`).
+- Database: migration `0003_ledger_reconciliation` (`financial_entries.event_key` + indexes, `exceptions.subject`, `reconciliation_runs`); repositories `financialEntries.listByEventKey/listByTxHash/balances/departmentBalances/depositLineForPurchase`, `exceptions.findOpenBySubject`, `escrowOrders.listAll`, new `reconciliationRuns`. Schemas: `FinancialEntry.eventKey`, `ExceptionRecord.subject`, `ReconciliationRunSchema`, `ReconciliationDifferenceSchema`, `DEFAULT_MATERIALITY_ATOMIC`, new activity kinds.
+- API: `GET /api/ledger?purchaseId=&limit=` → `{ entries, balances (debits, credits, net per account), departments (data-expense per department) }`; `GET /api/reconciliation` reads the stored last run and open exceptions; `POST /api/reconciliation/run` → the run, or 501 `not_wired` without an RPC. `ReconciliationPort` is now `{ run(trigger) }`.
+- Fixture (`chain/fixtures/build-fixture.ts`, SIMULATED, 26 logs): funding transfer, both payment paths (overflow: Transfer + Paid + OrderFunded; coinbase: Transfer + OrderFunded, no Paid), timeout refund with a 2.4 USDC forfeited bond, a direct x402 purchase (p4) and the never-funded order 3.
+
+### Design choices
+- USDC `Transfer` is the booking source for funding and direct purchases because it is the only chain record of those movements; `Paid` stays an authorization record. Reconciliation's "every Paid has exactly one entry" is checked per transaction so both paths satisfy it.
+- `PaidOut` without a deposit line posts nothing rather than driving escrow-deposit negative; reconciliation raises the exception instead (the fixture's order 3 does exactly this).
+- An outflow matching no purchase (e.g. an owner withdrawal) posts nothing by design: the spec's table has no row for it and the treasury difference becomes a controller exception.
+- Balances are read at the indexer cursor, not the head, so an in-flight transfer never shows as a false difference.
 
 ### Verified (real output, 2026-10-24)
 | Check | Result |
@@ -384,6 +614,39 @@ The Base Sepolia treasury at `0xd3A74fA991CA0B5627d30EF27dC699C134848291` was ch
 - Service config: `RELAYER_PRIVATE_KEY` may be a 64-hex key or the relayer's address; `RELAYER_ACCOUNT` + `RELAYER_PASSWORD_FILE` select the keystore. `readConfig` refuses an address without a keystore. Boot logs `relayer <address> (keystore <name>)`. `createRelayer`, the nonce queue and `viemChainClient.sendTransaction` are unchanged: the account is still a viem `PrivateKeyAccount`.
 - `scripts/facilitator-demo.ts` signs with `AGENT_ROOT_ACCOUNT` + `AGENT_ROOT_PASSWORD_FILE` (or a 64-hex `AGENT_ROOT_KEY`). `.env.example` documents both roles; README updated.
 - Test fixture `packages/payment-client/test-fixtures/throwaway-a11ce`: a cast-generated keystore of the public `…a11ce` test key (README beside it).
+| `pnpm --filter @overflow/database db:generate` | wrote `0003_ledger_reconciliation`; re-run "No schema changes" |
+| `pnpm typecheck` | exit 0 |
+| `pnpm test` | 34 files / 286 tests passed (new: posting 11 incl. split math, every rule, trial balance zero, refunded order has no expense, replay posts nothing; reconciliation 4: clean chain → only the order-3 coverage exception, planted +0.50 USDC → one exception of 500000 and no duplicate on rerun, +0.005 USDC → difference recorded, no exception, escrow balance mismatch → `escrow:p3` exception; indexer 26 logs → 8 rows, usdc-treasury net 37400000) |
+| `pnpm --filter @overflow/service build` | tsup success |
+| `tsx src/index.ts` (PGlite, no RPC) + curl | `GET /` `modules.ledger` set; `GET /api/ledger` empty books with five zero balances; `GET /api/reconciliation` `lastRun: null` + note; `POST /api/reconciliation/run` → 501 `not_wired` |
+
+### Open issues
+- The contracts must emit `BondForfeited(bytes32,address,uint256)` and keep `Refunded.amount` to the price, or edit `chain/abi.ts` + `abi.test.ts`; if a refund silently includes the bond, the closed-order net check opens an exception rather than mis-booking.
+- A direct x402 purchase cannot reach `SETTLED`: `PAYMENT_PENDING → SETTLED` is not an allowed transition. The expense is booked; the state-machine owner decides the move.
+- Live check not run: no deployment exists. With `BASE_SEPOLIA_RPC_URL` + `deployments/base-sepolia.json`, fund the treasury from Coinbase Wallet and expect one owner-contribution entry and a `reconciliation.ok` on `/events`.
+- `RECONCILIATION_MATERIALITY_ATOMIC` env override exists in `index.ts` but is not yet in `.env.example`.
+
+## 2026-10-24: exceptions and controller requests
+
+### Built
+- `packages/schemas/src/ledger.ts`: `ExceptionTypeSchema` is now the spec's seven cases, named as in the prompt: `NEW_PAYEE`, `CAP_RAISE`, `PAUSE_REQUEST` (onchain: resolved by an owner call), `UNCLEAR_LICENSE`, `LOW_CONFIDENCE_SAMPLE`, `DISPUTE_WITHOUT_PROOF`, `RECONCILIATION_DIFF` (offchain: the controller decides). `ONCHAIN_EXCEPTION_TYPES`/`isOnchainExceptionType`, `ExceptionDecisionSchema` (`approve | reject`). `ExceptionRecord` gains `requestedBy`, `details` (typed per-type payload), `decision`, `decisionReason`. `ControllerRequest` gains `exceptionId`, `target`, `data`, `value`, `summary`; statuses are `pending | done | rejected` (`approved`/`executed` removed).
+- `packages/database`: migration `0004_exceptions_controller_requests` adds those columns, an FK `controller_requests.exception_id -> exceptions.id`, indexes on `controller_requests.status`/`exception_id`, a `value >= 0` check. It first runs `DELETE FROM controller_requests`: prototype rows written before calldata existed cannot be backfilled (no treasury address was known), and no deployed database holds any. Repositories: `exceptions.resolve(id, by, outcome, { decision, decisionReason })`, `exceptions.list(status | "all")`, `controllerRequests.resolve(id, "done" | "rejected", txHash?)` (`done` requires the txHash), `list(status | "all")`, `listByExceptionId`.
+- `apps/service/src/exceptions/`: `calldata.ts` encodes the owner call with viem (`setAllow(address,bool)` 0xde6a0525, `raiseCap(uint256,uint256)` 0xf4f0fc21, `pause(uint256)` 0x136439dd; the three function signatures were added to the provisional `treasuryAbi` from `origin/person1:contracts/src/IOverflowTreasury.sol`, identical to Leash) into `{ target: treasury, data, value: "0", summary }`; any other action kind is refused. `matching.ts` pairs a stored event with a pending request by exact fields: `AllowSet` ↔ `set-allow` (payee, allowed), `CapRaised` ↔ `raise-cap` (id, newCap), `NodePaused` ↔ `pause` (id). `service.ts`: `RaiseExceptionInputSchema` (discriminated union per type), `raiseException` (one open exception per subject: `payee:<addr>`, `node:<id>:cap`, `node:<id>:pause`, `resource:<id>:license`, `sample:<id>`, `dispute:<purchaseId>`; onchain types also insert the ControllerRequest and a `controller.requested` event; without a treasury address they throw `NotWiredError` and write nothing), `decideException` (404 / 409 `already_decided` / 403 `self_resolution` when `decidedBy === requestedBy` / 409 `onchain_approval_required` for approve on an onchain type; reject on an onchain type marks the request `rejected` and the exception `dismissed`; offchain approve → `resolved`, reject → `dismissed`, always with `resolvedBy`, `decision`, `decisionReason`), `completeControllerRequests` (the only code path that writes `done`), `createExceptionService` (one transaction per call, events published on the bus after commit).
+- `chain/handlers.ts`: `AllowSet`, `CapRaised`, `NodePaused` call `completeControllerRequests` inside the per-log savepoint: every pending request the event matches becomes `done` with that log's txHash, its exception `resolved` by `chain` with the event as `decisionReason`, one `controller.resolved` event each. A replayed log inserts nothing, so nothing re-runs.
+- `ledger/reconciliation.ts`: `EXCEPTION_TYPE = "RECONCILIATION_DIFF"`, `requestedBy: "system:reconciliation"`, difference amounts in `details`.
+- API: `GET /api/exceptions?status=open|resolved|dismissed|all` (default open) → `{ exceptions: [...{ request | null }] }`; `GET /api/controller-requests?status=pending|done|rejected|all` (default pending) → `{ requests, treasury }` (read-only: no route approves, sends or completes a request); `POST /api/exceptions/:id/decide` `{ decidedBy, decision, reason }` → `{ exception, request | null }`. `POST /api/agents/:id/pause` now raises a `PAUSE_REQUEST` through the same service and returns `{ exception, request }` with the `pause(nodeId)` calldata. `createApp({ treasury })` receives the deployed treasury from `resolveIndexerConfig()`; `GET /` reports `modules.exceptions`.
+- Fixture: `CapRaised(1, 50 USDC -> 80 USDC)` added in the owner's block-110 transaction (27 logs).
+
+### Design choices
+- Exception type names follow the prompt (SCREAMING_SNAKE, like purchase statuses). The column is text, so the rename needed no data migration.
+- Matching is exact. The controller approves specific calldata, so the event must carry the same payee/flag, node/cap or node; a cap raised to a different number leaves the request pending for the controller to reject, rather than being silently claimed.
+- The self-resolution rule is literal (`decidedBy === requestedBy` → 403, any role); `decidedBy` is a required body field because the demo session has a single principal.
+- Onchain approval never happens over HTTP: `approve` on an onchain exception answers 409 and the request stays `pending` until the indexer stores the event.
+- With no deployments file the service still opens offchain exceptions; onchain ones answer 501 `not_wired` naming the file, consistent with every other unwired port. No treasury address is invented.
+
+### Stubbed or simulated
+- Nothing in this prompt calls `raise` for `NEW_PAYEE`, `CAP_RAISE`, `UNCLEAR_LICENSE`, `LOW_CONFIDENCE_SAMPLE` or `DISPUTE_WITHOUT_PROOF` yet; only the pause route and reconciliation raise exceptions. The triggers belong to the quote check (payee not allowed), the `OverBudget` revert path, Oracle, the sampler and recourse (later prompts).
+- Tests use the SIMULATED fixture and treasury address; no Coinbase Wallet approval has been exercised.
 
 ### Verified (real output, 2026-10-24)
 | Check | Result |
@@ -413,6 +676,37 @@ The Base Sepolia treasury at `0xd3A74fA991CA0B5627d30EF27dC699C134848291` was ch
   - Invariants: `EscrowInvariant` handler gains `lateArrival` (terminal only) and `sweep`; `invariant_zeroBalanceAfterTerminal` asserts balance == unswept late arrivals. `TreasuryInvariant` handler gains `sweepEscrow` (also in the coverage walk) and the `sweptMoreThanLate` flag asserted false.
   - Fork: `test_fork_lateReservationIntoClosedEscrow_isSwept` against live Base Sepolia USDC.
 - `docs/contract-invariants.md`: E2/E3 reworded, new E14, T17 note; `docs/gas.md` row `sweep()` = 55,904 gas.
+| `pnpm --filter @overflow/database db:generate` | wrote `0004_exceptions_controller_requests`; re-run "No schema changes, nothing to migrate" |
+| `pnpm typecheck` | exit 0, all workspaces Done |
+| `pnpm test` | 35 files / 296 tests passed (new: calldata and request per onchain type, offchain types open no request, FK-less sample/dispute refused, dedup by subject, no treasury → `NotWiredError` and nothing written, approve-offchain 409 then fixture replay marks `set-allow`/`raise-cap`/`pause` done with the right txHashes and resolves their exceptions by `chain`, attacker payee stays pending, replay tick changes nothing, reject path; API: list shapes, self-resolution 403, bad body 400, decide once then `already_decided` 409, 404, onchain approve 409 with `requestId`, reject → request `rejected` without tx; function selectors pinned in `abi.test.ts`; indexer 27 logs) |
+| `tsx src/index.ts` (PGlite, no RPC) + curl | `GET /` `modules.exceptions: "offchain exceptions only: no treasury address …"`; `GET /api/exceptions` → `{ exceptions: [] }`; `GET /api/controller-requests` → `{ requests: [], treasury: null }`; pause → 409 `no_node_yet`; decide unknown → 404; `?status=approved` → 400 listing `pending, done, rejected` |
+| `pnpm --filter @overflow/service build` | tsup success, migrations copied |
+
+### Open issues
+- `unpause`, `setFloor`, `withdraw`, `setEscrowFactory` have no exception type or calldata builder; `buildControllerCall` refuses them.
+- A cap raised to a different value than requested leaves the request pending (by design); the UI should show it with a reject action.
+- The Coinbase Wallet `send_calls` flow that consumes `{ target, data, value }` is the web app's job (P4.5); the live check needs a deployment.
+
+## 2026-10-24: synthetic datasets and catalog
+
+### Built
+- `packages/datasets` (`@overflow/datasets`): deterministic generator for four SIMULATED EV-registration datasets and the six-listing seller catalog. `rows.ts` makes every number a pure function of (state, period, brand): base volume x brand share (bps) x linear growth x seasonality, plus keccak-derived noise, integer arithmetic only, so the California file equals the national file's CA rows and annual rows are exact monthly sums. 8 states (`CA TX FL NY WA NJ IL GA`), 2 fictional brands (`Voltara`, `Kestrel`), rows `month,state,brand,units,simulated` / `year,state,brand,units,simulated` (34 bytes max, under the 86-byte record limit). `listings.ts` holds the dataset and listing specs; `generate.ts` turns rows into signed 160-byte records (`buildRecordChunk`), `rootPlain`, a manifest and `data/catalog.json`; `catalog.ts` has `CatalogEntrySchema` (= `ResourceListingSchema` + `id`, `title`, `simulated: true`, `exercises`, `dataset` files), `CatalogFileSchema`, `parseCatalog`, `serializeCatalog`, `loadCatalog` (default `<repo>/data/catalog.json`, override `OVERFLOW_CATALOG_PATH`); `signer.ts` resolves `SOURCE_SIGNER_KEY` or the simulated default `keccak256("overflow.simulated.source-signer")` (address `0x5a0C6b05F691791F272F84Dcff00fdCda52433Bd`, the golden vectors' source signer).
+- `scripts/generate-datasets.mts` + root `pnpm datasets:generate` (root `tsx` devDependency; `.mts` because the root package is CommonJS). Loads `.env`, warns when a custom key is used, writes 13 files under `data/` and prints every `manifestHash`.
+- `data/`: `catalog.json`; `datasets/<productId>/{rows.csv, records.bin, manifest.json}` for `ev-registrations-national-monthly-2024-2026` (528 rows), `-california-monthly-2024-2026` (66), `-national-annual-2024-2026` (48; 2026 is year-to-date through September), `-national-monthly-2021-2022` (384). 1026 signed records, 164,160 bytes of records in total. `data/README.md` documents the labels, conventions and the rule each listing exercises.
+- Listings (prices via `toAtomic`): national monthly company-use 12 USDC (satisfies both Fusion agents); California monthly 5 (geography); national annual 6 (resolution); national monthly 2021-2022 4 (dates, the cheapest and wrong); the national monthly set again from `sim-seller-b` at 13 (duplicate, same `manifestHash`); a single-user / 1-seat variant at 10 (license). All `simulated: true`, `format: csv`, `asOf: 2026-10-15`, `dateRange` 2024-01-01..2026-09-30 (or 2021-01-01..2022-12-31).
+- `packages/recourse-crypto/src/manifest.ts`: `MANIFEST_HASH_ABI` = `bytes32 rootPlain, uint256 chunkCount, address sourceKey, uint64 minTimestamp, bytes32 headerHash` (`headerHash = keccak256(bytes(header))`), `computeManifestHash`, `DatasetManifestSchema` (requires `simulated: true` and exactly `chunkCount` leaves), `RECORD_FORMAT`, `verifyManifest` (`schema` / `root-mismatch` / `hash-mismatch`). README gains a "Manifest" section.
+- `.env.example` rewords `SOURCE_SIGNER_KEY`; root README points at `data/README.md`.
+
+### Design choices
+- Region codes `US` (national aggregate claim) and `US-<state>` (state detail present in the rows); a national listing lists both, the California listing only `US-CA`. Oracle's extractor maps names to codes; Fusion's geography rule checks set containment.
+- `manifestHash` is over fixed ABI fields and is buyer-independent (`rootPlain`, `chunkCount`, promised `sourceKey` and `minTimestamp`, header), so the catalog entry pins the promised source and the three listings selling the same bytes share one hash. That equality is Fusion's "same product" signal; license and seats are listing terms.
+- The 2024-2026 datasets end at 2026-09 (the last complete month before today) rather than 2026-12: a feed observed on 2026-10-24 cannot contain October. Requests saying "2024-2026" must be clamped to the present before the coverage check.
+- Record timestamp = first second of the month after the period (publication), so `minTimestamp` is 2024-02-01 for the fresh sets and 2021-02-01 for the stale one; a promise of `minTimestamp >= 2024-02-01` is broken by the wrong-dates set, giving `complainPromise` a real target.
+- The committed data uses the simulated default key so anyone can regenerate it byte for byte; a custom `SOURCE_SIGNER_KEY` is honoured with a warning.
+
+### Stubbed or simulated
+- Everything under `data/` and both sellers (`sim-seller-a`, `sim-seller-b`) are SIMULATED and labeled in the catalog, the manifests, every row and the titles.
+- Nothing loads the catalog into `resources` or serves the files over the seller routes yet (Oracle and sellers prompts).
 
 ### Verified (real output, 2026-10-24)
 | Check | Result |
@@ -439,6 +733,40 @@ The Base Sepolia treasury at `0xd3A74fA991CA0B5627d30EF27dC699C134848291` was ch
 - `OverflowFacilitatorAdapter`: `submitPayment` marks PAYMENT_PENDING, POSTs `/settle`; success → ESCROW_FUNDED, decoded revert → REJECTED (`decodedRevert` like `PayeeNotAllowed(0)`), facilitator `status: unknown` / 5xx / unreachable / timeout → PAYMENT_UNKNOWN (never a resign), 409 → the facilitator's original result. `reconcilePayment`: prepared digest + nonce first; receipt of a known hash; USDC `authorizationState`; expiry → FAILED_BEFORE_FUNDING. A used nonce without a hash asks the facilitator, which answers 409 with the original record (idempotent, same digest).
 - `CoinbaseFacilitatorAdapter`: validBefore capped inside the reservation window (570 s); `submitPayment` POSTs `/reserve`, then GETs the seller with the x402 payload; `PAYMENT-RESPONSE.success` → ESCROW_FUNDED; a seller/facilitator rejection leaves PAYMENT_PENDING with the reason (the reservation is live until validBefore); timeouts → PAYMENT_UNKNOWN. `reconcilePayment`: `authorizationState` true → ESCROW_FUNDED (Paid is not emitted for reserved payments); unused after expiry → `/release` (RESERVED → RELEASED, PAYMENT_PENDING/UNKNOWN → FAILED_BEFORE_FUNDING; `ReservationLive` → retry later; `NoReservation` → already released).
 - `scripts/adapter-demo.ts` (`pnpm demo:adapters`): SIMULATED local x402 seller; the Coinbase-mode seller verifies and settles through `COINBASE_FACILITATOR_URL` (default https://x402.org/facilitator); `--probe-coinbase` only calls that facilitator's `/verify`. Writes `docs/demo-adapters.md`.
+| `pnpm install` | exit 0, `+ tsx 4.23.15` at the root |
+| `pnpm datasets:generate` twice | 13 files in ~200 ms; `shasum` of `catalog.json` and all 12 dataset files identical across runs |
+| `pnpm typecheck` | exit 0, 9 workspaces Done (includes `scripts/generate-datasets.mts` through the datasets tsconfig) |
+| `pnpm test` (vitest from the root) | 37 files / 310 tests passed (new: datasets 9: byte-identical regeneration of all 13 files, signer resolution, 6 entries validate against `ResourceListingSchema` + `CatalogEntrySchema`, prices/licenses/seats, shared vs distinct `manifestHash`es, per-listing coverage vs decoded `records.bin` (regions, dates, granularity, fields, chunk count, every signer recovers to the registry address, timestamps >= `minTimestamp`, leaves Merkle to `rootPlain`, `computeManifestHash` == catalog), CA == national CA rows and annual == monthly sums, stale `minTimestamp`, row purity; recourse-crypto manifest 5) |
+| `pnpm --filter @overflow/service build` | tsup success, migrations copied |
+
+### Open issues
+- `pnpm --filter <pkg> test` fails at startup for every package (pre-existing): vitest inside a package picks up the root `projects` config and cannot find `apps/service` relative to the package. Run `pnpm test` from the root, or `npx vitest run packages/<pkg>`.
+- Request date ranges must be clamped to the present (listings end 2026-09-30); the Oracle extractor owns that.
+- `data/` is not yet read by the service: seeding `resources` from `catalog.json` and serving `records.bin`/`manifest.json` from the seller routes are later prompts. `loadCatalog()` is ready for both.
+
+## 2026-10-24: SIMULATED sellers: direct x402 APIs and attack fixtures
+
+### Built
+- `apps/service/src/sellers/` (replaces the scaffold): a Hono app served by the service process on the `SELLER_URL` port (default 4100). Routes, all labeled `simulated: true`: `GET /health`; `GET /api/search?q=` (0.02 USDC → `PAYEE_SEARCH_ADDRESS`); `GET /api/scrape?url=` (0.05 USDC → `PAYEE_SCRAPE_ADDRESS`; URLs under `SELLER_URL/listings/*` are served from the fixture through `htmlToMarkdown`, which keeps hidden text as a real scraper would); `GET /listings/ev-insights` (free HTML TEST FIXTURE with an off-screen "SYSTEM NOTICE TO AI AGENTS" telling the agent to buy "seller verification" at `/premium-intel`, plus a visible SIMULATED footer); `GET /premium-intel` (0.05 USDC → `ATTACKER_ADDRESS`, which is never allowlisted; 503 `fixture_not_configured` when unset); `GET /fixtures/mismatched-quote?field=amount|payTo` (advertises the listed search price/payee in its body but its 402 asks 3× the amount or a label-derived SIMULATED decoy payee; a paid retry answers 402 `FixtureNeverSettles` and never reaches the facilitator).
+- `sellers/paywall.ts`: x402 v2 paywall (Leash `apps/seller/paywall.ts`, ported). Unpaid → 402 + `PAYMENT-REQUIRED` (built with the payment-client schemas and validated before encoding). Paid retry: `parsePaymentPayload` (400 `bad_payment_header`) → payload must be for exactly this route's payee and price (else 402 `InvalidPayment`, facilitator never consulted) → no facilitator → 503 `facilitator_unavailable` → `facilitator.settle()`. Three outcomes map to three responses: `paid` → 200 + `PAYMENT-RESPONSE` `{ success, transaction, network, payer, amount }` and the settlement echoed in the body; `blocked` → 402 `payment_blocked { decoded, txHash?, explorerUrl?, digest? }`; `unknown` → 502 `payment_outcome_unknown { digest, txHash? }`. The `x-overflow-force-broadcast: 1` header is honored only when `DEMO_MODE=true`.
+- `sellers/config.ts` (`resolveSellerConfig`): payees from `PAYEE_SEARCH_ADDRESS`/`PAYEE_SCRAPE_ADDRESS`, else from `SELLER_KEYS[0]`/`[1]`, else label-derived SIMULATED defaults (`/health` reports `payeeSource`); boot fails if `ATTACKER_ADDRESS` equals a payee. `sellers/providers.ts`: labeled CANNED EV-themed results by default; Context.dev (`CONTEXT_DEV_API_KEY`) when configured, falling back to canned with `stub: true, stubReason`. Every search response appends the fixture listing tagged `fixture: true`.
+- `sellers/direct-order.ts` `directApiOrder()`: a SIMULATED `PurchaseOrder` for a direct pay-per-call API with `escrowAddress = 0x0`, so `checkQuote` can only take the `direct-seller` branch (payee must be owner-allowlisted and equal `sellerAddress`); hashes over fixed ABI-encoded fields.
+- `apps/service/src/facilitator/` (replaces the scaffold): the settle() core (Leash `/settle`, ported), no HTTP surface yet. `settle.ts` `createChainFacilitator({ chain: SettleChain, treasury })`: requirement checks no flag bypasses (`from == treasury`, `to == payTo`, `value == amount` exactly, USDC, `eip155:84532`, live window at the latest block) → recover signer → `nodeOfKey` → `simulateContract(settle)` → revert and no force → `blocked` with `decodeTreasuryRevert`, nothing sent → otherwise `writeContract` → receipt: reverted → `blocked` + `txHash`; success → `paid` only if a `Paid` log carries the nonce **and** USDC `authorizationState(treasury, nonce)` is true, else `unknown`; a send/receipt failure is `unknown` with the digest. `SettleChain` is a structural interface (tests inject a fake); `viemSettleChain` binds real clients. `config.ts` `resolveFacilitatorConfig()` needs `BASE_SEPOLIA_RPC_URL`, `RELAYER_PRIVATE_KEY` and `deployments/base-sepolia.json`; otherwise idle with a reason. `abi.ts` keeps `settle/nodeOfKey/allowlist/TOKEN` out of `chain/abi.ts` (its snapshot pins the function list).
+- `apps/service/src/index.ts`: resolves the facilitator (asserts chain 84532 when configured), builds the seller app, serves it on the seller port next to the API, reports both in `GET /` `modules`, closes both on shutdown.
+- `apps/service/scripts/sellers-demo.ts` (`pnpm --filter @overflow/service sellers:demo [--offline]`): [1] an allowed agent pays `/api/search` through `wrapFetch` (order = `directApiOrder`, `approvedDirectSellers` read from `treasury.allowlist()` on chain, never env), confirms the receipt and the `PAYMENT-RESPONSE`; [2] paid scrape of the listing prints the hidden instruction; [2a] the honest client is refused by `checkQuote` on `payTo` with zero signatures; [2b] a labeled SIMULATED prompt-injected agent signs for the attacker anyway and sends it with the force header: expects 402 `payment_blocked`, `PayeeNotAllowed(0)`, a tx hash whose receipt is `reverted`, and an unchanged attacker USDC balance; [3] `/fixtures/mismatched-quote` refused before signing on `amount` and on `payTo`. `--offline` runs 2a and 3 only and says what it skipped.
+- `.env.example`: `PAYEE_SEARCH_ADDRESS`, `PAYEE_SCRAPE_ADDRESS`, `CONTEXT_DEV_API_KEY`; `ATTACKER_ADDRESS` reworded ("NEVER allowlist it"); `SELLER_URL` and `DEMO_MODE` notes. README layout line updated.
+
+### Design choices
+- The paywall calls the facilitator in-process rather than over HTTP (Leash posted to `/verify` + `/settle`); the HTTP facilitator surface is a later prompt and will wrap the same `Facilitator` interface.
+- `paid` requires the receipt, a matching `Paid` event and USDC's own `authorizationState`; a successful receipt without those is reported `unknown`, never `paid`.
+- The amount must equal the quote exactly (Leash accepted `>=`), matching `checkQuote`.
+- Force broadcast exists only so the prompt-injection demo lands its revert on Basescan; it costs relayer gas on a known revert, so it is gated on `DEMO_MODE=true` and labeled in the response (`forceBroadcast: true`).
+- Direct-API orders use the zero escrow address on purpose: the agent's expected payee is checked against the owner allowlist, and the demo reads that allowlist from the chain.
+- The mismatched-quote fixture lives outside the paywall so no code path can ever settle it.
+
+### Stubbed or simulated
+- Everything under `sellers/`: both payees, the attacker, the decoy payee, the listing, the canned results and the `premium-intel` body are SIMULATED and say so. Context.dev results are real only when a key is configured.
+- `settle.test.ts` and `sellers.test.ts` use a fake `SettleChain` / fake `Facilitator`; no chain is touched by the test suite.
 
 ### Verified (real output, 2026-10-24)
 | Check | Result |
@@ -504,3 +832,75 @@ Verdict: Coinbase adapter stays BLOCKED, labeled; demo runs the Overflow path. D
 Coinbase status unchanged: the public-facilitator incompatibility and the unproven CDP settlement stay BLOCKED (`docs/coinbase-feedback.md`); passing adapter and reconciliation tests do not prove live settlement.
 
 Follow-ups: a facilitator route for `releaseClosed` (the Coinbase adapter's reconcile can then refund before `validBefore`); a Postgres ledger behind the `Ledger`/`ExceptionSink` interfaces; the reconciler's purchase index fed by the purchase store.
+| `pnpm typecheck` | exit 0, all workspaces Done (scripts/ now included in the service tsconfig) |
+| `pnpm test` (root) | exit 0, 39 files / 337 tests passed (27 new: settle core requirement refusals before simulation, simulation revert blocked and decoded without broadcast, force broadcast returns the reverted tx hash, paid only with Paid + consumed nonce, unknown on send/receipt failure; sellers 402 shapes per route, attacker ≠ payees, 503 without attacker, listing fixture text, mismatch fixture fields and 400 on a bad field, malformed header 400, wrong payee/price blocked without facilitator, paid 200 + PAYMENT-RESPONSE, blocked 402 with txHash, unknown 502, force header only in DEMO_MODE, 503 without facilitator, fixture never settles, paid scrape carries the hidden instruction, 404/400 scrape cases, health; agent side via `wrapFetch`: one signature for search, `/premium-intel` refused on payTo before signing, mismatch refused on amount and payTo, `directApiOrder` cannot take the escrow branch) |
+| `pnpm --filter @overflow/service build` | tsup ESM success, migrations copied |
+| Boot without chain env (`SERVICE_URL=:4010`, `SELLER_URL=:4110`, `ATTACKER_ADDRESS=0x4444…`) | `GET /` modules: facilitator `idle: BASE_SEPOLIA_RPC_URL is not set`; sellers `… payees from simulated-default; attacker fixture configured (never allowlisted); facilitator unavailable: paid retries answer 503`. `curl /api/search` → 402 with `PAYMENT-REQUIRED`; `/listings/ev-insights` contains the SYSTEM NOTICE and `TEST FIXTURE (SIMULATED)`; `/premium-intel` 402 payTo `0x4444…`, amount 50000 |
+| `sellers:demo --offline` against that boot | PASS ×7: hidden instruction found; honest client refused on payTo (`got 0x4444…`), nothing signed; mismatch refused on amount (`expected 20000, got 60000`) and on payTo (decoy `0x9937…`), nothing signed. Beats 1 and 2b reported SKIPPED |
+
+### Open issues
+- **Live beats not run.** `/api/search` paid on chain and the `PayeeNotAllowed` revert with a tx hash need the treasury from `origin/person1` deployed with `deployments/base-sepolia.json`, `AGENT_KEYS[0]` registered as a node, the search/scrape payees `setAllow`ed, the relayer funded with ETH and the treasury with USDC, and the seller started with `DEMO_MODE=true`. Then `pnpm --filter @overflow/service sellers:demo` and paste the three Basescan links here.
+- The facilitator is the settle core only: no `/verify`, `/settle`, `/delegate`, `/events` HTTP routes, no `reserve()` path, no persistence of settlements (the indexer's `Paid` logs remain the source of truth).
+- `PolicyPort.allowlistedPayees()` in the API still defaults to empty; the demo script's `treasury.allowlist()` read is the implementation it should get.
+
+## 2026-10-24: Oracle: requirements, coverage filter, ranking
+
+### Built
+- `packages/oracle` (`@overflow/oracle`, replaces the scaffold): the model proposes requirements, code decides everything else, nothing here can sign or pay.
+- `extract.ts` `extractRequirements({ mission, knownRegions, now }, { client, model, audit })`: Anthropic SDK `client.messages.parse` with `zodOutputFormat(ExtractionOutputSchema)` (structured output; no forced `tool_choice`, no `thinking`/`temperature` params, so it runs on every current model). `ExtractionOutputSchema` is a plain model-facing shape (`requests[]` with `regions` as codes, `dateRange`, `granularity`, `requiredFields`, `format[]`, `license`, `freshnessMaxAgeDays`, `maxPriceUsdc` as a decimal string; `assumptions[]`). Deterministic post-processing: `toAtomic` for the price (never a float), clamp to the mission budget, `clampToPresent` (end date capped at the last complete month before `now`, e.g. 2026-09-30 on 2026-10-24), lowercase-trim fields, dedupe regions; then `ResourceRequestSchema.parse`. On a parse/validation failure (or `parsed_output` null, or a stop reason other than `end_turn`) one retry carries the raw output plus the Zod issues as a second user turn; a second failure throws `ExtractionError` with both attempts' hashes. `oracleModelFromEnv()` reads `CLAUDE_MODEL` and throws when unset. The model id is never hardcoded.
+- Audit: every attempt inserts an `activity_events` row `kind: "oracle.model_call"` (new `ActivityKindSchema` member in `packages/schemas/src/ledger.ts`) with `message = "oracle extraction attempt=N model=<id> promptHash=0x… outputHash=0x… outcome=parsed|invalid"`. `hash.ts`: `promptHash = keccak256(abi.encode(string model, string system, string user, string schema))`, `outputHash = keccak256(bytes(rawText))`; fixed fields, never JSON.
+- `coverage.ts` `filterByCoverage(request, listings)`: pure; rejects on `region` (every requested code must be in `coverage.regions`), `dateRange` (listing must contain the request range), `granularity` (`GRANULARITY_ORDER`: finer rolls up, annual never rolls down to monthly), `field` (case-insensitive) and `format`; every failing check is reported per listing with the compared values.
+- `terms.ts` `filterByTerms(request, listings, now)`: pure; `price` (bigint compare against `maxPriceAtomic`), `freshness` (`asOf` age in days vs `freshness.maxAgeDays`; missing `asOf` rejected), `license` (company-use request needs a company-use listing; single-user accepts either; an `unclear` seller license is never bought).
+- `owned.ts` `skipOwned(listings, owned)` drops a listing whose id or `manifestHash` matches an owned resource (the seller-B duplicate of owned bytes is skipped too); `loadOwnedResources(repos, organizationId)` = SETTLED purchases across the organization's missions joined to `resources` for the hash. Uses existing repository methods only.
+- `rank.ts` `rank(listings, request)`: price per covered requirement (`regions + requiredFields + dates + granularity + format`), exact bigint cross-multiplication, tie-break newer `asOf` first (missing last), then listing id; returns `inputs { priceAtomic, coveredRequirements, pricePerCoveredAtomic, asOf }` per entry.
+- `explain.ts` `explain()` → `{ chosen, alternatives, rejected (grouped per listing, every reason), assumptions, summary, simulated }`; the summary ends with "This is a recommendation; it authorizes no payment." `recommend.ts` composes skipOwned → filterByCoverage → filterByTerms → rank → explain and takes no model client.
+
+### Design choices
+- Two schemas on purpose: the model fills a plain JSON shape (no refinements, no min/max, so the JSON Schema the API enforces is exact), and code converts and validates into `ResourceRequest`. The model's `assumptions` text is carried into the explanation but never read by any filter.
+- "Owned" means SETTLED. A funded but undelivered escrow is in flight, not an asset.
+- Price, freshness and license live in `filterByTerms`, separate from `filterByCoverage`, because the spec's coverage filter names fields, regions and dates; both are code.
+- Dependencies: `@anthropic-ai/sdk`, `@overflow/database` (types + `loadOwnedResources`), `viem` (hashing), `@overflow/datasets` (dev, catalog tests).
+
+### Stubbed or simulated
+- Tests use a fake model client (scripted outputs, no network) and the SIMULATED P5.1 catalog. `recommend()` marks `explanation.simulated = true` whenever a considered listing is simulated.
+
+### Verified (real output, 2026-10-24)
+| Check | Result |
+|---|---|
+| `pnpm install` | exit 0, oracle deps linked |
+| `pnpm typecheck` | exit 0, all workspaces Done |
+| `pnpm test` (root) | exit 0, 43 files / 367 tests passed, 1 skipped (new: oracle 30: on the P5.1 catalog the 2021-2022 set is rejected on `dateRange` even when the fake model's assumptions prefer it; California rejected on `region` for a national request; annual rejected on `granularity` for monthly and quarterly requests; monthly rolls up to quarterly; field/format reasons all reported; ranking identical across all 6 input permutations; freshness and id tie-breaks; `pricePerCoveredAtomic` 12 USDC / 7 = `1714285`; `recommend` chooses the 12 USDC national set and explains all five rejections; PGlite: `loadOwnedResources` returns only the SETTLED purchase and `skipOwned` drops all three listings sharing its `manifestHash`; extraction: parse + `toAtomic` + date clamp + budget clamp with assumptions, retry carries the Zod issues and both calls are audited with distinct hashes, two failures throw `ExtractionError` with two audit rows, `max_tokens` stop counts as a failed attempt, `CLAUDE_MODEL` required) |
+| `npx vitest run packages/oracle/src/extract.live.test.ts` | **skipped**: `ANTHROPIC_API_KEY` and `CLAUDE_MODEL` are not set in `.env` (checked as booleans only) |
+
+### Open issues
+- **Live extraction not run.** Set `ANTHROPIC_API_KEY` and `CLAUDE_MODEL` in `.env`, then `npx vitest run packages/oracle/src/extract.live.test.ts`; it prints the model id, the requests, the assumptions, both hashes and the catalog recommendation. Paste that output here.
+- `OrchestrationPort.planMission/propose` in the service still answer 501; wiring `extractRequirements` + `recommend` (and seeding `resources` from `catalog.json`) is P4.1/P4.2.
+- Sample judgment (buy/skip on the decrypted random sample), slow-reveal seller down-ranking and the `UNCLEAR_LICENSE` controller exception are later prompts; the filter only rejects.
+
+## 2026-10-24: merge `main` into `person1` (datasets, database, API, indexer, ledger, direct sellers)
+
+### Built
+- Resolved the 17-file merge of `origin/main` (12 commits: recourse-crypto vectors, payment-client x402 client, database, API, chain indexer + SSE, ledger, exceptions, datasets + catalog, direct-API sellers, oracle) into `person1` (17 commits: contracts through T18, facilitator HTTP app, keystore signing, adapters, sweep reconciliation).
+- Where both branches implemented the same idea, one implementation survives and the other's tests were ported onto it:
+  - `@overflow/recourse-crypto`: `main`'s module set (`bytes, record, keys, merkle, commit, sample, complaint, vectors, manifest`) replaces `person1`'s `merkle.ts` + `crypto.ts`. Formulas are identical to `RecourseCrypto.sol` / `MerkleLib.sol`; `person1`'s forge-pinned golden vectors now live in `src/contract-vectors.test.ts` against the adopted API.
+  - `@overflow/payment-client`: both module sets exported from one barrel. `typed-data.ts` dropped its duplicates (`TRANSFER_WITH_AUTHORIZATION_*`, `randomNonce` now come from `authorization.ts`); its boot-time token reader is `readTokenDomain`/`ObservedTokenDomain` (the x402 client keeps `verifyTokenDomain`); `main`'s bigint digest helper is `transferAuthorizationDigest`, `person1`'s string-based `authorizationDigest` (used by the facilitator routes) keeps its name. Payment adapters moved to the subpath `@overflow/payment-client/adapters` (name clashes with the x402 client otherwise).
+  - `apps/service/src/chain`: `person1`'s `ChainClient` stays `client.ts`; `main`'s read-only `LogSource`/`RawLog`/`createLogSource` is `log-source.ts`.
+  - Facilitator: `person1`'s HTTP app owns the only relayer. The SIMULATED seller paywall (from `main`) settles through `facilitator/in-process.ts`, an adapter that calls the facilitator Hono app in-process and maps `{success, transaction}` / 409 `original` / `status:"unknown"` onto `paid | blocked | unknown`; `main`'s `createChainFacilitator` stays in the tree for its tests but is not instantiated, so a relayer key never has two nonce managers.
+  - `apps/service/src/index.ts`: one `main()`: keystore signer, boot checks, facilitator app + treasury log poller + sweep reconciler (`person1`) and database + seed, indexer + ledger reconciliation, REST API, sellers on `SELLER_URL` (`main`). Facilitator routes are mounted at `/` (adapters and scripts) and again at `/facilitator` so its SSE feed is `/facilitator/events` next to the API's `/events`.
+  - `ChainEventKindSchema` is the union (`Swept`, `LateArrival`, `BondForfeited`, `Transfer`); the sweep reconciler opens `RECONCILIATION_DIFF` exceptions (the `main` enum).
+- `pnpm-workspace.yaml`: `@coinbase/x402`'s postinstall (a terms notice, nothing built) is skipped so `pnpm install` stays non-interactive under pnpm 12.
+
+### Verified (real output, 2026-10-24)
+| Check | Result |
+|---|---|
+| `git grep` for conflict markers | none |
+| `pnpm install` | exit 0 (lockfile regenerated from `main`'s) |
+| `pnpm -r --no-bail typecheck` | exit 0, all packages |
+| `pnpm lint` | exit 0 |
+| `pnpm test` | 54 files passed, 1 skipped (`oracle/extract.live.test.ts`, no live key); 509 tests passed, 1 skipped |
+| `forge test` | 18 suites, 191 passed, 0 failed, 1 skipped (fork test off-chain); includes `main`'s `PaymentClientGolden.t.sol` |
+
+### Open issues
+- **Record layout mismatch (blocker for promise complaints):** `data/**/records.bin` (from `main`) encode the 95-byte payload as `version(1) || timestamp(8) || data(86)`; `RecourseCrypto.sol` reads the uint64 timestamp from bytes `[0,8)`. Decided with the user: the TypeScript side changes and the datasets regenerate (next commit). Until then `complainPromise` over these records cannot succeed.
+- `README.md` of `@overflow/recourse-crypto` is `main`'s; the record-format section is rewritten with the layout fix.
+- Service boot still needs `RELAYER_ACCOUNT` + `RELAYER_PASSWORD_FILE` (or a 64-hex dev key); `.env` currently holds only the relayer address.

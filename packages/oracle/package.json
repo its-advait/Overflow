@@ -2,7 +2,7 @@
   "name": "@overflow/oracle",
   "version": "0.0.0",
   "private": true,
-  "description": "Delivery verification oracle: turns delivery evidence into attestations",
+  "description": "Oracle: turns a mission into structured requirements (Claude), filters and ranks listings with code, explains the choice. Never signs or pays.",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
@@ -14,10 +14,14 @@
     "test": "vitest run"
   },
   "devDependencies": {
+    "@overflow/datasets": "workspace:*",
     "@types/node": "^26.6.5"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.2.0",
+    "@overflow/database": "workspace:*",
     "@overflow/schemas": "workspace:*",
+    "viem": "^2.57.10",
     "zod": "^4.6.7"
   }
 }
