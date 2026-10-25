@@ -347,6 +347,9 @@ importers:
 
   packages/schemas:
     dependencies:
+      viem:
+        specifier: ^2.57.10
+        version: 2.57.10(typescript@5.9.3)(zod@4.6.7)
       zod:
         specifier: ^4.6.7
         version: 4.6.7
