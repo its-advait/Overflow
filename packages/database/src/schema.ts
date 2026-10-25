@@ -277,6 +277,9 @@ export const financialEntries = pgTable(
     creditAccount: text("credit_account").notNull(),
     amount: money("amount").notNull(),
     memo: text("memo").notNull(),
+    /** Chain event the row books ("<tx_hash>:<log_index>"); department lines of one event share it. */
+    eventKey: text("event_key").notNull(),
+    /** Unique per row: the event key, or "<event_key>#<department>" for a department line. */
     sourceEventId: text("source_event_id").notNull(),
     department: text("department"),
     txHash: text("tx_hash"),
@@ -286,6 +289,8 @@ export const financialEntries = pgTable(
   (t) => [
     unique("financial_entries_source_event_id_unique").on(t.sourceEventId),
     index("financial_entries_purchase_idx").on(t.purchaseId),
+    index("financial_entries_event_key_idx").on(t.eventKey),
+    index("financial_entries_tx_hash_idx").on(t.txHash),
     check("financial_entries_amount_nonneg", nonNegative(t.amount)),
     check("financial_entries_accounts_differ", sql`${t.debitAccount} <> ${t.creditAccount}`),
   ],
@@ -368,12 +373,15 @@ export const exceptions = pgTable(
     amount: money("amount"),
     status: text("status").notNull(),
     purchaseId: text("purchase_id").references(() => purchases.id),
+    /** What the exception is about ("treasury", "escrow:<purchaseId>", "event:<key>"); one open row per subject. */
+    subject: text("subject"),
     resolvedBy: text("resolved_by"),
     openedAt: ts("opened_at").notNull().defaultNow(),
     resolvedAt: ts("resolved_at"),
   },
   (t) => [
     index("exceptions_status_idx").on(t.status),
+    index("exceptions_subject_idx").on(t.subject),
     check("exceptions_amount_nonneg", sql`${t.amount} IS NULL OR ${t.amount} >= 0`),
   ],
 );
@@ -415,6 +423,30 @@ export const indexerCursors = pgTable("indexer_cursors", {
   updatedAt: ts("updated_at").notNull().defaultNow(),
 });
 
+/**
+ * One row per reconciliation run (SPEC "Reconciliation"). Chain balances are
+ * read at `block_number`; `differences` is the validated list the run found.
+ * `treasury_difference` is signed (chain minus ledger), so no non-negative check.
+ */
+export const reconciliationRuns = pgTable(
+  "reconciliation_runs",
+  {
+    id: text("id").primaryKey(),
+    ranAt: ts("ran_at").notNull().defaultNow(),
+    trigger: text("trigger").notNull(),
+    blockNumber: money("block_number").notNull(),
+    treasuryChain: money("treasury_chain").notNull(),
+    treasuryLedger: money("treasury_ledger").notNull(),
+    treasuryDifference: money("treasury_difference").notNull(),
+    escrowsChecked: integer("escrows_checked").notNull(),
+    eventsChecked: integer("events_checked").notNull(),
+    differences: jsonb("differences").notNull(),
+    exceptionIds: text("exception_ids").array().notNull(),
+    status: text("status").notNull(),
+  },
+  (t) => [index("reconciliation_runs_ran_at_idx").on(t.ranAt)],
+);
+
 export const TABLE_NAMES = [
   "organizations",
   "missions",
@@ -435,4 +467,5 @@ export const TABLE_NAMES = [
   "controller_requests",
   "idempotency_keys",
   "indexer_cursors",
+  "reconciliation_runs",
 ] as const;

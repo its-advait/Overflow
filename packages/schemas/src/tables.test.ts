@@ -220,10 +220,13 @@ describe("table row schemas", () => {
       creditAccount: "usdc-treasury",
       amountAtomic: "8000000",
       memo: "Escrow funded",
-      sourceEventId: "ct1",
+      eventKey: "0xabc:1",
+      sourceEventId: "0xabc:1",
       postedAt: NOW,
     };
     expect(FinancialEntrySchema.safeParse(entry).success).toBe(true);
+    const { eventKey: _k, ...withoutKey } = entry;
+    expect(FinancialEntrySchema.safeParse(withoutKey).success).toBe(false);
     expect(
       FinancialEntrySchema.safeParse({ ...entry, creditAccount: "escrow-deposit" }).success,
     ).toBe(false);

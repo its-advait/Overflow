@@ -141,6 +141,11 @@ export function escrowOrdersRepository(db: Executor) {
       );
     },
 
+    async listAll(): Promise<EscrowOrder[]> {
+      const rows = await db.select().from(escrowOrders).orderBy(escrowOrders.createdAt);
+      return rows.map(toRecord);
+    },
+
     async listOpen(): Promise<EscrowOrder[]> {
       const rows = await db.select().from(escrowOrders).orderBy(escrowOrders.createdAt);
       return rows.filter((r) => ESCROW_TRANSITIONS[r.status].length > 0).map(toRecord);

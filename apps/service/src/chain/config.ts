@@ -23,6 +23,8 @@ export const IndexerConfigSchema = z.object({
   rpcUrl: z.url(),
   treasury: AddressSchema,
   escrowFactory: AddressSchema,
+  /** USDC; the indexer reads its Transfer logs into and out of the treasury, reconciliation its balanceOf. */
+  usdc: AddressSchema,
   deployBlock: UintStringSchema,
   pollMs: z.number().int().positive(),
   reorgDepth: z.number().int().min(0),
@@ -63,6 +65,7 @@ export async function resolveIndexerConfig(env: NodeJS.ProcessEnv = process.env)
       rpcUrl: e.BASE_SEPOLIA_RPC_URL,
       treasury: deployments.treasury as Address,
       escrowFactory: deployments.escrowFactory as Address,
+      usdc: deployments.usdc as Address,
       deployBlock: deployments.deployBlock,
       pollMs: e.INDEXER_POLL_MS,
       reorgDepth: e.INDEXER_REORG_DEPTH,

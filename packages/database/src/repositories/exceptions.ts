@@ -1,5 +1,5 @@
 import { ExceptionRecordSchema, type ExceptionRecord } from "@overflow/schemas";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Executor } from "../client";
 import { NotFoundError, withDbErrors } from "../errors";
 import { exceptions } from "../schema";
@@ -16,6 +16,7 @@ const toRecord = (r: typeof exceptions.$inferSelect): ExceptionRecord =>
     status: r.status,
     openedAt: iso(r.openedAt),
     purchaseId: opt(r.purchaseId),
+    subject: opt(r.subject),
     resolvedBy: opt(r.resolvedBy),
     resolvedAt: isoOpt(r.resolvedAt),
   });
@@ -39,6 +40,7 @@ export function exceptionsRepository(db: Executor) {
             amount: nul(row.amountAtomic),
             status: row.status,
             purchaseId: nul(row.purchaseId),
+            subject: nul(row.subject),
             resolvedBy: nul(row.resolvedBy),
             openedAt: new Date(row.openedAt),
             resolvedAt: row.resolvedAt ? new Date(row.resolvedAt) : null,
@@ -64,6 +66,15 @@ export function exceptionsRepository(db: Executor) {
       );
       if (!r) throw new NotFoundError("exceptions", id);
       return toRecord(r);
+    },
+
+    /** The open exception about `subject` of this type, if any (reconciliation does not reopen a known difference). */
+    async findOpenBySubject(type: ExceptionRecord["type"], subject: string): Promise<ExceptionRecord | undefined> {
+      const [r] = await db
+        .select()
+        .from(exceptions)
+        .where(and(eq(exceptions.type, type), eq(exceptions.subject, subject), eq(exceptions.status, "open")));
+      return r ? toRecord(r) : undefined;
     },
 
     async listOpen(): Promise<ExceptionRecord[]> {

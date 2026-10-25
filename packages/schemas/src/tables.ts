@@ -168,6 +168,9 @@ export const FinancialEntrySchema = z
     creditAccount: LedgerAccountSchema,
     amountAtomic: AtomicAmountSchema,
     memo: z.string().min(1),
+    /** Chain event this row books: "<txHash>:<logIndex>". Department lines of one event share it. */
+    eventKey: z.string().min(1),
+    /** Unique per row: the eventKey, or "<eventKey>#<department>" for one line of a department split. */
     sourceEventId: z.string().min(1),
     department: z.string().min(1).optional(),
     txHash: Bytes32Schema.optional(),

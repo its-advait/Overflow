@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { escrowEvents, eventSignature, EVENT_BY_TOPIC, factoryEvents, treasuryEvents } from "./abi.js";
+import { escrowEvents, eventSignature, EVENT_BY_TOPIC, factoryEvents, TRANSFER_TOPIC, treasuryEvents, usdcEvents } from "./abi.js";
 
 // Pinned so a change to the provisional ABI shows up in review. The contract
 // author must emit these signatures or edit abi.ts and this snapshot together.
@@ -28,10 +28,15 @@ describe("provisional event ABI", () => {
       "PaidOut(bytes32,address,uint256,uint256)",
       "Refunded(bytes32,uint256,string)",
       "CheatProven(address,uint256)",
+      "BondForfeited(bytes32,address,uint256)",
     ]);
   });
+  it("USDC Transfer (the only third-party event the indexer reads)", () => {
+    expect(usdcEvents.map(eventSignature)).toEqual(["Transfer(address,address,uint256)"]);
+    expect(TRANSFER_TOPIC).toBe("0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef");
+  });
   it("every selector is distinct and the Leash Paid selector is unchanged", () => {
-    expect(EVENT_BY_TOPIC.size).toBe(16);
+    expect(EVENT_BY_TOPIC.size).toBe(18);
     // keccak256("Paid(uint256,address,uint256,bytes32)"), the selector Leash's LeashWallet emits.
     expect(EVENT_BY_TOPIC.get("0xa323b44195067cf7ba9a431c61b54b02673ff8142d227faabd075385ef9785e2")).toMatchObject({
       kind: "treasury",

@@ -3,6 +3,7 @@ import { createDatabase, seed } from "@overflow/database";
 import { createApp } from "./api/index.js";
 import { createActivityBus, createIndexer, createLogSource, resolveIndexerConfig, type Indexer } from "./chain/index.js";
 import { FACILITATOR_STATUS } from "./facilitator/index.js";
+import { createReconciliation, LEDGER_STATUS, type Reconciliation } from "./ledger/index.js";
 import { ORCHESTRATION_STATUS } from "./orchestration/index.js";
 import { SELLERS_STATUS } from "./sellers/index.js";
 
@@ -25,12 +26,35 @@ console.log(
 const bus = createActivityBus();
 const indexerConfig = await resolveIndexerConfig();
 let indexer: Indexer | undefined;
+let reconciliation: Reconciliation | undefined;
 let chainStatus: string;
+let ledgerStatus: string = LEDGER_STATUS;
 if (indexerConfig.ok) {
-  const source = createLogSource(indexerConfig.config.rpcUrl);
+  const { config } = indexerConfig;
+  const source = createLogSource(config.rpcUrl);
   await source.assertChain();
-  indexer = createIndexer({ db: database.db, source, config: indexerConfig.config, bus });
-  chainStatus = `indexing treasury ${indexerConfig.config.treasury} from block ${indexerConfig.config.deployBlock}`;
+  // Reconciliation reads balances at the indexer's cursor after every poll that stored new logs.
+  const materiality = process.env["RECONCILIATION_MATERIALITY_ATOMIC"];
+  const recon = createReconciliation({
+    db: database.db,
+    reader: source,
+    treasury: config.treasury,
+    usdc: config.usdc,
+    bus,
+    ...(materiality ? { materialityAtomic: BigInt(materiality) } : {}),
+  });
+  reconciliation = recon;
+  indexer = createIndexer({
+    db: database.db,
+    source,
+    config,
+    bus,
+    afterTick: async (r) => {
+      if (r.logsInserted > 0) await recon.run("indexer", r.toBlock);
+    },
+  });
+  chainStatus = `indexing treasury ${config.treasury} from block ${config.deployBlock}`;
+  ledgerStatus = `journal posted from chain events; reconciliation after every poll with new logs (materiality ${materiality ?? "10000"} atomic)`;
 } else {
   chainStatus = `idle: ${indexerConfig.reason}`;
   console.warn(`[chain] indexer idle: ${indexerConfig.reason}`);
@@ -39,6 +63,7 @@ if (indexerConfig.ok) {
 const { app } = createApp({
   db: database.db,
   bus,
+  ...(reconciliation ? { ports: { reconciliation: { run: (trigger) => reconciliation!.run(trigger) } } } : {}),
   indexerStatus: () => indexer?.status() ?? { state: "idle", reason: indexerConfig.ok ? "not started" : indexerConfig.reason },
   status: {
     database: { dialect: database.dialect, migrationsFolder: database.migrationsFolder, migrated: true },
@@ -48,6 +73,7 @@ const { app } = createApp({
       facilitator: FACILITATOR_STATUS,
       sellers: SELLERS_STATUS,
       chain: chainStatus,
+      ledger: ledgerStatus,
     },
   },
 });

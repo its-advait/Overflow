@@ -18,6 +18,7 @@ const config: IndexerConfig = {
   rpcUrl: "http://fake.invalid",
   treasury: FIXTURE.treasury,
   escrowFactory: FIXTURE.factory,
+  usdc: FIXTURE.usdc,
   deployBlock: FIXTURE.deployBlock,
   pollMs: 2000,
   reorgDepth: 12,
@@ -53,10 +54,12 @@ describe("chain indexer (SIMULATED fixture replay)", () => {
       sourceKey: FIXTURE.owner,
       minTimestamp: "0",
     });
-    // p1: order 1, waiting on payment. p2: order 2 on the coinbase path (reservation digest d2).
-    // p3: order 3 still PROPOSED, so its PaidOut must be refused. Each in its own resource to satisfy the active-purchase index.
-    await handle.repos.resources.insert({ ...(await handle.repos.resources.getById("resource-1"))!, id: "resource-2" });
-    await handle.repos.resources.insert({ ...(await handle.repos.resources.getById("resource-1"))!, id: "resource-3" });
+    // p1: order 1, waiting on payment. p2: order 2 on the coinbase path (reservation digest d2, seller bond 2.4 USDC).
+    // p3: order 3 still PROPOSED, so its PaidOut must be refused. p4: a direct x402 API purchase (no escrow order).
+    // Each in its own resource to satisfy the active-purchase index.
+    for (const id of ["resource-2", "resource-3", "resource-4"]) {
+      await handle.repos.resources.insert({ ...(await handle.repos.resources.getById("resource-1"))!, id });
+    }
     for (const [id, order, escrow, resourceId] of [
       ["p1", b32(1), FIXTURE.escrow1, "resource-1"],
       ["p2", b32(2), FIXTURE.escrow2, "resource-2"],
@@ -67,11 +70,26 @@ describe("chain indexer (SIMULATED fixture replay)", () => {
         reason: "fixture",
         source: { kind: "oracle", reference: "test" },
       });
-      await handle.repos.escrowOrders.insert(escrowTerms(id, order, escrow));
+      await handle.repos.escrowOrders.insert({ ...escrowTerms(id, order, escrow), ...(id === "p2" ? { bondAtomic: FIXTURE.bond } : {}) });
     }
+    await svc.propose({
+      purchase: purchaseInput({
+        id: "p4",
+        orderIdBytes32: b32(4),
+        escrowAddress: FIXTURE.apiSeller,
+        sellerAddress: FIXTURE.apiSeller,
+        resourceId: "resource-4",
+        idempotencyKey: "k-p4",
+        amountAtomic: FIXTURE.apiAmount,
+        allocations: [{ agentId: "agent-research", department: "research", amountAtomic: FIXTURE.apiAmount }],
+      }),
+      reason: "fixture: direct x402 API purchase",
+      source: { kind: "oracle", reference: "test" },
+    });
     for (const [id, digest] of [
       ["p1", b32(0xd1)],
       ["p2", b32(0xd2)],
+      ["p4", b32(0xd4)],
     ] as const) {
       await svc.transition(id, "RESERVED", { reason: "signed", source: { kind: "adapter", reference: "t" }, authorizationDigest: digest });
       await svc.transition(id, "PAYMENT_PENDING", { reason: "sent", source: { kind: "adapter", reference: "t" }, authorizationDigest: digest });
@@ -86,14 +104,17 @@ describe("chain indexer (SIMULATED fixture replay)", () => {
     const r = await indexer.tick();
     expect(r.fromBlock).toBe(100n);
     expect(r.toBlock).toBe(115n);
-    expect(r.logsSeen).toBe(18);
-    expect(r.logsInserted).toBe(18);
+    expect(r.logsSeen).toBe(26);
+    expect(r.logsInserted).toBe(26);
 
     // Every log is a chain_transactions row, confirmed, with its decoded args as strings.
     const p1Tx = await handle.repos.chainTransactions.listByPurchase("p1");
-    expect(p1Tx.map((t) => t.eventName)).toEqual(["OrderCreated", "Paid", "OrderFunded", "KeyRevealed", "Accepted", "PaidOut"]);
+    expect(p1Tx.map((t) => t.eventName)).toEqual(["OrderCreated", "Transfer", "Paid", "OrderFunded", "KeyRevealed", "Accepted", "PaidOut"]);
     expect(p1Tx.every((t) => t.confirmed)).toBe(true);
-    expect(p1Tx[1]!.args).toMatchObject({ id: "1", to: FIXTURE.escrow1, value: FIXTURE.amount });
+    expect(p1Tx[2]!.args).toMatchObject({ id: "1", to: FIXTURE.escrow1, value: FIXTURE.amount });
+    // USDC transfers were fetched with topic filters, only for the treasury.
+    expect(source.calls.some((c) => c.topics?.length === 2 && c.addresses[0] === FIXTURE.usdc)).toBe(true);
+    expect(source.calls.some((c) => c.topics?.length === 3 && c.topics[1] === null)).toBe(true);
 
     // Purchases moved only along the state machine, through confirmed events.
     expect((await handle.repos.purchases.getById("p1"))!.status).toBe("SETTLED");
@@ -115,18 +136,23 @@ describe("chain indexer (SIMULATED fixture replay)", () => {
     expect(res.status).toBe("released");
     expect(res.purchaseId).toBe("p2");
 
-    // Agent node id from NodeCreated; seller history from reveal + cheat.
+    // Agent node id from NodeCreated; seller history: three orders created, one on-time reveal, one proven cheat.
     expect((await handle.repos.agents.getById("agent-orchestrator"))!.nodeId).toBe(1);
     const seller = (await handle.repos.sellerHistory.get(FIXTURE.seller))!;
-    expect(seller).toMatchObject({ onTimeReveals: 1, provenCheats: 1, flagged: true });
+    expect(seller).toMatchObject({ orders: 3, onTimeReveals: 1, provenCheats: 1, flagged: true, sellerId: "seller-honest" });
+
+    // Ledger: one logical entry per money event (see ledger/posting.test.ts for the rules themselves).
+    expect(r.entries.length).toBe(8); // funding, OrderFunded x2, PaidOut p1 (2 department lines), Refunded, BondForfeited, direct p4
+    const treasury = await handle.repos.financialEntries.balance("usdc-treasury");
+    expect((treasury.debitsAtomic - treasury.creditsAtomic).toString()).toBe("37400000"); // 50 + 12 + 2.4 - 12 - 12 - 3 USDC
 
     // Activity: one event per log (transitions write theirs through PurchaseService).
     const activity = await handle.repos.activityEvents.listRecent(200);
     const kinds = activity.map((a) => a.kind);
-    for (const k of ["treasury.node", "treasury.policy", "escrow.created", "treasury.paid", "escrow.funded", "purchase.status", "escrow.accepted", "escrow.settled", "treasury.reserved", "escrow.refunded", "seller.flagged", "treasury.released"]) {
+    for (const k of ["treasury.node", "treasury.policy", "escrow.created", "treasury.paid", "escrow.funded", "purchase.status", "escrow.accepted", "escrow.settled", "treasury.reserved", "escrow.refunded", "seller.flagged", "treasury.released", "usdc.transfer", "escrow.bond-forfeited"]) {
       expect(kinds).toContain(k);
     }
-    expect(activity.filter((a) => a.purchaseId === "p1" && a.txHash).length).toBe(6);
+    expect(activity.filter((a) => a.purchaseId === "p1" && a.txHash).length).toBe(7);
     expect(r.events.length).toBe(published.filter((m) => m.type === "activity").length);
     expect(published.filter((m) => m.type === "indexer").at(-1)).toMatchObject({ status: { state: "idle", cursor: "115", head: "115", trackedEscrows: 3 } });
 
@@ -145,6 +171,8 @@ describe("chain indexer (SIMULATED fixture replay)", () => {
     expect(r.logsSeen).toBeGreaterThan(0);
     expect(r.logsInserted).toBe(0);
     expect(r.unconfirmed).toBe(0);
+    expect(r.entries).toEqual([]); // a replay never double-posts
+    expect((await handle.repos.financialEntries.listAll()).length).toBe(8);
     expect((await handle.repos.activityEvents.listRecent(500)).length).toBe(before);
     expect((await handle.repos.purchases.getById("p1"))!.status).toBe("SETTLED");
     expect(second.trackedEscrows()).toHaveLength(3); // rediscovered from stored OrderCreated rows

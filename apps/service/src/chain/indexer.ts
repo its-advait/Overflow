@@ -1,11 +1,14 @@
 import { createRepositories, InvalidEscrowTransitionError, NotFoundError, type Db } from "@overflow/database";
-import { InvalidTransitionError, type ActivityEvent, type Address } from "@overflow/schemas";
+import { InvalidTransitionError, type ActivityEvent, type Address, type FinancialEntry } from "@overflow/schemas";
+import { padHex } from "viem";
+import { postForLog } from "../ledger/posting.js";
 import { createPurchaseService, TransitionEvidenceError } from "../orchestration/purchase-service.js";
+import { TRANSFER_TOPIC } from "./abi.js";
 import type { ActivityBus, IndexerStatus } from "./bus.js";
 import type { LogSource, RawLog } from "./client.js";
 import type { IndexerConfig } from "./config.js";
 import { decodeLog, type DecodedLog } from "./decode.js";
-import { handlerFor } from "./handlers.js";
+import { handlerFor, type HandlerResult } from "./handlers.js";
 
 // ---------------------------------------------------------------------------
 // Event indexer. Polls eth_getLogs for the treasury, the factory and every
@@ -13,7 +16,12 @@ import { handlerFor } from "./handlers.js";
 //   1. a chain_transactions row (idempotent on tx_hash + log_index),
 //   2. the handler's effects (purchases / escrow orders through
 //      PurchaseService.transition, reservations, seller history),
-//   3. activity events, published on the bus after commit.
+//   3. the ledger's journal rows for that event (ledger/posting.ts), posted
+//      after the handler so the books follow the chain even when the purchase
+//      state machine refuses the move,
+//   4. activity events, published on the bus after commit.
+// Besides the Overflow contracts it reads USDC's Transfer logs into and out of
+// the treasury: funding and direct x402 purchases have no treasury event.
 // A cursor (indexer_cursors) records the highest block fully scanned. Every
 // poll re-reads the last `reorgDepth` blocks; a stored log that the chain no
 // longer returns in that window is marked confirmed = false.
@@ -29,6 +37,8 @@ export interface IndexerDeps {
   cursorName?: string | undefined;
   log?: ((message: string) => void) | undefined;
   warn?: ((message: string) => void) | undefined;
+  /** Runs after each completed poll (e.g. reconciliation). Errors are logged, never thrown. */
+  afterTick?: ((result: TickResult) => Promise<void>) | undefined;
 }
 
 export interface TickResult {
@@ -38,6 +48,7 @@ export interface TickResult {
   logsInserted: number;
   unconfirmed: number;
   events: ActivityEvent[];
+  entries: FinancialEntry[];
 }
 
 export interface Indexer {
@@ -70,6 +81,8 @@ export function createIndexer(deps: IndexerDeps): Indexer {
   const deployBlock = BigInt(config.deployBlock);
   const reorgDepth = BigInt(config.reorgDepth);
   const chunk = BigInt(config.chunkBlocks);
+  const treasuryTopic = padHex(config.treasury, { size: 32 });
+  const isUsdc = (address: string): boolean => address.toLowerCase() === config.usdc.toLowerCase();
 
   const escrows = new Map<string, Address>(); // lowercase -> as emitted
   let state: IndexerStatus["state"] = "idle";
@@ -120,8 +133,15 @@ export function createIndexer(deps: IndexerDeps): Indexer {
     log(`cursor ${cursor?.toString() ?? "none (starting at deployBlock " + deployBlock + ")"}, ${escrows.size} escrow(s) tracked`);
   }
 
-  /** Record one log and run its handler in one transaction. Returns [] when the log was already stored. */
-  async function processLog(decoded: DecodedLog): Promise<{ inserted: boolean; events: ActivityEvent[]; newEscrow?: Address | undefined }> {
+  interface Processed {
+    inserted: boolean;
+    events: ActivityEvent[];
+    entries: FinancialEntry[];
+    newEscrow?: Address | undefined;
+  }
+
+  /** Record one log, run its handler and post its journal rows in one transaction. Returns inserted=false when the log was already stored. */
+  async function processLog(decoded: DecodedLog): Promise<Processed> {
     const raw = decoded.log;
     return db.transaction(async (tx) => {
       const repos = createRepositories(tx);
@@ -136,32 +156,36 @@ export function createIndexer(deps: IndexerDeps): Indexer {
       });
       if (!recorded.inserted) {
         if (!recorded.row.confirmed) await repos.chainTransactions.setConfirmed(recorded.row.id, true); // back on the canonical chain
-        return { inserted: false, events: [] };
+        return { inserted: false, events: [], entries: [] };
       }
+      let handled: HandlerResult = { events: [] };
       const handler = handlerFor(decoded.eventName);
-      if (!handler) return { inserted: true, events: [] };
-      try {
-        // Savepoint: a refused state-machine move rolls back only the handler; the chain row stays.
-        return await tx.transaction(async (inner) => {
-          const result = await handler({
-            repos: createRepositories(inner),
-            purchases: createPurchaseService(inner),
-            row: recorded.row,
-            decoded,
-            txHash: raw.transactionHash,
-            blockTimestamp: async () =>
-              raw.blockTimestamp !== undefined ? BigInt(raw.blockTimestamp) : source.getBlockTimestamp(BigInt(raw.blockNumber)),
-            warn,
-          });
-          return { inserted: true, events: result.events, newEscrow: result.newEscrow };
-        });
-      } catch (e) {
-        if (isRefusedByStateMachine(e)) {
+      if (handler) {
+        try {
+          // Savepoint: a refused state-machine move rolls back only the handler; the chain row stays.
+          handled = await tx.transaction((inner) =>
+            handler({
+              repos: createRepositories(inner),
+              purchases: createPurchaseService(inner),
+              row: recorded.row,
+              decoded,
+              txHash: raw.transactionHash,
+              treasury: config.treasury,
+              blockTimestamp: async () =>
+                raw.blockTimestamp !== undefined ? BigInt(raw.blockTimestamp) : source.getBlockTimestamp(BigInt(raw.blockNumber)),
+              warn,
+            }),
+          );
+        } catch (e) {
+          if (!isRefusedByStateMachine(e)) throw e;
           warn(`${decoded.eventName} ${logKey(raw)} recorded but refused by the state machine: ${(e as Error).message}`);
-          return { inserted: true, events: [], newEscrow: decoded.eventName === "OrderCreated" ? (decoded.args["escrow"] as Address) : undefined };
+          handled = { events: [], newEscrow: decoded.eventName === "OrderCreated" ? (decoded.args["escrow"] as Address) : undefined };
         }
-        throw e;
       }
+      // The books follow the chain: posted after the handler, inside the same commit, whether or not the move was refused.
+      const row = (await repos.chainTransactions.getById(recorded.row.id)) ?? recorded.row;
+      const entries = await postForLog({ repos, row, decoded, treasury: config.treasury, warn });
+      return { inserted: true, events: handled.events, entries, newEscrow: handled.newEscrow };
     });
   }
 
@@ -172,13 +196,22 @@ export function createIndexer(deps: IndexerDeps): Indexer {
     });
   }
 
-  /** Fetch a range for the current address set, then again for any escrow created inside it. */
+  /** Fetch a range for the current address set (plus USDC transfers touching the treasury), then again for any escrow created inside it. */
   async function fetchRange(fromBlock: bigint, toBlock: bigint, seen: Set<string>): Promise<{ logs: RawLog[]; seenKeys: string[] }> {
     let pending = addresses();
     const out: RawLog[] = [];
     const seenKeys: string[] = [];
+    const usdcQueries = [
+      { addresses: [config.usdc], fromBlock, toBlock, topics: [TRANSFER_TOPIC, treasuryTopic] }, // from the treasury
+      { addresses: [config.usdc], fromBlock, toBlock, topics: [TRANSFER_TOPIC, null, treasuryTopic] }, // to the treasury
+    ];
+    let first = true;
     while (pending.length > 0) {
       const logs = await source.getLogs({ addresses: pending, fromBlock, toBlock });
+      if (first) {
+        first = false;
+        for (const q of usdcQueries) logs.push(...(await source.getLogs(q)).filter((l) => isUsdc(l.address)));
+      }
       const discovered: Address[] = [];
       for (const l of logs) {
         if (l.removed) continue;
@@ -205,9 +238,10 @@ export function createIndexer(deps: IndexerDeps): Indexer {
     lastPollAt = new Date().toISOString();
     const previousCursor = cursor;
     const fromBlock = previousCursor === undefined ? deployBlock : maxBig(deployBlock, previousCursor + 1n - reorgDepth);
-    const result: TickResult = { fromBlock, toBlock: latest, logsSeen: 0, logsInserted: 0, unconfirmed: 0, events: [] };
+    const result: TickResult = { fromBlock, toBlock: latest, logsSeen: 0, logsInserted: 0, unconfirmed: 0, events: [], entries: [] };
     if (fromBlock > latest) {
       publishStatus();
+      await afterTick(result);
       return result;
     }
 
@@ -223,12 +257,14 @@ export function createIndexer(deps: IndexerDeps): Indexer {
       for (const raw of logs) {
         const decoded = decodeLog(raw);
         if (!decoded) continue;
+        if (decoded.kind === "usdc" && !isUsdc(raw.address)) continue; // a Transfer from some other contract is not money
         result.logsSeen++;
         const r = await processLog(decoded);
         if (r.inserted) {
           result.logsInserted++;
           logsIndexed++;
         }
+        result.entries.push(...r.entries);
         for (const ev of r.events) {
           result.events.push(ev);
           deps.bus?.publish(ev);
@@ -258,7 +294,17 @@ export function createIndexer(deps: IndexerDeps): Indexer {
     }
     lastError = undefined;
     publishStatus();
+    await afterTick(result);
     return result;
+  }
+
+  async function afterTick(result: TickResult): Promise<void> {
+    if (!deps.afterTick) return;
+    try {
+      await deps.afterTick(result);
+    } catch (e) {
+      warn(`afterTick hook failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   async function guardedTick(): Promise<TickResult> {

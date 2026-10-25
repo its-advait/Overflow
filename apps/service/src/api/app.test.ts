@@ -96,12 +96,16 @@ describe("REST API", () => {
       expect(propose.status).toBe(501);
     });
 
-    it("reconciliation reports no run", async () => {
+    it("reconciliation reports no run, and an on-demand run without a chain reader is 501", async () => {
       const res = await app.request("/api/reconciliation");
       expect(res.status).toBe(200);
       const body = await json(res);
       expect(body.lastRun).toBeNull();
-      expect(body.note).toMatch(/not wired/);
+      expect(body.openExceptions).toEqual([]);
+      expect(body.note).toMatch(/no reconciliation run/);
+      const run = await post("/api/reconciliation/run", {});
+      expect(run.status).toBe(501);
+      expect((await json(run)).error.code).toBe("not_wired");
     });
   });
 
@@ -124,7 +128,14 @@ describe("REST API", () => {
       const l = await app.request("/api/ledger");
       const ledger = await json(l);
       expect(ledger.entries).toEqual([]);
-      expect(ledger.balances.find((b: { account: string }) => b.account === "usdc-treasury").debitsAtomic).toBe("0");
+      expect(ledger.balances.find((b: { account: string }) => b.account === "usdc-treasury")).toEqual({
+        account: "usdc-treasury",
+        debitsAtomic: "0",
+        creditsAtomic: "0",
+        netAtomic: "0",
+      });
+      expect(ledger.departments).toEqual([]);
+      expect((await app.request("/api/ledger?limit=0")).status).toBe(400);
 
       const act = await app.request("/api/activity?limit=5");
       expect(act.status).toBe(200);

@@ -1,10 +1,11 @@
 import type { Address } from "viem";
 import type { CheckedQuote, PaymentRequirements } from "@overflow/payment-client";
 import type {
-  ExceptionRecord,
   MissionRecord,
   PaymentPath,
   PurchaseOrder,
+  ReconciliationRun,
+  ReconciliationTrigger,
   ResourceRecord,
   ResourceRequestRecord,
 } from "@overflow/schemas";
@@ -69,18 +70,13 @@ export interface PolicyPort {
   allowlistedPayees(): Promise<readonly Address[]>;
 }
 
-export interface ReconciliationSummary {
-  ranAt: string;
-  treasuryBalanceAtomic: string;
-  ledgerTreasuryAtomic: string;
-  differenceAtomic: string;
-  openEscrows: number;
-  exceptions: ExceptionRecord[];
-}
-
-/** Reconciliation job (P4.4). */
+/**
+ * Reconciliation job (ledger/reconciliation.ts). Reading the last run needs no
+ * port (it is a table); running one needs chain balance reads, so without an
+ * RPC and a deployments file the default refuses.
+ */
 export interface ReconciliationPort {
-  latest(): Promise<ReconciliationSummary | null>;
+  run(trigger: ReconciliationTrigger): Promise<ReconciliationRun>;
 }
 
 export interface Ports {
@@ -103,6 +99,10 @@ export function defaultPorts(): Ports {
     adapters: {},
     // No chain reader yet: only escrow payTo passes checkQuote.
     policy: { allowlistedPayees: async () => [] },
-    reconciliation: { latest: async () => null },
+    reconciliation: {
+      run: async () => {
+        throw new NotWiredError("ReconciliationPort.run (chain balance reads)", "BASE_SEPOLIA_RPC_URL + deployments/base-sepolia.json");
+      },
+    },
   };
 }

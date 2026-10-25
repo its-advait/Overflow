@@ -6,6 +6,7 @@ import {
   Bytes32Schema,
   IdSchema,
   IsoDateTimeSchema,
+  UintStringSchema,
 } from "./primitives";
 
 // ---------------------------------------------------------------------------
@@ -29,6 +30,9 @@ export const ChainEventKindSchema = z.enum([
   "OrderFunded",
   "PaidOut",
   "Refunded",
+  "BondForfeited",
+  /** USDC ERC-20 Transfer into or out of the treasury (funding, direct x402 purchase). */
+  "Transfer",
 ]);
 export type ChainEventKind = z.infer<typeof ChainEventKindSchema>;
 
@@ -106,6 +110,11 @@ export const ActivityKindSchema = z.enum([
   "escrow.accepted",
   "seller.flagged",
   "indexer.unconfirmed",
+  // USDC transfers touching the treasury; the ledger books funding and direct purchases from these.
+  "usdc.transfer",
+  "escrow.bond-forfeited",
+  // Reconciliation run that found at least one difference (each also opens an exception).
+  "reconciliation.difference",
 ]);
 export type ActivityKind = z.infer<typeof ActivityKindSchema>;
 
@@ -149,10 +158,59 @@ export const ExceptionRecordSchema = z.object({
   status: ExceptionStatusSchema,
   openedAt: IsoDateTimeSchema,
   purchaseId: IdSchema.optional(),
+  /** What the exception is about, e.g. "treasury", "escrow:<purchaseId>", "event:<txHash>:<logIndex>". One open exception per subject. */
+  subject: z.string().min(1).optional(),
   resolvedBy: z.string().min(1).optional(),
   resolvedAt: IsoDateTimeSchema.optional(),
 });
 export type ExceptionRecord = z.infer<typeof ExceptionRecordSchema>;
+
+// ---------------------------------------------------------------------------
+// Reconciliation (SPEC "Reconciliation"): the chain is the bank, the ledger is
+// the books. A run compares them at one block and records every difference.
+// ---------------------------------------------------------------------------
+
+/** Signed integer atomic amount (chain minus ledger). */
+export const SignedAtomicSchema = z.string().regex(/^-?(0|[1-9]\d*)$/, "signed integer atomic units");
+
+/** Default materiality: 0.01 USDC. */
+export const DEFAULT_MATERIALITY_ATOMIC = "10000" as const;
+
+export const ReconciliationDifferenceSchema = z.object({
+  kind: z.enum(["treasury", "escrow", "event-coverage"]),
+  subject: z.string().min(1),
+  reason: z.string().min(1),
+  chainAtomic: AtomicAmountSchema.optional(),
+  ledgerAtomic: SignedAtomicSchema.optional(),
+  /** chain - ledger; for event-coverage the amount the event moved. */
+  differenceAtomic: SignedAtomicSchema,
+  purchaseId: IdSchema.optional(),
+  eventKey: z.string().min(1).optional(),
+  /** True when |difference| is above materiality (or the check has no amount to compare), so an exception was opened or already open. */
+  material: z.boolean(),
+});
+export type ReconciliationDifference = z.infer<typeof ReconciliationDifferenceSchema>;
+
+export const ReconciliationTriggerSchema = z.enum(["indexer", "api", "test"]);
+export type ReconciliationTrigger = z.infer<typeof ReconciliationTriggerSchema>;
+
+export const ReconciliationRunSchema = z.object({
+  id: IdSchema,
+  ranAt: IsoDateTimeSchema,
+  trigger: ReconciliationTriggerSchema,
+  /** Block the chain balances were read at (the indexer cursor). */
+  blockNumber: UintStringSchema,
+  treasuryChainAtomic: AtomicAmountSchema,
+  treasuryLedgerAtomic: SignedAtomicSchema,
+  treasuryDifferenceAtomic: SignedAtomicSchema,
+  escrowsChecked: z.number().int().min(0),
+  eventsChecked: z.number().int().min(0),
+  differences: z.array(ReconciliationDifferenceSchema),
+  /** Exceptions opened by this run (ids). Already-open subjects are not reopened. */
+  exceptionIds: z.array(IdSchema),
+  status: z.enum(["ok", "differences"]),
+});
+export type ReconciliationRun = z.infer<typeof ReconciliationRunSchema>;
 
 // ---------------------------------------------------------------------------
 // Controller requests: owner actions a human approves in Coinbase Wallet.

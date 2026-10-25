@@ -10,6 +10,7 @@ import {
 } from "@overflow/schemas";
 import type { PurchaseService, TransitionSource } from "../orchestration/purchase-service.js";
 import type { DecodedLog, JsonArgs } from "./decode.js";
+import { isKnownEscrow, purchaseForOrder as purchaseForOrderOn, waitingPurchaseForPayee } from "./lookup.js";
 
 // ---------------------------------------------------------------------------
 // One handler per indexed event. A handler runs inside the per-log database
@@ -27,6 +28,8 @@ export interface HandlerContext {
   row: ChainTransaction;
   decoded: DecodedLog;
   txHash: Hex;
+  /** The treasury being indexed; tells a USDC Transfer's direction. */
+  treasury: Address;
   /** Unix seconds of the log's block (fetched lazily; only KeyRevealed needs it). */
   blockTimestamp: () => Promise<bigint>;
   warn: (message: string) => void;
@@ -45,11 +48,9 @@ const hex = (args: JsonArgs, key: string): Hex => str(args, key) as Hex;
 
 const source = (txHash: Hex): TransitionSource => ({ kind: "chain", reference: txHash });
 
-/** Prefer the active purchase for an order; fall back to the newest terminal one. */
-async function purchaseForOrder(ctx: HandlerContext, orderId: string): Promise<PurchaseRecord | undefined> {
-  const list = await ctx.repos.purchases.listByOrderId(orderId);
-  return list.find((p) => !isTerminalStatus(p.status)) ?? list.at(-1);
-}
+const purchaseForOrder = (ctx: HandlerContext, orderId: string): Promise<PurchaseRecord | undefined> =>
+  purchaseForOrderOn(ctx.repos, orderId);
+const same = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
 
 async function link(ctx: HandlerContext, purchase: PurchaseRecord | undefined): Promise<void> {
   if (purchase && ctx.row.purchaseId !== purchase.id) await ctx.repos.chainTransactions.setPurchaseId(ctx.row.id, purchase.id);
@@ -100,10 +101,7 @@ const handlers: Record<string, Handler> = {
   async Paid(ctx) {
     const a = ctx.decoded.args;
     const to = addr(a, "to");
-    const candidates = await ctx.repos.purchases.listByEscrowAddress(to);
-    const purchase =
-      candidates.find((p) => p.status === "PAYMENT_PENDING" || p.status === "PAYMENT_UNKNOWN" || p.status === "RESERVED") ??
-      candidates.find((p) => !isTerminalStatus(p.status));
+    const purchase = await waitingPurchaseForPayee(ctx.repos, to);
     await link(ctx, purchase);
     const event = await note(
       ctx,
@@ -193,13 +191,49 @@ const handlers: Record<string, Handler> = {
     };
   },
 
+  // ---- USDC ---------------------------------------------------------------
+  /**
+   * A USDC transfer into or out of the treasury. Funding and direct x402
+   * purchases have no treasury event, so this is their only chain record; the
+   * ledger books them from here (ledger/posting.ts). Transfers to or from an
+   * escrow are booked by the escrow's own events and only noted.
+   */
+  async Transfer(ctx) {
+    const a = ctx.decoded.args;
+    const from = addr(a, "from");
+    const to = addr(a, "to");
+    const value = str(a, "value");
+    const inflow = same(to, ctx.treasury);
+    const counterparty = inflow ? from : to;
+    const escrow = await isKnownEscrow(ctx.repos, counterparty);
+    let purchase: PurchaseRecord | undefined;
+    if (escrow) purchase = (await ctx.repos.purchases.listByEscrowAddress(counterparty)).find((p) => !isTerminalStatus(p.status));
+    else if (!inflow) purchase = await waitingPurchaseForPayee(ctx.repos, to);
+    await link(ctx, purchase);
+    const what = inflow
+      ? escrow
+        ? "returned from escrow"
+        : "treasury funded"
+      : escrow
+        ? "escrow funded"
+        : purchase
+          ? "direct x402 purchase"
+          : "outflow matching no purchase";
+    const event = await note(ctx, "usdc.transfer", `Transfer: ${value} atomic USDC from ${from} to ${to} (${what})`, { purchase });
+    return { events: [event], purchaseId: purchase?.id };
+  },
+
   // ---- factory ------------------------------------------------------------
   async OrderCreated(ctx) {
     const a = ctx.decoded.args;
     const orderId = hex(a, "orderId");
     const escrow = addr(a, "escrow");
+    const seller = addr(a, "seller");
     const purchase = await purchaseForOrder(ctx, orderId);
     await link(ctx, purchase);
+    // Seller history persists across missions: every order the factory opened counts.
+    const resource = purchase ? await ctx.repos.resources.getById(purchase.resourceId) : undefined;
+    await ctx.repos.sellerHistory.upsertIncrement(seller, { orders: 1, ...(resource ? { sellerId: resource.sellerId } : {}) });
     const event = await note(
       ctx,
       "escrow.created",
@@ -291,6 +325,21 @@ const handlers: Record<string, Handler> = {
       escrow: { status: "Refunded", refundReason: reason },
     });
     return { events: [r.event], purchaseId: purchase.id };
+  },
+
+  async BondForfeited(ctx) {
+    const a = ctx.decoded.args;
+    const orderId = hex(a, "orderId");
+    const purchase = await purchaseForOrder(ctx, orderId);
+    await link(ctx, purchase);
+    const event = await note(
+      ctx,
+      "escrow.bond-forfeited",
+      `BondForfeited: seller ${str(a, "seller")} forfeited a ${str(a, "bond")} atomic USDC bond to the treasury for order ${orderId}` +
+        (purchase ? "" : " (no matching purchase)"),
+      { purchase },
+    );
+    return { events: [event], purchaseId: purchase?.id };
   },
 
   async CheatProven(ctx) {

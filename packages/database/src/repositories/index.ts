@@ -12,6 +12,7 @@ import { missionsRepository } from "./missions";
 import { organizationsRepository } from "./organizations";
 import { purchaseGroupsRepository } from "./purchase-groups";
 import { allocationsRepository, purchasesRepository } from "./purchases";
+import { reconciliationRunsRepository } from "./reconciliation-runs";
 import { reservationsRepository } from "./reservations";
 import { resourceRequestsRepository, resourcesRepository } from "./resources";
 import { samplesRepository } from "./samples";
@@ -30,6 +31,7 @@ export * from "./missions";
 export * from "./organizations";
 export * from "./purchase-groups";
 export * from "./purchases";
+export * from "./reconciliation-runs";
 export * from "./reservations";
 export * from "./resources";
 export * from "./samples";
@@ -57,6 +59,7 @@ export function createRepositories(db: Executor) {
     controllerRequests: controllerRequestsRepository(db),
     idempotencyKeys: idempotencyKeysRepository(db),
     indexerCursors: indexerCursorsRepository(db),
+    reconciliationRuns: reconciliationRunsRepository(db),
   };
 }
 export type Repositories = ReturnType<typeof createRepositories>;

@@ -5,7 +5,7 @@ import {
   type FinancialEntry,
   type LedgerAccount,
 } from "@overflow/schemas";
-import { eq, or } from "drizzle-orm";
+import { desc, eq, or } from "drizzle-orm";
 import type { Executor } from "../client";
 import { withDbErrors } from "../errors";
 import { financialEntries } from "../schema";
@@ -13,7 +13,21 @@ import { iso, newId, nowIso, nul, opt, parseOne, type WithOptional } from "./bas
 
 export const SOURCE_EVENT_UNIQUE_CONSTRAINT = "financial_entries_source_event_id_unique";
 
-export type FinancialEntryInsert = WithOptional<FinancialEntry, "id" | "postedAt">;
+/** `eventKey` defaults to `sourceEventId` (a single-line entry). */
+export type FinancialEntryInsert = WithOptional<FinancialEntry, "id" | "postedAt" | "eventKey">;
+
+export interface AccountBalance {
+  account: LedgerAccount;
+  debitsAtomic: bigint;
+  creditsAtomic: bigint;
+}
+
+export interface DepartmentBalance {
+  department: string;
+  account: LedgerAccount;
+  debitsAtomic: bigint;
+  creditsAtomic: bigint;
+}
 
 const toRecord = (r: typeof financialEntries.$inferSelect): FinancialEntry =>
   parseOne(FinancialEntrySchema, {
@@ -23,6 +37,7 @@ const toRecord = (r: typeof financialEntries.$inferSelect): FinancialEntry =>
     creditAccount: r.creditAccount,
     amountAtomic: r.amount,
     memo: r.memo,
+    eventKey: r.eventKey,
     sourceEventId: r.sourceEventId,
     department: opt(r.department),
     txHash: opt(r.txHash),
@@ -40,6 +55,7 @@ export function financialEntriesRepository(db: Executor) {
     async post(input: FinancialEntryInsert): Promise<FinancialEntry> {
       const row = FinancialEntrySchema.parse({
         ...input,
+        eventKey: input.eventKey ?? input.sourceEventId,
         id: input.id ?? newId(),
         postedAt: input.postedAt ?? nowIso(),
       });
@@ -53,6 +69,7 @@ export function financialEntriesRepository(db: Executor) {
             creditAccount: row.creditAccount,
             amount: row.amountAtomic,
             memo: row.memo,
+            eventKey: row.eventKey,
             sourceEventId: row.sourceEventId,
             department: nul(row.department),
             txHash: nul(row.txHash),
@@ -77,17 +94,43 @@ export function financialEntriesRepository(db: Executor) {
       return r ? toRecord(r) : undefined;
     },
 
+    /** Every line booked for one chain event (one row, or one per department). */
+    async listByEventKey(eventKey: string): Promise<FinancialEntry[]> {
+      const rows = await db
+        .select()
+        .from(financialEntries)
+        .where(eq(financialEntries.eventKey, eventKey))
+        .orderBy(financialEntries.postedAt, financialEntries.sourceEventId);
+      return rows.map(toRecord);
+    },
+
+    /** Every line booked from any log of one transaction. */
+    async listByTxHash(txHash: string): Promise<FinancialEntry[]> {
+      const rows = await db
+        .select()
+        .from(financialEntries)
+        .where(eq(financialEntries.txHash, txHash))
+        .orderBy(financialEntries.postedAt, financialEntries.sourceEventId);
+      return rows.map(toRecord);
+    },
+
     async listForPurchase(purchaseId: string): Promise<FinancialEntry[]> {
       const rows = await db
         .select()
         .from(financialEntries)
         .where(eq(financialEntries.purchaseId, purchaseId))
-        .orderBy(financialEntries.postedAt);
+        .orderBy(financialEntries.postedAt, financialEntries.sourceEventId);
       return rows.map(toRecord);
     },
 
-    async listAll(): Promise<FinancialEntry[]> {
-      const rows = await db.select().from(financialEntries).orderBy(financialEntries.postedAt);
+    /** Newest first when a limit is given (the API view); chronological otherwise. */
+    async listAll(opts: { purchaseId?: string | undefined; limit?: number | undefined } = {}): Promise<FinancialEntry[]> {
+      const base = db.select().from(financialEntries);
+      const filtered = opts.purchaseId ? base.where(eq(financialEntries.purchaseId, opts.purchaseId)) : base;
+      const rows =
+        opts.limit !== undefined
+          ? await filtered.orderBy(desc(financialEntries.postedAt), desc(financialEntries.sourceEventId)).limit(opts.limit)
+          : await filtered.orderBy(financialEntries.postedAt, financialEntries.sourceEventId);
       return rows.map(toRecord);
     },
 
@@ -109,6 +152,46 @@ export function financialEntriesRepository(db: Executor) {
         if (r.creditAccount === acct) creditsAtomic += amount;
       }
       return { debitsAtomic, creditsAtomic };
+    },
+
+    /** Debits and credits of every account in one pass (bigint). Accounts with no rows are present with zeros. */
+    async balances(): Promise<AccountBalance[]> {
+      const totals = new Map<LedgerAccount, AccountBalance>();
+      for (const account of LedgerAccountSchema.options) totals.set(account, { account, debitsAtomic: 0n, creditsAtomic: 0n });
+      for (const r of await db.select().from(financialEntries)) {
+        const amount = atomicToBigInt(r.amount);
+        totals.get(LedgerAccountSchema.parse(r.debitAccount))!.debitsAtomic += amount;
+        totals.get(LedgerAccountSchema.parse(r.creditAccount))!.creditsAtomic += amount;
+      }
+      return [...totals.values()];
+    },
+
+    /** Per-department data-expense totals (the Fusion split). Only the expense account is departmental. */
+    async departmentBalances(): Promise<DepartmentBalance[]> {
+      const totals = new Map<string, DepartmentBalance>();
+      const bump = (department: string, side: "debitsAtomic" | "creditsAtomic", amount: bigint): void => {
+        const t = totals.get(department) ?? { department, account: "data-expense", debitsAtomic: 0n, creditsAtomic: 0n };
+        t[side] += amount;
+        totals.set(department, t);
+      };
+      for (const r of await db.select().from(financialEntries)) {
+        if (!r.department) continue;
+        const amount = atomicToBigInt(r.amount);
+        if (r.debitAccount === "data-expense") bump(r.department, "debitsAtomic", amount);
+        if (r.creditAccount === "data-expense") bump(r.department, "creditsAtomic", amount);
+      }
+      return [...totals.values()].sort((a, b) => a.department.localeCompare(b.department));
+    },
+
+    /** Net escrow-deposit line for one order (debits - credits); what the books say the escrow holds for the treasury. */
+    async depositLineForPurchase(purchaseId: string): Promise<bigint> {
+      let net = 0n;
+      for (const r of await db.select().from(financialEntries).where(eq(financialEntries.purchaseId, purchaseId))) {
+        const amount = atomicToBigInt(r.amount);
+        if (r.debitAccount === "escrow-deposit") net += amount;
+        if (r.creditAccount === "escrow-deposit") net -= amount;
+      }
+      return net;
     },
   };
 }

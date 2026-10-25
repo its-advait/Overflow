@@ -53,7 +53,13 @@ export const escrowAbi = parseAbi([
   "event PaidOut(bytes32 indexed orderId, address indexed seller, uint256 amount, uint256 bond)",
   "event Refunded(bytes32 indexed orderId, uint256 amount, string reason)",
   "event CheatProven(address indexed seller, uint256 index)",
+  // Provisional: the seller's bond paid to the treasury on a missed reveal or a proven cheat
+  // (SPEC "Bonds and cheater flags"). Refunded.amount is the price only; the bond is its own event.
+  "event BondForfeited(bytes32 indexed orderId, address indexed seller, uint256 bond)",
 ]);
+
+/** USDC's ERC-20 Transfer. The indexer fetches only the transfers into or out of the treasury. */
+export const usdcAbi = parseAbi(["event Transfer(address indexed from, address indexed to, uint256 value)"]);
 
 export const TREASURY_EVENTS = [
   "NodeCreated",
@@ -67,14 +73,16 @@ export const TREASURY_EVENTS = [
   "EscrowFactorySet",
 ] as const;
 export const FACTORY_EVENTS = ["OrderCreated"] as const;
-export const ESCROW_EVENTS = ["OrderFunded", "KeyRevealed", "Accepted", "PaidOut", "Refunded", "CheatProven"] as const;
+export const ESCROW_EVENTS = ["OrderFunded", "KeyRevealed", "Accepted", "PaidOut", "Refunded", "CheatProven", "BondForfeited"] as const;
+export const USDC_EVENTS = ["Transfer"] as const;
 
 export type TreasuryEventName = (typeof TREASURY_EVENTS)[number];
 export type FactoryEventName = (typeof FACTORY_EVENTS)[number];
 export type EscrowEventName = (typeof ESCROW_EVENTS)[number];
-export type IndexedEventName = TreasuryEventName | FactoryEventName | EscrowEventName;
+export type UsdcEventName = (typeof USDC_EVENTS)[number];
+export type IndexedEventName = TreasuryEventName | FactoryEventName | EscrowEventName | UsdcEventName;
 
-export type ContractKind = "treasury" | "factory" | "escrow";
+export type ContractKind = "treasury" | "factory" | "escrow" | "usdc";
 
 const events = (abi: readonly unknown[]): AbiEvent[] =>
   abi.filter((item): item is AbiEvent => (item as { type: string }).type === "event");
@@ -82,6 +90,10 @@ const events = (abi: readonly unknown[]): AbiEvent[] =>
 export const treasuryEvents: readonly AbiEvent[] = events(treasuryAbi);
 export const factoryEvents: readonly AbiEvent[] = events(escrowFactoryAbi);
 export const escrowEvents: readonly AbiEvent[] = events(escrowAbi);
+export const usdcEvents: readonly AbiEvent[] = events(usdcAbi);
+export const usdcTransferEvent: AbiEvent = usdcEvents[0]!;
+/** keccak256("Transfer(address,address,uint256)"). */
+export const TRANSFER_TOPIC: `0x${string}` = toEventSelector(usdcTransferEvent);
 
 /** Human-readable signature, e.g. "Paid(uint256,address,uint256,bytes32)". */
 export function eventSignature(ev: AbiEvent): string {
@@ -101,6 +113,7 @@ export const EVENT_BY_TOPIC: ReadonlyMap<`0x${string}`, { kind: ContractKind; ev
   add("treasury", treasuryEvents);
   add("factory", factoryEvents);
   add("escrow", escrowEvents);
+  add("usdc", usdcEvents);
   return m;
 })();
 
