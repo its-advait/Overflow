@@ -7,7 +7,7 @@ import { buildMismatchComplaint, buildPromiseComplaint } from "./complaint";
 import { commitDataset } from "./commit";
 import { chunkKey, keystream } from "./keys";
 import { buildTree, getProof, hashLeaf } from "./merkle";
-import { CHUNK_BYTES, DATA_BYTES, PAYLOAD_BYTES, RECORD_VERSION, SIGNATURE_BYTES, buildRecordChunk, splitChunk } from "./record";
+import { CHUNK_BYTES, DATA_BYTES, PAYLOAD_BYTES, SIGNATURE_BYTES, TIMESTAMP_BYTES, buildRecordChunk, splitChunk } from "./record";
 import { pickSampleIndices, revealChunkKeys } from "./sample";
 
 // ---------------------------------------------------------------------------
@@ -42,9 +42,9 @@ export const GoldenVectorsSchema = z.object({
   version: z.literal(VECTORS_VERSION),
   description: z.string(),
   record: z.object({
-    version: z.number().int(),
     chunkBytes: z.literal(CHUNK_BYTES),
     payloadBytes: z.literal(PAYLOAD_BYTES),
+    timestampBytes: z.literal(TIMESTAMP_BYTES),
     dataBytes: z.literal(DATA_BYTES),
     signatureBytes: z.literal(SIGNATURE_BYTES),
     signedDigest: z.string(),
@@ -195,9 +195,9 @@ export async function generateGoldenVectors(): Promise<GoldenVectors> {
     description:
       "SIMULATED golden vectors for Overflow Recourse delivery cryptography. Keys are derived from labels and never hold funds. Solidity (OverflowEscrow) and @overflow/recourse-crypto must both reproduce every value.",
     record: {
-      version: RECORD_VERSION,
       chunkBytes: CHUNK_BYTES,
       payloadBytes: PAYLOAD_BYTES,
+      timestampBytes: TIMESTAMP_BYTES,
       dataBytes: DATA_BYTES,
       signatureBytes: SIGNATURE_BYTES,
       signedDigest: "keccak256(payload), raw ECDSA, no EIP-191 prefix, signature = r || s || v (v in {27, 28})",

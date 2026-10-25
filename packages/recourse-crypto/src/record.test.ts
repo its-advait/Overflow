@@ -5,7 +5,7 @@ import {
   CHUNK_BYTES,
   DATA_BYTES,
   PAYLOAD_BYTES,
-  RECORD_VERSION,
+  TIMESTAMP_BYTES,
   SIGNATURE_BYTES,
   buildRecordChunk,
   decodePayload,
@@ -26,40 +26,37 @@ const otherKey = simulatedBytes32("test-other");
 describe("record format", () => {
   it("has the documented sizes", () => {
     expect(PAYLOAD_BYTES).toBe(95);
-    expect(DATA_BYTES).toBe(86);
+    expect(TIMESTAMP_BYTES).toBe(8);
+    expect(DATA_BYTES).toBe(87);
     expect(SIGNATURE_BYTES).toBe(65);
     expect(CHUNK_BYTES).toBe(160);
   });
 
-  it("encodes version, big-endian uint64 timestamp and zero-padded data", () => {
+  it("encodes the big-endian uint64 timestamp at byte 0 (as RecourseCrypto.sol reads it) and zero-padded data", () => {
     const payload = encodePayload({ timestamp: 0x0102030405060708n, row: "a,b" });
     expect(payload.length).toBe(95);
-    expect(payload[0]).toBe(RECORD_VERSION);
-    expect(Array.from(payload.subarray(1, 9))).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
-    expect(Array.from(payload.subarray(9, 12))).toEqual([0x61, 0x2c, 0x62]);
-    expect(payload.subarray(12).every((b) => b === 0)).toBe(true);
+    expect(Array.from(payload.subarray(0, 8))).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(Array.from(payload.subarray(8, 11))).toEqual([0x61, 0x2c, 0x62]);
+    expect(payload.subarray(11).every((b) => b === 0)).toBe(true);
   });
 
   it("round-trips through decodePayload, including multi-byte UTF-8", () => {
     const row = "2025-01,Zürich,€12";
     const decoded = decodePayload(encodePayload({ timestamp: 1735689600n, row }));
-    expect(decoded).toMatchObject({ version: 1, timestamp: 1735689600n, row });
+    expect(decoded).toMatchObject({ timestamp: 1735689600n, row });
   });
 
-  it("accepts an 86-byte row and rejects 87 bytes", () => {
-    expect(() => encodePayload({ timestamp: 1n, row: "x".repeat(86) })).not.toThrow();
-    expect(() => encodePayload({ timestamp: 1n, row: "x".repeat(87) })).toThrow(/at most 86/);
-    expect(() => encodePayload({ timestamp: 1n, row: "é".repeat(44) })).toThrow(/at most 86/);
+  it("accepts an 87-byte row and rejects 88 bytes", () => {
+    expect(() => encodePayload({ timestamp: 1n, row: "x".repeat(87) })).not.toThrow();
+    expect(() => encodePayload({ timestamp: 1n, row: "x".repeat(88) })).toThrow(/at most 87/);
+    expect(() => encodePayload({ timestamp: 1n, row: "é".repeat(44) })).toThrow(/at most 87/);
   });
 
-  it("rejects NUL in rows, negative or oversized timestamps, wrong version and wrong length", () => {
+  it("rejects NUL in rows, negative or oversized timestamps and wrong length", () => {
     expect(() => encodePayload({ timestamp: 1n, row: "a\u0000b" })).toThrow();
     expect(() => encodePayload({ timestamp: -1n, row: "a" })).toThrow();
     expect(() => encodePayload({ timestamp: 1n << 64n, row: "a" })).toThrow();
     const payload = encodePayload({ timestamp: 1n, row: "a" });
-    const bad = new Uint8Array(payload);
-    bad[0] = 0x02;
-    expect(() => decodePayload(bad)).toThrow(/version/);
     expect(() => decodePayload(payload.subarray(1))).toThrow(/95 bytes/);
   });
 

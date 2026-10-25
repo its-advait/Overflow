@@ -904,3 +904,20 @@ Follow-ups: a facilitator route for `releaseClosed` (the Coinbase adapter's reco
 - **Record layout mismatch (blocker for promise complaints):** `data/**/records.bin` (from `main`) encode the 95-byte payload as `version(1) || timestamp(8) || data(86)`; `RecourseCrypto.sol` reads the uint64 timestamp from bytes `[0,8)`. Decided with the user: the TypeScript side changes and the datasets regenerate (next commit). Until then `complainPromise` over these records cannot succeed.
 - `README.md` of `@overflow/recourse-crypto` is `main`'s; the record-format section is rewritten with the layout fix.
 - Service boot still needs `RELAYER_ACCOUNT` + `RELAYER_PASSWORD_FILE` (or a 64-hex dev key); `.env` currently holds only the relayer address.
+
+## 2026-10-24: records start with the uint64 timestamp the escrow reads
+
+### Built
+- `@overflow/recourse-crypto` record layout now matches `RecourseCrypto.sol`: `payload = timestamp (uint64 BE, 8) || data (87)`; the version byte is gone (`RecordFormatSchema`/`RECORD_FORMAT` = `{chunkBytes 160, payloadBytes 95, timestampBytes 8, dataBytes 87, signatureBytes 65}`). `decodePayload` no longer returns `version`; rows may be 87 bytes. README record section rewritten.
+- Regenerated deterministically: `test/vectors.json` + `contracts/test/fixtures/recourse-vectors.json` (`pnpm --filter @overflow/recourse-crypto vectors`) and every file under `data/` (`pnpm datasets:generate`); all `rootPlain`/`manifestHash` values changed, `minTimestamp` values did not (2021-02-01 for the 2021-2022 set).
+- New `packages/datasets/src/records-layout.test.ts`: for every committed `records.bin`, the contract-style read of payload bytes `[0,8)` equals the decoded timestamp and the row's publication date, the signer recovers to the manifest `sourceKey`, and the manifest `minTimestamp` is the minimum record timestamp; the 2021-2022 set breaks a 2024-01-01 promise on every record.
+- New `contracts/test/escrow/RecourseVectors.t.sol`: parses the shared fixture with forge-std `vm.parseJson*`; for all 7 chunks `RecourseCrypto.recordTimestamp`, `ECDSA.recover(payloadHash)` and `MerkleLib.verify` under `rootPlain` agree with the TypeScript values; the wrong-source vector recovers to the impostor.
+
+### Verified (real output, 2026-10-24)
+| Check | Result |
+|---|---|
+| first 2021-2022 record, `uint64(payload[0:8])` | 1612137600 (2021-02-01T00:00:00Z) |
+| second `pnpm datasets:generate` + `vectors` | byte-identical (shasum of 13 data files + fixture) |
+| `vitest run packages/recourse-crypto packages/datasets` | 9 files, 58 tests passed |
+| `forge test` | 19 suites, 194 passed, 0 failed, 1 skipped (fork test) |
+| `pnpm -r typecheck` / `pnpm lint` | exit 0 / exit 0 |

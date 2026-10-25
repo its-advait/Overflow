@@ -3,7 +3,7 @@ import { AddressSchema, Bytes32Schema, GranularitySchema, UintStringSchema } fro
 import { z } from "zod";
 import { MAX_UINT64 } from "./bytes";
 import { buildTree } from "./merkle";
-import { CHUNK_BYTES, DATA_BYTES, PAYLOAD_BYTES, RECORD_VERSION, SIGNATURE_BYTES } from "./record";
+import { CHUNK_BYTES, DATA_BYTES, PAYLOAD_BYTES, SIGNATURE_BYTES, TIMESTAMP_BYTES } from "./record";
 
 // ---------------------------------------------------------------------------
 // Dataset manifest (docs/SPEC.md "Delivery cryptography": the seller publishes
@@ -54,18 +54,19 @@ export function computeManifestHash(input: ManifestHashInput): Hex {
   );
 }
 
+/** Byte layout of one record, as RecourseCrypto.sol reads it: payload = timestamp(8) || data(87), then the signature. */
 export const RecordFormatSchema = z.object({
-  version: z.literal(RECORD_VERSION),
   chunkBytes: z.literal(CHUNK_BYTES),
   payloadBytes: z.literal(PAYLOAD_BYTES),
+  timestampBytes: z.literal(TIMESTAMP_BYTES),
   dataBytes: z.literal(DATA_BYTES),
   signatureBytes: z.literal(SIGNATURE_BYTES),
 });
 
 export const RECORD_FORMAT: z.infer<typeof RecordFormatSchema> = {
-  version: RECORD_VERSION,
   chunkBytes: CHUNK_BYTES,
   payloadBytes: PAYLOAD_BYTES,
+  timestampBytes: TIMESTAMP_BYTES,
   dataBytes: DATA_BYTES,
   signatureBytes: SIGNATURE_BYTES,
 };
