@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
 import type { ExtractTablesWithRelations } from "drizzle-orm";
@@ -35,6 +37,8 @@ export interface DatabaseOptions {
 export interface DatabaseHandle {
   db: Db;
   dialect: Dialect;
+  /** Absolute path the migrations are read from. */
+  migrationsFolder: string;
   /** Applies every pending migration from the package's drizzle/ folder. */
   migrate(): Promise<void>;
   close(): Promise<void>;
@@ -65,8 +69,13 @@ function redact(url: string): string {
 }
 
 export async function createDatabase(opts: DatabaseOptions = {}): Promise<DatabaseHandle> {
-  const migrationsFolder =
-    opts.migrationsFolder ?? process.env["OVERFLOW_MIGRATIONS_DIR"] ?? DEFAULT_MIGRATIONS_FOLDER;
+  const configured = opts.migrationsFolder ?? process.env["OVERFLOW_MIGRATIONS_DIR"];
+  const migrationsFolder = resolve(configured && configured.length > 0 ? configured : DEFAULT_MIGRATIONS_FOLDER);
+  if (!existsSync(join(migrationsFolder, "meta", "_journal.json"))) {
+    throw new Error(
+      `[database] no migrations found at ${migrationsFolder} (set OVERFLOW_MIGRATIONS_DIR to the drizzle/ folder)`,
+    );
+  }
   const { dialect, target } = selectDialect(opts);
   opts.log?.(`[database] dialect=${dialect} target=${target}`);
 
@@ -77,6 +86,7 @@ export async function createDatabase(opts: DatabaseOptions = {}): Promise<Databa
     return {
       db: db as unknown as Db,
       dialect,
+      migrationsFolder,
       migrate: () => migratePostgres(db, { migrationsFolder }),
       close: () => client.end(),
     };
@@ -87,6 +97,7 @@ export async function createDatabase(opts: DatabaseOptions = {}): Promise<Databa
   return {
     db: db as unknown as Db,
     dialect,
+    migrationsFolder,
     migrate: () => migratePglite(db, { migrationsFolder }),
     close: () => client.close(),
   };

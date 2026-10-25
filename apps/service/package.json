@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsup",
-    "start": "node dist/index.js",
+    "start": "OVERFLOW_MIGRATIONS_DIR=dist/drizzle node dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
@@ -17,12 +17,15 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.2.0",
+    "@electric-sql/pglite": "^0.5.11",
     "@overflow/database": "workspace:*",
     "@overflow/fusion": "workspace:*",
     "@overflow/oracle": "workspace:*",
     "@overflow/payment-client": "workspace:*",
     "@overflow/recourse-crypto": "workspace:*",
     "@overflow/schemas": "workspace:*",
+    "drizzle-orm": "^0.45.4",
+    "postgres": "^3.4.9",
     "viem": "^2.57.10",
     "zod": "^4.6.7"
   }

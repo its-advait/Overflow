@@ -215,5 +215,27 @@
 
 ### Open issues
 - No real Postgres server was exercised here; the `postgres-js` branch of `createDatabase` is covered only by the dialect-selection unit test. Run `DATABASE_URL=... pnpm --filter @overflow/database db:migrate` against a server before the demo.
-- `DEFAULT_MIGRATIONS_FOLDER` resolves relative to the package source. A bundled service (`tsup`) must set `OVERFLOW_MIGRATIONS_DIR` or run migrations with the package script.
+- ~~`DEFAULT_MIGRATIONS_FOLDER` resolves relative to the package source; a bundled service must set `OVERFLOW_MIGRATIONS_DIR`.~~ Fixed below (same day).
 - Enum changes (`purchase_status`, `escrow_status`) need a new migration; text statuses do not.
+
+## 2026-10-24: bundled service finds its migrations
+
+### Built
+- `apps/service/tsup.config.ts` copies `packages/database/drizzle` to `dist/drizzle` after every build (`onSuccess`). `pnpm --filter @overflow/service start` is now `OVERFLOW_MIGRATIONS_DIR=dist/drizzle node dist/index.js`, so the bundle needs no manual setup.
+- `apps/service/src/index.ts` opens the database with `createDatabase()`, applies migrations before listening, reports `{ dialect, migrationsFolder, migrated: true }` in its status JSON (real state, not a flag), and closes the database on SIGINT/SIGTERM.
+- `createDatabase` resolves the folder to an absolute path, exposes it as `handle.migrationsFolder`, and fails fast with `no migrations found at <path> (set OVERFLOW_MIGRATIONS_DIR ...)` when `meta/_journal.json` is missing, instead of letting the migrator throw a less specific error.
+- `apps/service/package.json` now lists `@electric-sql/pglite`, `drizzle-orm` and `postgres` directly: tsup bundles `@overflow/database` but leaves the drivers external, and pnpm's strict `node_modules` only resolves them for packages that declare them.
+- `.env.example`: `OVERFLOW_MIGRATIONS_DIR` documented (empty = default `packages/database/drizzle`; built service uses `dist/drizzle`).
+
+### Verified (real output, 2026-10-24)
+| Check | Result |
+|---|---|
+| `pnpm --filter @overflow/service build` | tsup success, `copied packages/database/drizzle -> dist/drizzle`; `dist/drizzle/{0000_init.sql,meta/_journal.json,meta/0000_snapshot.json}` present |
+| `PGLITE_DATA_DIR=<fresh dir> pnpm --filter @overflow/service start` | logs `dialect=pglite`, `migrations applied (dialect=pglite, from .../apps/service/dist/drizzle)`, listens; `GET /` returns `database: { dialect: "pglite", migrationsFolder: ".../apps/service/dist/drizzle", migrated: true }`; the directory is populated with a PGlite cluster |
+| `node dist/index.js` with `OVERFLOW_MIGRATIONS_DIR` unset | exits 1 with `no migrations found at .../apps/service/drizzle (set OVERFLOW_MIGRATIONS_DIR to the drizzle/ folder)` |
+| `pnpm typecheck` | exit 0 |
+| `pnpm test` | 228 passed |
+
+### Open issues
+- `pnpm start` sets the variable with POSIX `VAR=value cmd` syntax; on Windows use `cross-env` or set it in the shell.
+- Still no real Postgres server exercised; see the previous section.
