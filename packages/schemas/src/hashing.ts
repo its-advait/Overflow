@@ -10,10 +10,16 @@ import { AddressSchema, AtomicAmountSchema, Bytes32Schema, UintStringSchema } fr
 // ---------------------------------------------------------------------------
 
 const MAX_UINT64 = (1n << 64n) - 1n;
+const MAX_UINT32 = (1n << 32n) - 1n;
 
 const Uint64Schema = UintStringSchema.refine(
   (v) => !/^\d+$/.test(v) || BigInt(v) <= MAX_UINT64,
   "exceeds uint64",
+);
+
+const Uint32Schema = UintStringSchema.refine(
+  (v) => !/^\d+$/.test(v) || BigInt(v) <= MAX_UINT32,
+  "exceeds uint32",
 );
 
 /**
@@ -35,16 +41,19 @@ export const TermsHashInputSchema = z.object({
   sourceKey: AddressSchema,
   /** Unix seconds; minimum record timestamp the source promised. */
   minTimestamp: Uint64Schema,
+  /** Number of 160-byte records in the delivery (OrderTerms.chunkCount, uint32). */
+  chunkCount: Uint32Schema,
 });
 export type TermsHashInput = z.infer<typeof TermsHashInputSchema>;
 
 /**
  * Solidity equivalent:
  *   keccak256(abi.encode(token, amount, bond, manifestHash, rootPlain, rootCipher,
- *             keyCommitment, revealDeadline, challengeWindow, sourceKey, minTimestamp))
+ *             keyCommitment, revealDeadline, challengeWindow, sourceKey, minTimestamp, chunkCount))
+ * (OverflowEscrowFactory.termsHashOf)
  */
 export const TERMS_HASH_ABI = parseAbiParameters(
-  "address token, uint256 amount, uint256 bond, bytes32 manifestHash, bytes32 rootPlain, bytes32 rootCipher, bytes32 keyCommitment, uint64 revealDeadline, uint64 challengeWindow, address sourceKey, uint64 minTimestamp",
+  "address token, uint256 amount, uint256 bond, bytes32 manifestHash, bytes32 rootPlain, bytes32 rootCipher, bytes32 keyCommitment, uint64 revealDeadline, uint64 challengeWindow, address sourceKey, uint64 minTimestamp, uint32 chunkCount",
 );
 
 export function computeTermsHash(input: TermsHashInput): Hex {
@@ -62,6 +71,7 @@ export function computeTermsHash(input: TermsHashInput): Hex {
       BigInt(t.challengeWindow),
       t.sourceKey,
       BigInt(t.minTimestamp),
+      Number(t.chunkCount), // uint32 is a number in viem's ABI types
     ]),
   );
 }

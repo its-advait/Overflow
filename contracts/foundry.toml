@@ -20,3 +20,8 @@ base_sepolia = "${BASE_SEPOLIA_RPC_URL}"
 
 [etherscan]
 base_sepolia = { key = "${BASESCAN_API_KEY}", chain = 84532 }
+
+[invariant]
+runs = 64
+depth = 32
+fail_on_revert = false

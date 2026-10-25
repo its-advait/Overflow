@@ -24,13 +24,25 @@ invariant suite grows against this file.
 | T13 | **P1.5+** The balance is at least `floor + reservedTotal` after every call, and `isValidSignature` is also valid for a live, unexpired reservation of that exact digest. | Not implemented. | None yet |
 | T14 | **P1.5+** A payee is either on the global allowlist or a factory-made escrow whose seller is not flagged. | Not implemented (`PayeeNotAllowed(0)` only). | None yet |
 
-## Escrow (spec, not yet implemented)
+## Escrow (`contracts/src/OverflowEscrow.sol`, `OverflowEscrowFactory.sol`, `MerkleLib.sol`)
 
-- Every escrow reaches at most one of `Settled` or `Refunded`, and holds zero USDC afterwards.
-- A flagged seller never receives a new payment.
+Tier 1 (funding, reveal, accept, payout, timeout refund). Tests in `contracts/test/escrow/` run on real USDC; the
+treasury is the buyer. The invariant suite is `contracts/test/invariant/EscrowInvariant.t.sol` (64 runs x depth 32).
+
+| # | Invariant | Enforced by | Covered by |
+| --- | --- | --- | --- |
+| E1 | Exactly one terminal state: an escrow reaches at most one of `Settled` or `Refunded`, and nothing leaves a terminal state. | Every transition checks `status` first (`BadStatus`); `_payout` and `_refund` set the terminal status before transferring. | `test_finalize_twiceReverts`, `test_timeoutRefund_twiceReverts`, `test_terminalStatesAreExclusive`, `invariant_atMostOneTerminalState` |
+| E2 | Zero USDC after the terminal state. | `_payout` sends `amount + bond` to the seller and any surplus to the buyer; `_refund` sends the whole balance to the buyer. | `test_payout_viaAccept`, `test_payout_surplusReturnsToBuyer`, `test_timeoutRefund_restoresTreasuryUsdc`, `invariant_zeroBalanceAfterTerminal` |
+| E3 | Funds move only to the seller or the buyer (treasury). | Only `_payout`/`_refund` transfer, to `_t.seller` / `_t.buyer`. | `invariant_fundsOnlyToSellerOrBuyer` |
+| E4 | Terms are immutable after creation and the address is the order: `create` reverts unless `termsHash` matches the 12 fixed fields, the CREATE2 salt is `keccak256(orderId, termsHash)`, and a clone initializes once (factory only). | `termsHashOf` check, `Clones.cloneDeterministic`, `_initialized` + `FACTORY` guards; the implementation is marked initialized in its constructor. | `test_create_predictedEqualsCreated`, `test_create_badTermsHashReverts`, `test_create_duplicateReverts`, `test_initialize_againReverts`, `test_implementation_cannotBeInitialized` |
+| E5 | No payout before a valid reveal; the reveal is seller-only, before `revealDeadline`, and must open `keyCommitment`. | `accept`/`finalizePayout` require `Revealed`; `revealKey` checks `NotSeller`, `RevealWindowClosed`, `BadKey`. | `test_accept_beforeRevealReverts`, `test_reveal_afterDeadlineReverts`, `test_reveal_wrongKeyReverts`, `test_reveal_nonSellerReverts` |
+| E6 | No refund after settlement and no settlement after a refund; the timeout refund needs `revealDeadline` to have passed with no reveal. | `claimTimeoutRefund` requires `Created`/`Funded` and `RevealWindowOpen`; payout paths require `Revealed`. | `test_timeoutRefund_beforeDeadlineReverts`, `test_timeoutRefund_afterRevealReverts`, `test_terminalStatesAreExclusive` |
+| E7 | `accept` pays only on a signature from a node of `terms.buyer`, bound to this escrow: EIP-712 `{OverflowEscrow, 1, chainId, escrow}` over `Accept(bytes32 orderId)`, signer must satisfy `treasury.nodeOfKey(signer) != 0`. | `acceptDigest`, `ECDSA.recoverCalldata`, `NotBuyerNode`. | `test_payout_viaAccept`, `test_payout_viaAccept_childNode`, `test_accept_nonNodeReverts`, `test_accept_signatureForAnotherEscrowReverts` |
+| E8 | A complaint without a structurally valid proof reverts: `i < chunkCount`, chunk length exactly 160, proof length exactly `expectedProofLength(i, chunkCount)`, leaves hashed with prefix `0x00` and nodes with `0x01` (an internal node can't pose as a leaf). Tier 1 then reverts `NotImplemented`. | `complainMismatch`/`complainPromise` + `MerkleLib`. | `test_complaint_*` incl. `test_complaint_internalNodeAsLeafReverts`, `MerkleLib.t.sol` golden vectors shared with `packages/recourse-crypto` |
+| E9 | **P1.5+** A flagged seller never receives a new payment (`provenCheats` on the factory, `PayeeFlagged` in the treasury). | `recordCheat` is escrow-only; the treasury check is not implemented. | `test_recordCheat_onlyEscrows` |
 
 ## How to extend
 
 Add a row before changing the contract. Every row needs a code path and at least one test; "structural" is
 acceptable only where no transaction can violate the property. The Foundry invariant suite
-(`contracts/test/invariant/`, pending) should assert T1, T2, T4 and T5 directly.
+(`contracts/test/invariant/`) covers E1 to E3; T1, T2, T4 and T5 still need handlers.

@@ -1,7 +1,7 @@
 export const PACKAGE_NAME = "@overflow/recourse-crypto" as const;
 
 /**
- * Scaffold placeholder. Hashing/signing helpers land in a later prompt.
- * Rule: hash fixed ABI-encoded fields, never JSON.
+ * Hashing helpers for recourse data. Rule: hash fixed ABI-encoded fields or raw bytes, never JSON.
+ * merkle.ts mirrors contracts/src/MerkleLib.sol. Chunk keystream helpers land with tier 2.
  */
-export const RECOURSE_CRYPTO_STATUS = "scaffold: not implemented" as const;
+export * from "./merkle";

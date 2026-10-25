@@ -167,3 +167,39 @@
 - Consequently `packages/schemas/deployments/base-sepolia.json`, `src/deployments.ts` and Basescan verification do not exist yet; `loadDeployments()` throws the path until the deploy runs.
 - `dev:fund` cannot move USDC yet: the deployer holds 0 USDC (get test USDC at faucet.circle.com). The relayer holds 1 USDC but 0 ETH.
 - `escrowFactory`/`escrowImplementation` stay `null` until P1.6.
+
+## 2026-10-24: escrow factory and tier-1 escrow
+
+### Built
+- `contracts/src/IOverflowEscrow.sol`: spec `OrderTerms` (15 fields) plus `uint32 chunkCount`, `Status {Created, Funded, Revealed, Settled, Refunded}`, 16 errors, 5 events.
+- `contracts/src/OverflowEscrowFactory.sol`: `create(OrderTerms)` deploys an OpenZeppelin `Clones` minimal proxy with CREATE2, salt `keccak256(abi.encode(orderId, termsHash))`, after checking the terms and `termsHash == termsHashOf(t)`; `predict`, `isEscrow`, `termsHashOf`, `provenCheats`, `recordCheat` (escrows only), `OrderCreated`/`CheatRecorded`. The implementation is deployed by the factory constructor with `FACTORY` as an immutable.
+- `contracts/src/OverflowEscrow.sol`: `initialize` (factory only, once; the implementation is pre-marked initialized), `markFunded` (balance >= amount + bond), `revealKey` (seller, before `revealDeadline`, `keccak256(key) == keyCommitment`, opens the challenge window), `accept` (EIP-712 `Accept(bytes32 orderId)` under the clone's own domain `{OverflowEscrow, 1, chainId, escrow}`, signer must be a node of `terms.buyer` via `nodeOfKey`), `finalizePayout` (after the window), `claimTimeoutRefund` (after `revealDeadline`, from `Created` or `Funded`, whole balance to the buyer). Payout sends `amount + bond` to the seller and any surplus to the buyer so the escrow ends at zero. `SafeERC20`, `ReentrancyGuardTransient`, effects before transfers.
+- `complainMismatch` / `complainPromise` are stubs that enforce the full structure (`i < chunkCount`, chunk length 160, proof length exactly `expectedProofLength(i, chunkCount)`, domain-separated Merkle verification) and then revert `NotImplemented` (P1.6 / P1.7 fill them in).
+- `contracts/src/MerkleLib.sol`: `leaf = keccak256(0x00 || data)`, `node = keccak256(0x01 || l || r)`, left-to-right levels with an unpaired last node promoted unhashed, so `expectedProofLength(i, n)` depends on `i` (n = 5 gives 3,3,3,3,1). `verify` requires every proof element to be consumed.
+- `packages/recourse-crypto/src/merkle.ts` mirrors it (`hashLeaf`, `hashNode`, `expectedProofLength`, `merkleRoot`, `merkleProof`, `verifyProof`, `keyCommitment`, `CHUNK_SIZE`); golden roots for n = 1..5, the n = 5 proofs and the proof-length table are pinned identically in `merkle.test.ts` and `contracts/test/escrow/MerkleLib.t.sol`.
+- `packages/schemas/src/hashing.ts`: `TERMS_HASH_ABI` and `TermsHashInputSchema` gain `uint32 chunkCount` (12 fields) to match `OverflowEscrowFactory.termsHashOf`; `hashing.test.ts` updated.
+- `foundry.toml`: `[invariant] runs = 64, depth = 32`. ABIs exported to `packages/schemas/src/abi/OverflowEscrow.ts` and `OverflowEscrowFactory.ts`.
+- Tests: `contracts/test/escrow/EscrowBase.t.sol` (harness over the treasury harness: Merkle builder, order terms, funding via mint or via `treasury.settle` with the escrow as payee), `OverflowEscrow.t.sol` (41 tests), `MerkleLib.t.sol` (6), `contracts/test/invariant/EscrowInvariant.t.sol` (handler drives markFunded / reveal / accept / finalize / timeoutRefund / warp / topUp; invariants: at most one terminal state, zero balance after it, funds only to seller or buyer).
+
+### Design choices
+- The Accept digest is bound to the clone address through the per-escrow EIP-712 domain, so a signature for one order cannot pay another (`test_accept_signatureForAnotherEscrowReverts`). The offchain signer (payment-client / service) must use `{name "OverflowEscrow", version "1", chainId 84532, verifyingContract = escrow}`.
+- `chunkCount` is bound by `termsHash` (and therefore by `orderId` and the CREATE2 salt), per the user's decision; the teammate's `TERMS_HASH_ABI` was extended as a superset.
+- A refund returns price and bond to the treasury's USDC but leaves the paying node's `spent` charged (asserted in `test_timeoutRefund_restoresTreasuryUsdc`), per the spec's refund semantics.
+- The internal-node-as-leaf attack fails on the exact proof-length check first and on the domain-separated hash if padded; a 32-byte node can never pass as a 160-byte chunk either.
+
+### Verified (real output, 2026-10-24)
+| Check | Result |
+|---|---|
+| `forge build` | success |
+| `forge test` | 112 passed, 0 failed across 7 suites (2 scaffold, 8 USDC harness, 51 treasury, 3 adversarial, 41 escrow, 6 MerkleLib, 1 invariant contract with 3 invariants: 64 runs, 2,048 calls) |
+| `forge snapshot` | `.gas-snapshot` refreshed (114 lines) |
+| `pnpm test` | 6 files / 112 tests passed (schemas hashing with `chunkCount`, recourse-crypto Merkle golden vectors identical to the Solidity constants) |
+| `pnpm typecheck` | exit 0, 9 workspaces |
+| `pnpm lint` | exit 0 |
+| `git grep -nE "0x[a-fA-F0-9]{64}"` | only typehashes, domain separators and golden vectors; no private keys |
+
+### Open issues
+- Treasury side still pending (P1.5): `setEscrowFactory`, accepting factory escrows as payees, `PayeeFlagged`, `reserve`/`release`. Tests allowlist the escrow with `setAllow` meanwhile.
+- Tier 2/3 complaint logic (decrypt and compare, source signature and timestamp, bond to the buyer, `recordCheat` call) is not implemented; the stubs revert `NotImplemented` after the structural checks.
+- The chunk keystream (`k_i`, keystream blocks, XOR) is not in `recourse-crypto` yet; only the Merkle and key-commitment helpers are.
+- Base Sepolia deploy of the treasury (previous section) is still pending the keystore password; `Deploy.s.sol` does not deploy the escrow contracts yet (its hook is marked).
