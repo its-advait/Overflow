@@ -42,7 +42,7 @@ describe("posting rules (SIMULATED fixture replay)", () => {
     expect(e).toMatchObject({ debitAccount: "usdc-treasury", creditAccount: "owner-contribution", amountAtomic: FIXTURE.funding, purchaseId: undefined });
   });
 
-  it("escrow funded (both payment paths): Dr escrow-deposit / Cr usdc-treasury; the Transfer and Paid post nothing", async () => {
+  it("escrow funded (both payment paths): Dr escrow-deposit / Cr usdc-treasury for the price (not the balance, which holds the bond); the Transfer and Paid post nothing", async () => {
     expect((await byEvent(4, 2))[0]).toMatchObject({ debitAccount: "escrow-deposit", creditAccount: "usdc-treasury", amountAtomic: FIXTURE.amount, purchaseId: "p1" });
     expect((await byEvent(8, 1))[0]).toMatchObject({ debitAccount: "escrow-deposit", creditAccount: "usdc-treasury", amountAtomic: FIXTURE.amount, purchaseId: "p2" });
     expect(await byEvent(4, 0)).toEqual([]); // Transfer treasury -> escrow1
@@ -60,11 +60,13 @@ describe("posting rules (SIMULATED fixture replay)", () => {
     expect(new Set(lines.map((l) => l.sourceEventId)).size).toBe(2);
   });
 
-  it("timeout refund reverses the deposit and leaves no expense; the bond is other income", async () => {
-    expect((await byEvent(9, 1))[0]).toMatchObject({ debitAccount: "usdc-treasury", creditAccount: "escrow-deposit", amountAtomic: FIXTURE.amount, purchaseId: "p2" });
-    expect((await byEvent(9, 3))[0]).toMatchObject({ debitAccount: "usdc-treasury", creditAccount: "other-income-seller-forfeiture", amountAtomic: FIXTURE.bond, purchaseId: "p2" });
-    expect(await byEvent(9, 0)).toEqual([]); // the two USDC transfers back post nothing
-    expect(await byEvent(9, 2)).toEqual([]);
+  it("timeout refund reverses the deposit and leaves no expense; the forfeited bond is other income (two rows, one event)", async () => {
+    const rows = await byEvent(9, 1);
+    expect(rows.length).toBe(2);
+    expect(rows.find((e) => e.creditAccount === "escrow-deposit")).toMatchObject({ debitAccount: "usdc-treasury", amountAtomic: FIXTURE.amount, purchaseId: "p2" });
+    expect(rows.find((e) => e.creditAccount === "other-income-seller-forfeiture")).toMatchObject({ debitAccount: "usdc-treasury", amountAtomic: FIXTURE.bond, purchaseId: "p2" });
+    expect(rows.map((e) => e.sourceEventId).sort()).toEqual([`${rows[0]!.eventKey}`, `${rows[0]!.eventKey}#bond`]);
+    expect(await byEvent(9, 0)).toEqual([]); // the USDC transfer back (price + bond) posts nothing
     const p2 = await r.handle.repos.financialEntries.listForPurchase("p2");
     expect(p2.some((e) => e.debitAccount === "data-expense" || e.creditAccount === "data-expense")).toBe(false);
     expect(await r.handle.repos.financialEntries.depositLineForPurchase("p2")).toBe(0n);
@@ -79,7 +81,7 @@ describe("posting rules (SIMULATED fixture replay)", () => {
 
   it("reservations and a PaidOut with no deposit on the books post nothing", async () => {
     expect(await byEvent(7, 1)).toEqual([]); // Reserved
-    expect(await byEvent(12, 2)).toEqual([]); // ReservationReleased
+    expect(await byEvent(12, 3)).toEqual([]); // ReservationReleased
     expect(await byEvent(13, 1)).toEqual([]); // PaidOut for order 3, never funded
     expect(r.warnings.some((w) => w.includes("PaidOut") && w.includes("no escrow deposit"))).toBe(true);
   });

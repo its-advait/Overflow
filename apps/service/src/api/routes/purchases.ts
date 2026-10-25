@@ -1,13 +1,13 @@
-import { checkQuote, type CheckedQuote } from "@overflow/payment-client";
 import {
   ActivityEventSchema,
-  AddressSchema,
   Bytes32Schema,
   ChainTransactionSchema,
   EscrowOrderSchema,
   IdSchema,
   PurchaseRecordSchema,
+  SampleVerdictSchema,
   type PurchaseRecord,
+  type SampleRecord,
 } from "@overflow/schemas";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -42,13 +42,26 @@ export const SubmissionSchema = z.discriminatedUnion("outcome", [
   z.object({ outcome: z.literal("submitted"), txHash: Bytes32Schema }),
   z.object({ outcome: z.literal("rejected"), decodedRevert: z.string() }),
   z.object({ outcome: z.literal("unknown"), error: z.string() }),
+  /** Step 4 ended with a low-confidence "buy": nothing signed, the purchase stays PROPOSED until the controller decides the exception. */
+  z.object({ outcome: z.literal("held"), exceptionId: IdSchema }),
 ]);
+
+/** The Oracle's sample judgment (step 4) this authorization ran or reused. It authorizes nothing. */
+export const SampleSummarySchema = z.object({
+  id: IdSchema,
+  verdict: SampleVerdictSchema,
+  confidence: z.number().min(0).max(1).optional(),
+  reason: z.string(),
+});
 
 export const AuthorizeResponse = z.object({
   purchase: PurchaseRecordSchema,
-  authorizationDigest: Bytes32Schema,
+  /** Absent when the outcome is `held`: nothing was signed. */
+  authorizationDigest: Bytes32Schema.optional(),
   /** What the adapter reported. Funding itself is only ever set from a confirmed chain event. */
   submission: SubmissionSchema,
+  /** null when the controller approved an earlier sample whose row is gone (never in practice) or the flow did not sample. */
+  sample: SampleSummarySchema.nullable(),
   replayed: z.boolean(),
 });
 
@@ -66,10 +79,9 @@ export function purchaseRoutes(deps: ApiDeps) {
   });
 
   /**
-   * Agent-side authorization. Loads the order, fetches the seller's quote
-   * through the adapter for the order's payment path, refuses any quote that
-   * disagrees with the order (never signed), then RESERVED -> PAYMENT_PENDING
-   * before the adapter submits. The chain, not this route, decides funding.
+   * Agent-side authorization: steps 4 to 7 (sample judgment, quote versus order, sign, submit) through the
+   * purchase flow. 202 with `submission.outcome` submitted / rejected / unknown / held. The chain, not this
+   * route, decides funding.
    */
   app.post("/:id/authorize", async (c) => {
     const { id } = parseParams(c, IdParams);
@@ -112,86 +124,23 @@ export async function loadPurchase(deps: ApiDeps, organizationId: string, id: st
 
 type AuthorizeResult = Omit<z.input<typeof AuthorizeResponse>, "replayed">;
 
+/**
+ * Steps 4 to 7 of the purchase flow (orchestration/purchase-flow.ts): sample and judge, quote versus order,
+ * sign, submit. A low-confidence sample holds the purchase (PROPOSED) behind a LOW_CONFIDENCE_SAMPLE exception;
+ * skip / mismatch / quote mismatch end it before funding and answer 409. The chain, not this route, decides funding.
+ */
 async function authorize(deps: ApiDeps, id: string, requestId: string): Promise<AuthorizeResult> {
-  const order = await deps.repos.purchases.getOrder(id);
-  if (!order) throw new ApiError(404, "not_found", `purchase ${id} not found`);
-  if (order.status !== "PROPOSED") {
-    throw new ApiError(409, "invalid_transition", `purchase ${id} is ${order.status}; only PROPOSED purchases can be authorized`, {
-      from: order.status,
-      to: "RESERVED",
-    });
+  const result = await deps.flow.runAuthorization(id, requestId);
+  const sample = result.sample ? summarize(result.sample) : null;
+  if (result.outcome === "held") {
+    return { purchase: result.purchase, submission: { outcome: "held", exceptionId: result.exceptionId }, sample };
   }
-  const resource = await deps.repos.resources.getById(order.resourceId);
-  if (!resource) throw new ApiError(404, "not_found", `resource ${order.resourceId} not found`);
-
-  const adapter = deps.ports.adapters[order.paymentPath];
-  if (!adapter) {
-    throw new ApiError(501, "not_wired", `no payment adapter for ${order.paymentPath} (lands in P7.x)`, {
-      paymentPath: order.paymentPath,
-    });
-  }
-
-  // 1. Quote versus order. A mismatch is never signed; the purchase ends before funding.
-  const requirements = await adapter.getPaymentRequirements(order, resource);
-  let quote: CheckedQuote;
-  try {
-    const approvedDirectSellers = (await deps.ports.policy.allowlistedPayees()).map((a) => AddressSchema.parse(a));
-    quote = checkQuote(requirements, order, { approvedDirectSellers });
-  } catch (e) {
-    await deps.purchases.transition(id, "FAILED_BEFORE_FUNDING", {
-      reason: `quote refused, not signed: ${e instanceof Error ? e.message : String(e)}`,
-      source: { kind: "api", reference: requestId },
-      simulated: resource.simulated,
-    });
-    throw e;
-  }
-
-  // 2. Sign (and reserve() on the coinbase path). Authorization is its own event.
-  const prepared = await adapter.preparePayment(id, quote);
-  await deps.purchases.transition(id, "RESERVED", {
-    reason: `authorization signed for ${quote.value.toString()} atomic USDC to ${quote.payTo}`,
-    source: { kind: "adapter", reference: adapter.path },
-    authorizationDigest: prepared.authorizationDigest,
-    ...(prepared.reservationTxHash ? { txHash: prepared.reservationTxHash } : {}),
-    simulated: resource.simulated,
-  });
-
-  // 3. Digest on disk before the paid request leaves the process.
-  await deps.purchases.transition(id, "PAYMENT_PENDING", {
-    reason: "submitting payment",
-    source: { kind: "adapter", reference: adapter.path },
-    authorizationDigest: prepared.authorizationDigest,
-    simulated: resource.simulated,
-  });
-
-  // 4. Exactly one submission. Never a new nonce after this point.
-  const submission = await adapter.submitPayment(id, prepared);
-  let purchase: PurchaseRecord;
-  switch (submission.outcome) {
-    case "rejected":
-      purchase = (
-        await deps.purchases.transition(id, "REJECTED", {
-          reason: `treasury policy revert: ${submission.decodedRevert}`,
-          source: { kind: "adapter", reference: adapter.path },
-          decodedRevert: submission.decodedRevert,
-          simulated: resource.simulated,
-        })
-      ).purchase;
-      break;
-    case "unknown":
-      purchase = (
-        await deps.purchases.transition(id, "PAYMENT_UNKNOWN", {
-          reason: `broadcast without a receipt: ${submission.error}; reconcile before any retry`,
-          source: { kind: "adapter", reference: adapter.path },
-          simulated: resource.simulated,
-        })
-      ).purchase;
-      break;
-    case "submitted":
-      // Funding (ESCROW_FUNDED) is only set by the chain indexer from the confirmed event.
-      purchase = await deps.repos.purchases.appendTxHash(id, submission.txHash);
-      break;
-  }
-
-  return { purchase, authorizationDigest: prepared.authorizationDigest, submission };
+  return { purchase: result.purchase, authorizationDigest: result.authorizationDigest, submission: result.submission, sample };
 }
+
+const summarize = (s: SampleRecord): z.input<typeof SampleSummarySchema> => ({
+  id: s.id,
+  verdict: s.verdict,
+  ...(s.confidence !== undefined ? { confidence: s.confidence } : {}),
+  reason: s.reason,
+});

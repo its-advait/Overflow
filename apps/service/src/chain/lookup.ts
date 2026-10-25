@@ -14,10 +14,20 @@ export async function purchaseForOrder(repos: Repositories, orderId: string): Pr
   return list.find((p) => !isTerminalStatus(p.status)) ?? list.at(-1);
 }
 
-/** The stored factory OrderCreated log for an order, if the indexer has seen it. */
-export async function orderCreatedFor(repos: Repositories, orderId: string): Promise<ChainTransaction | undefined> {
+/**
+ * The purchase an escrow's own events belong to. Escrow events carry no
+ * orderId, so the emitting address is the link. Prefer the active purchase;
+ * fall back to the newest terminal one (a Swept after settlement).
+ */
+export async function purchaseForEscrow(repos: Repositories, escrow: Address): Promise<PurchaseRecord | undefined> {
+  const list = await repos.purchases.listByEscrowAddress(escrow);
+  return list.find((p) => !isTerminalStatus(p.status)) ?? list.at(-1);
+}
+
+/** The stored factory OrderCreated log for an escrow address, if the indexer has seen it. */
+export async function orderCreatedForEscrow(repos: Repositories, escrow: Address): Promise<ChainTransaction | undefined> {
   const rows = await repos.chainTransactions.listByEvent("OrderCreated");
-  return rows.find((r) => typeof r.args["orderId"] === "string" && same(r.args["orderId"], orderId));
+  return rows.find((r) => typeof r.args["escrow"] === "string" && same(r.args["escrow"], escrow));
 }
 
 /**
@@ -27,8 +37,7 @@ export async function orderCreatedFor(repos: Repositories, orderId: string): Pro
  */
 export async function isKnownEscrow(repos: Repositories, address: Address): Promise<boolean> {
   if (await repos.escrowOrders.getByAddress(address)) return true;
-  const rows = await repos.chainTransactions.listByEvent("OrderCreated");
-  return rows.some((r) => typeof r.args["escrow"] === "string" && same(r.args["escrow"], address));
+  return (await orderCreatedForEscrow(repos, address)) !== undefined;
 }
 
 /** The purchase waiting on a payment to `payee` (its escrow or direct payTo address), if any. */

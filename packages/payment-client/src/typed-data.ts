@@ -23,7 +23,7 @@ import { TRANSFER_WITH_AUTHORIZATION_TYPES } from "./authorization";
 /**
  * EIP-712 typed data shared by the facilitator, the demo scripts and (later) the agents.
  * Mirrors OverflowTreasury: _twaDigest (USDC's TransferWithAuthorization with from = treasury) and the
- * delegation domain {"Overflow","1",chainId,treasury}. Golden vectors: contracts/test/unit/TypedDataVectors.t.sol
+ * delegation domain {"Overflow","1",chainId,treasury}, plus OverflowEscrow's Accept {"OverflowEscrow","1",chainId,escrow}. Golden vectors: contracts/test/unit/TypedDataVectors.t.sol
  * and src/typed-data.test.ts. Money is always a decimal string of atomic units.
  */
 
@@ -223,6 +223,51 @@ export async function signPauseChild(
     types: PAUSE_CHILD_TYPES,
     primaryType: "PauseChild",
     message: pauseMessage(p),
+  });
+}
+
+// ---------------------------------------------------------------- escrow Accept
+
+/** OverflowEscrow.ACCEPT_TYPEHASH = keccak256("Accept(bytes32 orderId)"). */
+export const ACCEPT_TYPES = {
+  Accept: [{ name: "orderId", type: "bytes32" }],
+} as const;
+
+/** {"OverflowEscrow","1",chainId,escrow}: OverflowEscrow.DOMAIN_SEPARATOR() of one clone. Binds Accept to that escrow. */
+export function acceptDomain(escrow: Address, chainId: number = CHAIN_ID): TypedDataDomain {
+  return { name: "OverflowEscrow", version: "1", chainId, verifyingContract: escrow };
+}
+
+/** Exactly OverflowEscrow.acceptDigest() for this escrow and orderId. */
+export function acceptDigest(escrow: Address, orderId: Hex, chainId: number = CHAIN_ID): Hex {
+  return hashTypedData({
+    domain: acceptDomain(escrow, chainId),
+    types: ACCEPT_TYPES,
+    primaryType: "Accept",
+    message: { orderId },
+  });
+}
+
+/**
+ * The buyer node key signs Accept; escrow.accept(sig) recovers it and requires treasury.nodeOfKey(signer) != 0.
+ * Signing authorizes nothing by itself: the escrow pays the seller only after a valid key reveal.
+ */
+export async function signAccept(account: TypedDataSigner, escrow: Address, orderId: Hex, chainId: number = CHAIN_ID): Promise<Hex> {
+  return account.signTypedData({
+    domain: acceptDomain(escrow, chainId),
+    types: ACCEPT_TYPES,
+    primaryType: "Accept",
+    message: { orderId },
+  });
+}
+
+export async function recoverAcceptSigner(escrow: Address, orderId: Hex, signature: Hex, chainId: number = CHAIN_ID): Promise<Address> {
+  return recoverTypedDataAddress({
+    domain: acceptDomain(escrow, chainId),
+    types: ACCEPT_TYPES,
+    primaryType: "Accept",
+    message: { orderId },
+    signature,
   });
 }
 

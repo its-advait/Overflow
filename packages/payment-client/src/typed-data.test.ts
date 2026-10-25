@@ -3,14 +3,18 @@ import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it } from "vitest";
 import { USDC } from "@overflow/schemas";
 import {
+  acceptDigest,
+  acceptDomain,
   AuthorizationSchema,
   authorizationDigest,
   createChildDigest,
   delegationDomain,
   pauseChildDigest,
   payeesHash,
+  recoverAcceptSigner,
   recoverAuthorizationSigner,
   SignatureSchema,
+  signAccept,
   signAuthorization,
   signCreateChild,
   TokenDomainMismatch,
@@ -42,6 +46,9 @@ const CHILD = {
   nonce: "7",
   deadline: "1791700300",
 };
+// Accept vector: a fixed escrow address (any clone, the digest binds to it) and orderId.
+const ESCROW = "0x5555555555555555555555555555555555555555" as const;
+const ORDER_ID = `0x${"cd".repeat(32)}` as const;
 
 describe("typed data golden vectors (match TypedDataVectors.t.sol)", () => {
   it("USDC domain separator and TransferWithAuthorization digest", () => {
@@ -65,6 +72,15 @@ describe("typed data golden vectors (match TypedDataVectors.t.sol)", () => {
       "0x199b55db57c8e334a5d2ce35f8197bea0c4528e9b3297d3ccf583bef6aa6d0fe",
     );
   });
+  it("escrow Accept domain separator and digest (OverflowEscrow.acceptDigest)", () => {
+    expect(domainSeparator({ domain: acceptDomain(ESCROW) })).toBe(
+      "0x493f6a83af3748630f445cd61f61ed1583454bf5be101236428855356ad8abe1",
+    );
+    expect(acceptDigest(ESCROW, ORDER_ID)).toBe("0x57fdf9a6950dfd8c79161f2a2d9dd236bfdb6cf65a11fd10e8ac513a5e501370");
+    // A different escrow or orderId is a different digest: the signature cannot be replayed across orders.
+    expect(acceptDigest("0x6666666666666666666666666666666666666666", ORDER_ID)).not.toBe(acceptDigest(ESCROW, ORDER_ID));
+    expect(acceptDigest(ESCROW, `0x${"ce".repeat(32)}`)).not.toBe(acceptDigest(ESCROW, ORDER_ID));
+  });
 });
 
 describe("signing", () => {
@@ -74,6 +90,12 @@ describe("signing", () => {
     expect(SignatureSchema.safeParse(sig).success).toBe(true);
     expect(await recoverAuthorizationSigner(AUTH, sig)).toBe(node.address);
     expect(await recoverAuthorizationSigner({ ...AUTH, value: "50001" }, sig)).not.toBe(node.address);
+  });
+  it("signs an Accept that recovers to the node key for that escrow only", async () => {
+    const sig = await signAccept(node, ESCROW, ORDER_ID);
+    expect(SignatureSchema.safeParse(sig).success).toBe(true);
+    expect(await recoverAcceptSigner(ESCROW, ORDER_ID, sig)).toBe(node.address);
+    expect(await recoverAcceptSigner("0x6666666666666666666666666666666666666666", ORDER_ID, sig)).not.toBe(node.address);
   });
   it("signs a CreateChild for the treasury domain", async () => {
     const sig = await signCreateChild(node, TREASURY, CHILD);

@@ -137,11 +137,14 @@ export function createReconciliation(deps: ReconciliationDeps): Reconciliation {
         eventsChecked++;
         const key = eventKeyOf(row);
         if ((await repos.financialEntries.listByEventKey(key)).length === 0) {
+          // PaidOut carries the amount; Refunded names only a reason, so the price comes from the escrow_orders row.
+          const order = name === "Refunded" ? await repos.escrowOrders.getByAddress(row.contractAddress) : undefined;
+          const amount = name === "PaidOut" ? arg(row, "amount") : (order?.amountAtomic ?? "");
           differences.push({
             kind: "event-coverage",
             subject: `event:${key}`,
-            reason: `${name} ${key} (order ${arg(row, "orderId")}, ${arg(row, "amount")} atomic USDC) has no journal entry`,
-            differenceAtomic: arg(row, "amount") || "0",
+            reason: `${name} ${key} (escrow ${row.contractAddress}, ${amount || "unknown"} atomic USDC) has no journal entry`,
+            differenceAtomic: amount || "0",
             eventKey: key,
             ...(row.purchaseId ? { purchaseId: row.purchaseId } : {}),
             material: true,

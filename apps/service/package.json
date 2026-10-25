@@ -13,7 +13,8 @@
     "sellers:demo": "tsx scripts/sellers-demo.ts",
     "mission:run": "tsx scripts/run-mission.ts",
     "preflight": "tsx scripts/preflight.ts",
-    "recourse:demo": "tsx scripts/recourse-demo.ts"
+    "recourse:demo": "tsx scripts/recourse-demo.ts",
+    "flow:demo": "tsx scripts/flow-demo.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",

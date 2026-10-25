@@ -104,8 +104,8 @@ describe("chain indexer (SIMULATED fixture replay)", () => {
     const r = await indexer.tick();
     expect(r.fromBlock).toBe(100n);
     expect(r.toBlock).toBe(115n);
-    expect(r.logsSeen).toBe(27);
-    expect(r.logsInserted).toBe(27);
+    expect(r.logsSeen).toBe(26);
+    expect(r.logsInserted).toBe(26);
 
     // Every log is a chain_transactions row, confirmed, with its decoded args as strings.
     const p1Tx = await handle.repos.chainTransactions.listByPurchase("p1");
@@ -128,10 +128,10 @@ describe("chain indexer (SIMULATED fixture replay)", () => {
     expect(e1.revealedKey).toBe(b32(0x77));
     const e2 = (await handle.repos.escrowOrders.getByPurchase("p2"))!;
     expect(e2.status).toBe("Refunded");
-    expect(e2.refundReason).toBe("timeout: no reveal before deadline");
+    expect(e2.refundReason).toBe("timeout");
     expect((await handle.repos.escrowOrders.getByPurchase("p3"))!.status).toBe("Created");
 
-    // Reservation mirrored then released; budget not restored (USDC had moved) so p2 was not RELEASED.
+    // Reservation mirrored then released; refunded=false (USDC had moved) so p2 was not RELEASED.
     const res = (await handle.repos.reservations.getByDigest(b32(0xd2)))!;
     expect(res.status).toBe("released");
     expect(res.purchaseId).toBe("p2");
@@ -142,17 +142,21 @@ describe("chain indexer (SIMULATED fixture replay)", () => {
     expect(seller).toMatchObject({ orders: 3, onTimeReveals: 1, provenCheats: 1, flagged: true, sellerId: "seller-honest" });
 
     // Ledger: one logical entry per money event (see ledger/posting.test.ts for the rules themselves).
-    expect(r.entries.length).toBe(8); // funding, OrderFunded x2, PaidOut p1 (2 department lines), Refunded, BondForfeited, direct p4
+    expect(r.entries.length).toBe(8); // funding, OrderFunded x2, PaidOut p1 (2 department lines), Refunded (price + bond rows), direct p4
     const treasury = await handle.repos.financialEntries.balance("usdc-treasury");
     expect((treasury.debitsAtomic - treasury.creditsAtomic).toString()).toBe("37400000"); // 50 + 12 + 2.4 - 12 - 12 - 3 USDC
 
     // Activity: one event per log (transitions write theirs through PurchaseService).
     const activity = await handle.repos.activityEvents.listRecent(200);
     const kinds = activity.map((a) => a.kind);
-    for (const k of ["treasury.node", "treasury.policy", "escrow.created", "treasury.paid", "escrow.funded", "purchase.status", "escrow.accepted", "escrow.settled", "treasury.reserved", "escrow.refunded", "seller.flagged", "treasury.released", "usdc.transfer", "escrow.bond-forfeited"]) {
+    for (const k of ["treasury.node", "treasury.policy", "escrow.created", "treasury.paid", "escrow.funded", "purchase.status", "escrow.accepted", "escrow.settled", "treasury.reserved", "escrow.refunded", "seller.flagged", "treasury.released", "usdc.transfer"]) {
       expect(kinds).toContain(k);
     }
     expect(activity.filter((a) => a.purchaseId === "p1" && a.txHash).length).toBe(7);
+    // Real escrow events carry no orderId: the emitting address linked them. KeyRevealed recorded the challenge end; Accepted the node.
+    expect(activity.find((a) => a.kind === "purchase.status" && a.message.includes("KeyRevealed"))!.message).toContain(`challenge window ends at ${FIXTURE.challengeEnd}`);
+    expect(activity.find((a) => a.kind === "escrow.accepted")!.message).toContain("node 1");
+    expect(activity.filter((a) => a.kind === "seller.flagged").length).toBe(2); // CheatProven (escrow) + CheatRecorded (factory)
     expect(r.events.length).toBe(published.filter((m) => m.type === "activity").length);
     expect(published.filter((m) => m.type === "indexer").at(-1)).toMatchObject({ status: { state: "idle", cursor: "115", head: "115", trackedEscrows: 3 } });
 
@@ -179,7 +183,7 @@ describe("chain indexer (SIMULATED fixture replay)", () => {
   });
 
   it("a reorg inside the re-read window withdraws confirmation, keeps the record", async () => {
-    const dropped = source.logs.find((l) => l.blockNumber === "110" && l.logIndex === 1)!; // NodePaused
+    const dropped = source.logs.find((l) => l.blockNumber === "110" && l.logIndex === 2)!; // NodePaused
     source.logs = source.logs.filter((l) => l !== dropped);
     source.head = 116n;
     const r = await indexer.tick();

@@ -7,7 +7,9 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z, ZodError } from "zod";
 import { ExceptionAlreadyDecidedError, OnchainApprovalRequiredError, SelfResolutionError } from "../exceptions/service.js";
 import { NoOpenRequestsError, OracleUnavailableError, RequirementsUnconfirmedError } from "../orchestration/oracle-port.js";
+import { SampleHeldError, SampleRefusedError } from "../orchestration/purchase-flow.js";
 import { ActivePurchaseExistsError, TransitionEvidenceError } from "../orchestration/purchase-service.js";
+import { SampleFetchError, SampleModelError } from "../orchestration/sample-judgment.js";
 import { SellerTermsError } from "../orchestration/seller-order-terms.js";
 import { NotWiredError } from "./ports.js";
 import type { Session } from "./session.js";
@@ -76,6 +78,18 @@ export function toApiError(e: unknown): ApiError {
     // The seller's order failed a check (hash, buyer, amount, escrow prediction) or the seller did not answer: no purchase was written.
     return new ApiError(502, "seller_terms_rejected", e.message, { reason: e.reason, ...(e.details !== undefined ? { details: e.details } : {}) });
   }
+  if (e instanceof SampleHeldError) {
+    return new ApiError(409, "sample_low_confidence", e.message, { purchaseId: e.purchaseId, exceptionId: e.exceptionId, sampleId: e.sampleId });
+  }
+  if (e instanceof SampleRefusedError) {
+    // The purchase is FAILED_BEFORE_FUNDING; nothing was signed.
+    const code = e.kind === "skip" ? "sample_skipped" : e.kind === "mismatch" ? "sample_mismatch" : "sample_declined";
+    return new ApiError(409, code, e.message, { purchaseId: e.purchaseId, reason: e.reason, sampleId: e.sample?.id });
+  }
+  if (e instanceof SampleFetchError) return new ApiError(502, "seller_unreachable", e.message, { what: e.what, status: e.status });
+  if (e instanceof SampleModelError) return new ApiError(502, "sample_model_failed", e.message, { promptHash: e.promptHash, outputHash: e.outputHash });
+  // The payment adapter (payment/overflow-adapter.ts) found no signer for the order's paying node; matched by name so this module does not depend on it.
+  if (e instanceof Error && e.name === "NoSignerForNodeError") return new ApiError(409, "no_signer_for_node", e.message);
   if (e instanceof RequirementsUnconfirmedError) {
     return new ApiError(409, "requirements_unconfirmed", e.message, { missionId: e.missionId });
   }
