@@ -9,6 +9,7 @@
     "status": "tsx status.ts",
     "dev-fund": "tsx dev-fund.ts",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "gas": "tsx gas-report.ts",
     "demo-facilitator": "tsx facilitator-demo.ts",
     "demo-adapters": "tsx adapter-demo.ts",

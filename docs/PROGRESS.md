@@ -921,3 +921,17 @@ Follow-ups: a facilitator route for `releaseClosed` (the Coinbase adapter's reco
 | `vitest run packages/recourse-crypto packages/datasets` | 9 files, 58 tests passed |
 | `forge test` | 19 suites, 194 passed, 0 failed, 1 skipped (fork test) |
 | `pnpm -r typecheck` / `pnpm lint` | exit 0 / exit 0 |
+
+## 2026-10-24: exporter reads the escrow implementation from nested creates
+
+### Built
+- `scripts/lib/broadcast.ts`: pure `readBroadcast(run, { isEscrowInitCode })`. Forge gives a contract created inside another constructor (the factory deploys `OverflowEscrow`) no `transactions[]` entry; it sits in the parent CREATE's `additionalContracts[]` as `{transactionType, address, initCode}`. The reader matches that entry by init code (`initCodeMatcher(creationCode)`: `initCode` starts with the `OverflowEscrow` creation bytecode from `contracts/out`, constructor args follow) and records the parent's hash under `txs.escrowImplementation`. Several matches: refuse to guess, keep `null`. No match: keep `null` and print the `cast call <factory> "implementation()(address)"` command. A top-level `OverflowEscrow` CREATE still wins. `setAllow` now lands in `txs` too; a receipt-less (dry-run) file is rejected with a clear message.
+- `scripts/export-deployment.ts` uses the reader; everything else it writes (deployments JSON, `deployments.ts`, ABIs) is unchanged.
+- `scripts` is now a vitest project (`vitest.config.mts`, `pnpm --filter @overflow/scripts test`).
+
+### Verified (real output, 2026-10-24)
+| Check | Result |
+|---|---|
+| `vitest run scripts` (`lib/broadcast.test.ts`: treasury-only shape, factory with nested create, no match, two matches, direct CREATE, errors) | 7 passed |
+| `pnpm contracts:export` against the existing treasury-only broadcast | identical output: `git status -- packages/schemas` empty |
+| `pnpm --filter @overflow/scripts typecheck` / `pnpm lint` | exit 0 / exit 0 |

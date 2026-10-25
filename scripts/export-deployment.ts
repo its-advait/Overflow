@@ -9,28 +9,14 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 // Subpath import: the package index re-exports ./abi, which this script generates.
 import { CHAIN_ID, parseDeployments, USDC } from "@overflow/schemas/chain";
+import { type Broadcast, broadcastTimestamp, initCodeMatcher, readBroadcast } from "./lib/broadcast.js";
 import { loadEnv, repoRoot } from "./lib/env.js";
-
-type BroadcastTx = {
-  hash: `0x${string}` | null;
-  transactionType: "CREATE" | "CREATE2" | "CALL";
-  contractName: string | null;
-  contractAddress: `0x${string}` | null;
-  function: string | null;
-  transaction: { from: `0x${string}`; to?: `0x${string}` | null };
-};
-type BroadcastReceipt = { blockNumber: `0x${string}` | number; transactionHash: `0x${string}` };
-type Broadcast = { transactions: BroadcastTx[]; receipts: BroadcastReceipt[]; timestamp: number /* unix ms in forge >= 1.x */ };
 
 /** Contracts exported as ABIs when their artifact exists. */
 const ABI_CONTRACTS = ["OverflowTreasury", "OverflowEscrowFactory", "OverflowEscrow"] as const;
 
 function camel(name: string): string {
   return name.charAt(0).toLowerCase() + name.slice(1);
-}
-
-function blockNumber(b: `0x${string}` | number): bigint {
-  return typeof b === "number" ? BigInt(b) : BigInt(b);
 }
 
 function exportAbis(root: string): void {
@@ -78,25 +64,16 @@ function main(): void {
   }
   const run = JSON.parse(readFileSync(runFile, "utf8")) as Broadcast;
 
-  const creates = run.transactions.filter((t) => t.transactionType === "CREATE" || t.transactionType === "CREATE2");
-  const byName = (name: string) => creates.find((t) => t.contractName === name) ?? null;
-  const treasuryTx = byName("OverflowTreasury");
-  if (!treasuryTx?.contractAddress || !treasuryTx.hash) {
-    console.error("broadcast has no OverflowTreasury CREATE transaction");
-    process.exit(1);
-  }
-  const factoryTx = byName("OverflowEscrowFactory");
-  const escrowImplTx = byName("OverflowEscrow");
-  const createRootTx = run.transactions.find((t) => t.function?.startsWith("createRoot("));
-  const setFactoryTx = run.transactions.find((t) => t.function?.startsWith("setEscrowFactory("));
+  // The escrow implementation is created by the factory's constructor, so it only appears as a nested create;
+  // match it by the OverflowEscrow creation code from the same build.
+  const escrowArtifact = resolve(root, "contracts/out/OverflowEscrow.sol/OverflowEscrow.json");
+  const escrowCreationCode = existsSync(escrowArtifact)
+    ? (JSON.parse(readFileSync(escrowArtifact, "utf8")) as { bytecode: { object: `0x${string}` } }).bytecode.object
+    : null;
+  if (!escrowCreationCode) console.log(`no OverflowEscrow artifact at ${escrowArtifact}; nested creates cannot be matched`);
+  const summary = readBroadcast(run, { isEscrowInitCode: escrowCreationCode ? initCodeMatcher(escrowCreationCode) : () => false });
+  for (const note of summary.notes) console.log(`note: ${note}`);
 
-  const txs: Record<string, `0x${string}`> = { treasury: treasuryTx.hash };
-  if (factoryTx?.hash) txs["escrowFactory"] = factoryTx.hash;
-  if (escrowImplTx?.hash) txs["escrowImplementation"] = escrowImplTx.hash;
-  if (createRootTx?.hash) txs["createRoot"] = createRootTx.hash;
-  if (setFactoryTx?.hash) txs["setEscrowFactory"] = setFactoryTx.hash;
-
-  const deployBlock = run.receipts.map((r) => blockNumber(r.blockNumber)).reduce((a, b) => (a < b ? a : b));
   const token = (process.env["TOKEN_ADDRESS"] ?? USDC.address) as `0x${string}`;
   const owner = process.env["OWNER_ADDRESS"];
   if (!owner) {
@@ -108,14 +85,14 @@ function main(): void {
     chainId: CHAIN_ID,
     token,
     usdc: token,
-    treasury: treasuryTx.contractAddress,
-    escrowFactory: factoryTx?.contractAddress ?? null,
-    escrowImplementation: escrowImplTx?.contractAddress ?? null,
+    treasury: summary.treasury.address,
+    escrowFactory: summary.escrowFactory?.address ?? null,
+    escrowImplementation: summary.escrowImplementation?.address ?? null,
     owner,
-    deployer: treasuryTx.transaction.from,
-    deployBlock: deployBlock.toString(),
-    deployedAt: new Date(run.timestamp > 1e12 ? run.timestamp : run.timestamp * 1000).toISOString(), // forge writes ms
-    txs,
+    deployer: summary.treasury.from,
+    deployBlock: summary.deployBlock.toString(),
+    deployedAt: broadcastTimestamp(run).toISOString(),
+    txs: summary.txs,
   });
 
   const outDir = resolve(root, "packages/schemas/deployments");
