@@ -14,7 +14,7 @@ import { z } from "zod";
 import type { ApiDeps } from "../deps.js";
 import { ApiError, parseBody, parseParams, respond, type ApiEnv } from "../http.js";
 import { IDEMPOTENCY_HEADER, withIdempotency } from "../idempotency.js";
-import { OracleDecisionSchema } from "../../orchestration/oracle-port.js";
+import { FusionOutcomeSchema, OracleDecisionSchema } from "../../orchestration/oracle-port.js";
 import { loadMission } from "./missions.js";
 
 const IdParams = z.object({ id: IdSchema });
@@ -24,6 +24,8 @@ const ProposeResponse = z.object({
   purchases: z.array(PurchaseRecordSchema),
   /** One per open request: what Oracle chose, what it rejected and why. A decision authorizes no payment. */
   decisions: z.array(OracleDecisionSchema),
+  /** One per Fusion decision: merged or not, every rule with evidence, the paying node. Authorizes nothing. */
+  merges: z.array(FusionOutcomeSchema),
 });
 
 const PurchaseResponse = z.object({
@@ -53,14 +55,14 @@ export const AuthorizeResponse = z.object({
 export function purchaseRoutes(deps: ApiDeps) {
   const app = new Hono<ApiEnv>();
 
-  /** Oracle recommendation per open request (Fusion merges at P6.2), persisted as PROPOSED rows by the PurchaseService. */
+  /** Oracle recommendation per open request, Fusion merge of compatible ones, persisted as PROPOSED rows by the PurchaseService. */
   app.post("/propose", async (c) => {
     const { missionId } = await parseBody(c, ProposeBody);
     const mission = await loadMission(deps, c.get("session").organizationId, missionId);
-    const { proposals, decisions } = await deps.ports.orchestration.propose(mission);
+    const { proposals, decisions, merges } = await deps.ports.orchestration.propose(mission);
     const purchases: PurchaseRecord[] = [];
     for (const p of proposals) purchases.push((await deps.purchases.propose(p)).purchase);
-    return respond(c, ProposeResponse, { purchases, decisions }, 201);
+    return respond(c, ProposeResponse, { purchases, decisions, merges }, 201);
   });
 
   /**

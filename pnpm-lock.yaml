@@ -348,6 +348,9 @@ importers:
         specifier: ^4.6.7
         version: 4.6.7
     devDependencies:
+      '@overflow/datasets':
+        specifier: workspace:*
+        version: link:../datasets
       '@types/node':
         specifier: ^26.6.5
         version: 26.6.5

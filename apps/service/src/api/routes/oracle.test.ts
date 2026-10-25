@@ -241,6 +241,7 @@ describe("Oracle routes: plan and propose", () => {
     expect(terms.calls).toBe(1);
 
     expect(body.decisions).toHaveLength(1);
+    expect(body.merges).toEqual([]); // one request: nothing to fuse
     const decision = body.decisions[0];
     expect(decision.chosen).toBe(NATIONAL);
     expect(decision.alternatives).toEqual(["listing-national-monthly-2024-2026-seller-b"]);
@@ -267,9 +268,9 @@ describe("Oracle routes: plan and propose", () => {
       sellerAddress: SELLER,
       escrowAddress: ESCROW,
       termsHash: b32(9),
-      payingNodeId: 1,
+      payingNodeId: 1, // the orchestrator has no onchain node yet: the mission root pays
       participatingAgentIds: ["agent-orchestrator"],
-      allocations: [],
+      allocations: [{ agentId: "agent-orchestrator", department: "research", amountAtomic: "12000000" }],
       paymentPath: "overflow-facilitator",
       txHashes: [],
     });

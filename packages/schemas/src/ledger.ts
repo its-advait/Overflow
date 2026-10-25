@@ -120,6 +120,8 @@ export const ActivityKindSchema = z.enum([
   "oracle.model_call",
   // Oracle decision per resource request: chosen listing, rejections and summary. It authorizes no payment.
   "oracle.recommendation",
+  // Fusion decision per candidate group: merge or not, the failing rule, the paying node. It authorizes no payment.
+  "fusion.decision",
 ]);
 export type ActivityKind = z.infer<typeof ActivityKindSchema>;
 

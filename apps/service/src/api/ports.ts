@@ -28,11 +28,11 @@ export class NotWiredError extends Error {
   }
 }
 
-/** Oracle (wired: orchestration/oracle-port.ts) + Fusion (P6.2). */
+/** Oracle + Fusion (wired: orchestration/oracle-port.ts). */
 export interface OrchestrationPort {
   /** Extracts structured requirements for a mission and persists them as resource_requests. */
   planMission(mission: MissionRecord): Promise<ResourceRequestRecord[]>;
-  /** Oracle recommends per open request (Fusion merges at P6.2); returns proposals the PurchaseService persists as PROPOSED plus the decisions. */
+  /** Oracle recommends per open request, Fusion merges compatible ones; returns proposals the PurchaseService persists as PROPOSED plus the Oracle decisions and Fusion merges. */
   propose(mission: MissionRecord): Promise<ProposeResult>;
 }
 

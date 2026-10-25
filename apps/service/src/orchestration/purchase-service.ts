@@ -134,6 +134,8 @@ export interface PurchaseServiceOptions {
 
 export interface ProposeInput {
   purchase: PurchaseInsert;
+  /** Fusion merge of two or more requests: a purchase_groups row is written in the same transaction and linked. */
+  group?: { payingNodeId: number; requestIds: string[]; mergeReason: string } | undefined;
   reason: string;
   source: TransitionSource;
   agentId?: string | undefined;
@@ -169,7 +171,18 @@ export function createPurchaseService(db: Executor, options: PurchaseServiceOpti
             if (!event) throw new NotFoundError("activity_events", existing.id);
             return { purchase: existing, event, replayed: true };
           }
-          const purchase = await repos.purchases.create(input.purchase);
+          let purchaseGroupId = input.purchase.purchaseGroupId;
+          if (input.group) {
+            const group = await repos.purchaseGroups.insert({
+              missionId: input.purchase.missionId,
+              resourceId: input.purchase.resourceId,
+              payingNodeId: input.group.payingNodeId,
+              requestIds: input.group.requestIds,
+              mergeReason: input.group.mergeReason,
+            });
+            purchaseGroupId = group.id;
+          }
+          const purchase = await repos.purchases.create({ ...input.purchase, ...(purchaseGroupId ? { purchaseGroupId } : {}) });
           const event = await repos.activityEvents.insert({
             kind: "purchase.proposed",
             message: `proposed ${purchase.amountAtomic} atomic USDC for resource ${purchase.resourceId}: ${input.reason} [${source.kind}:${source.reference}]`,
