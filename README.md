@@ -39,6 +39,18 @@ pnpm dev:fund 5                   # DEV ONLY: move 5 USDC deployer -> treasury (
 
 `contracts/script/Deploy.s.sol` deploys `OverflowTreasury(TOKEN_ADDRESS, OWNER_ADDRESS)`. When the owner is the deployer it also calls `createRoot(AGENT_ROOT_ADDRESS, ROOT_CAP, ROOT_MAX_PER_CALL, ROOT_EXPIRY)`; otherwise it prints the `createRoot` calldata for the controller to approve. Addresses land in `packages/schemas/deployments/base-sepolia.json` (`BASE_SEPOLIA_DEPLOYMENT`, `loadDeployments()`) and ABIs in `packages/schemas/src/abi/` (`overflowTreasuryAbi`). No private key is ever read: signing goes through a Foundry keystore.
 
+## Run the facilitator (service)
+
+```bash
+pnpm service                      # tsx watch apps/service: boots only after the USDC domain + deployments checks pass
+curl localhost:4000/health        # relayer address, ETH balance, queue; GET /supported, POST /verify|/settle|/reserve|/release|/delegate|/pause-child, GET /events (SSE)
+pnpm demo:facilitator             # Base Sepolia proof: settle, PayeeNotAllowed landed onchain, bypass rejected by USDC, 409 replay -> docs/demo-facilitator.md
+```
+
+`.env` needs `RELAYER_PRIVATE_KEY` as a 64-hex key (gas ETH only, never USDC), `BASE_SEPOLIA_RPC_URL`, and for the demo
+`DEMO_MODE=true`, `DEMO_TOKEN`, `DEMO_PAYEE_ADDRESS`, `ATTACKER_ADDRESS`, `AGENT_ROOT_KEY` (the agent's key). There are no
+`/admin` routes: owner actions go through the controller.
+
 ## Layout
 
 - `apps/web` Next.js App Router UI (Tailwind, shadcn/ui, lucide-react)

@@ -1,8 +1,8 @@
 export const PACKAGE_NAME = "@overflow/payment-client" as const;
 
 /**
- * Scaffold placeholder. The x402 payment client (viem-based) lands in a later prompt.
- * Rule: this package only builds and signs authorizations. It never moves USDC;
- * only OverflowTreasury.settle()/reserve() and OverflowEscrow do.
+ * x402 payment client pieces shared by the service, the scripts and the agents: EIP-3009 typed data, treasury
+ * delegation typed data and the USDC domain check. Rule: this package only builds and signs authorizations. It
+ * never moves USDC; only OverflowTreasury.settle()/reserve() and OverflowEscrow do.
  */
-export const PAYMENT_CLIENT_STATUS = "scaffold: not implemented" as const;
+export * from "./typed-data";

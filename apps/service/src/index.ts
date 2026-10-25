@@ -1,32 +1,68 @@
-import { createServer } from "node:http";
-import { CHAIN_ID, PACKAGE_NAME as SCHEMAS } from "@overflow/schemas";
-import { API_STATUS } from "./api/index.js";
-import { CHAIN_STATUS } from "./chain/index.js";
-import { FACILITATOR_STATUS } from "./facilitator/index.js";
+import { serve } from "@hono/node-server";
+import { Hono } from "hono";
+import { CHAIN_ID, loadDeployments, PACKAGE_NAME as SCHEMAS } from "@overflow/schemas";
+import { verifyBoot } from "./chain/boot";
+import { relayerAccount, viemChainClient } from "./chain/client";
+import { loadEnv, readConfig } from "./config";
+import { createFacilitatorApp } from "./facilitator/app";
+import { createBus, createLogPoller } from "./facilitator/events";
+import { createRelayer } from "./facilitator/relayer";
+import { MemoryStore } from "./facilitator/store";
 import { ORCHESTRATION_STATUS } from "./orchestration/index.js";
 import { SELLERS_STATUS } from "./sellers/index.js";
+import { API_STATUS } from "./api/index.js";
 
-const port = Number(new URL(process.env["SERVICE_URL"] ?? "http://localhost:4000").port || 4000);
+const log = (line: string) => console.log(`${new Date().toISOString()} ${line}`);
 
-const status = {
-  service: "@overflow/service",
-  scaffold: true,
-  chainId: CHAIN_ID,
-  modules: {
-    api: API_STATUS,
-    orchestration: ORCHESTRATION_STATUS,
-    facilitator: FACILITATOR_STATUS,
-    sellers: SELLERS_STATUS,
-    chain: CHAIN_STATUS,
-  },
-  dependsOn: [SCHEMAS],
-};
+async function main(): Promise<void> {
+  loadEnv();
+  const config = readConfig();
+  const deployments = await loadDeployments(config.deploymentsPath);
+  const account = relayerAccount(config.relayerKey);
+  const client = viemChainClient(config.rpcUrl, account);
 
-const server = createServer((_req, res) => {
-  res.setHeader("content-type", "application/json");
-  res.end(JSON.stringify(status));
-});
+  // Fail loudly before serving anything.
+  const boot = await verifyBoot(client, deployments);
+  log(`[boot] chain ${boot.chainId}, USDC ${boot.token.address} "${boot.token.name}" v${boot.token.version} separator ${boot.token.domainSeparator}`);
+  log(`[boot] treasury ${boot.treasury}, escrowFactory ${boot.escrowFactory ?? "none"}, head block ${boot.blockNumber}`);
+  const ethWei = await client.getBalance(account.address);
+  log(`[boot] relayer ${account.address} holds ${ethWei} wei for gas (relayer never holds USDC)`);
+  if (ethWei === 0n) log("[boot] WARNING: relayer has no ETH; every relay will fail");
+  if (config.demoMode) log("[boot] DEMO_MODE=true: /demo/bypass and forceBroadcast enabled (x-demo-token required); SIMULATED flows are labeled");
 
-server.listen(port, () => {
-  console.log(`[scaffold] @overflow/service listening on http://localhost:${port}`);
+  const bus = createBus();
+  const poller = createLogPoller({ client, treasury: boot.treasury, bus, fromBlock: boot.blockNumber, intervalMs: config.eventsPollMs, log });
+  const facilitator = createFacilitatorApp({
+    client,
+    relayer: createRelayer({ client, address: account.address, log }),
+    store: new MemoryStore(),
+    bus,
+    deployments,
+    treasury: boot.treasury,
+    usdc: deployments.usdc,
+    demoMode: config.demoMode,
+    ...(config.demoToken ? { demoToken: config.demoToken } : {}),
+    now: () => new Date(),
+    log,
+  });
+
+  const app = new Hono();
+  app.get("/", (c) =>
+    c.json({
+      service: "@overflow/service",
+      chainId: CHAIN_ID,
+      treasury: boot.treasury,
+      modules: { facilitator: "live", api: API_STATUS, orchestration: ORCHESTRATION_STATUS, sellers: SELLERS_STATUS },
+      dependsOn: [SCHEMAS],
+    }),
+  );
+  app.route("/", facilitator);
+
+  poller.start();
+  serve({ fetch: app.fetch, port: config.port }, (info) => log(`[service] listening on http://localhost:${info.port} (facilitator routes at /)`));
+}
+
+main().catch((err) => {
+  console.error(`[service] fatal: ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
 });

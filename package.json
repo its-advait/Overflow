@@ -19,6 +19,8 @@
     "contracts:invariant": "forge test --root contracts --match-path 'test/invariant/*'",
     "contracts:deploy": "bash scripts/deploy.sh",
     "contracts:export": "pnpm --filter @overflow/scripts export",
+    "demo:facilitator": "pnpm --filter @overflow/scripts demo-facilitator",
+    "service": "pnpm --filter @overflow/service dev",
     "status": "pnpm --filter @overflow/scripts status",
     "dev:fund": "pnpm --filter @overflow/scripts dev-fund"
   },

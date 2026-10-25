@@ -4,8 +4,10 @@ pragma solidity 0.8.28;
 import {Script, console2} from "forge-std/Script.sol";
 import {OverflowTreasury} from "../src/OverflowTreasury.sol";
 import {IOverflowTreasury} from "../src/IOverflowTreasury.sol";
+import {OverflowEscrowFactory} from "../src/OverflowEscrowFactory.sol";
 
-/// @notice Deploy OverflowTreasury on Base Sepolia and, when the owner is the deployer, create the root node.
+/// @notice Deploy OverflowTreasury and OverflowEscrowFactory (which deploys the OverflowEscrow implementation) on
+/// Base Sepolia, wire the factory into the treasury and, when the owner is the deployer, create the root node.
 /// The signer comes from the CLI (`--account <keystore> --password-file <path>`); no key is read here.
 ///
 /// Env (all addresses, no keys):
@@ -15,6 +17,7 @@ import {IOverflowTreasury} from "../src/IOverflowTreasury.sol";
 ///   ROOT_CAP             atomic USDC, default 50 USDC (the demo mission budget)
 ///   ROOT_MAX_PER_CALL    atomic USDC, default 15 USDC (above the 12 USDC fused purchase in the demo)
 ///   ROOT_EXPIRY          unix seconds, default now + 7 days
+///   DEMO_PAYEE_ADDRESS   optional: a payee to allowlist for the facilitator demo (owner == deployer only)
 ///
 /// Dry run:  forge script script/Deploy.s.sol:Deploy --rpc-url $BASE_SEPOLIA_RPC_URL --sender $DEPLOYER_ADDRESS
 /// Live:     pnpm contracts:deploy   (scripts/deploy.sh adds --broadcast --verify and exports addresses/ABIs)
@@ -44,11 +47,17 @@ contract Deploy is Script {
         console2.log("  owner", owner);
         console2.log("  deployer", deployer);
 
-        // P1.6: deploy the OverflowEscrow implementation and OverflowEscrowFactory here, then
-        // (owner == deployer) call treasury.setEscrowFactory(factory) or print its calldata.
-        // Neither contract nor setEscrowFactory exists yet; export-deployment writes null for both.
+        OverflowEscrowFactory factory = new OverflowEscrowFactory();
+        console2.log("OverflowEscrowFactory", address(factory));
+        console2.log("  OverflowEscrow implementation", factory.implementation());
 
+        address demoPayee = vm.envOr("DEMO_PAYEE_ADDRESS", address(0));
         if (owner == deployer) {
+            treasury.setEscrowFactory(address(factory));
+            if (demoPayee != address(0)) {
+                treasury.setAllow(demoPayee, true);
+                console2.log("allowlisted demo payee", demoPayee);
+            }
             require(rootKey != address(0), "Deploy: AGENT_ROOT_ADDRESS required when owner is the deployer");
             uint256 rootId = treasury.createRoot(rootKey, rootCap, rootMaxPerCall, rootExpiry);
             console2.log("root node id", rootId);
@@ -62,6 +71,8 @@ contract Deploy is Script {
             console2.logBytes(
                 abi.encodeCall(IOverflowTreasury.createRoot, (rootKey, rootCap, rootMaxPerCall, rootExpiry))
             );
+            console2.log("setEscrowFactory calldata:");
+            console2.logBytes(abi.encodeCall(IOverflowTreasury.setEscrowFactory, (address(factory))));
         }
         console2.log("root key", rootKey);
         console2.log("root cap (atomic)", rootCap);

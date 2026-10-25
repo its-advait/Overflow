@@ -1,2 +1,7 @@
-/** Scaffold placeholder for the facilitator module. Real implementation lands in a later prompt. */
-export const FACILITATOR_STATUS = "scaffold: not implemented" as const;
+export * from "./app";
+export * from "./context";
+export * from "./decode";
+export * from "./events";
+export * from "./relayer";
+export * from "./schemas";
+export * from "./store";

@@ -178,6 +178,9 @@ importers:
       '@anthropic-ai/sdk':
         specifier: ^1.2.0
         version: 1.2.0(zod@4.6.7)
+      '@hono/node-server':
+        specifier: ^2.1.5
+        version: 2.1.5(hono@4.13.13)
       '@overflow/database':
         specifier: workspace:*
         version: link:../../packages/database
@@ -196,6 +199,9 @@ importers:
       '@overflow/schemas':
         specifier: workspace:*
         version: link:../../packages/schemas
+      hono:
+        specifier: ^4.13.13
+        version: 4.13.13
       viem:
         specifier: ^2.57.10
         version: 2.57.10(typescript@5.9.3)(zod@4.6.7)
@@ -360,6 +366,9 @@ importers:
 
   scripts:
     dependencies:
+      '@overflow/payment-client':
+        specifier: workspace:*
+        version: link:../packages/payment-client
       '@overflow/schemas':
         specifier: workspace:*
         version: link:../packages/schemas
