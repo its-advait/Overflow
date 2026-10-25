@@ -8,11 +8,13 @@
     "export": "tsx export-deployment.ts",
     "status": "tsx status.ts",
     "dev-fund": "tsx dev-fund.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "gas": "tsx gas-report.ts"
   },
   "dependencies": {
     "@overflow/schemas": "workspace:*",
-    "viem": "^2.57.10"
+    "viem": "^2.57.10",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",

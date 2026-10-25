@@ -215,6 +215,8 @@ contract OverflowTreasury is IOverflowTreasury, ReentrancyGuardTransient {
             if (IOverflowEscrowFactory(escrowFactory).provenCheats(payee) != 0) revert PayeeFlagged(payee);
             uint256 amount = escrow.amount();
             if (value != amount) revert EscrowAmountMismatch(to, amount, value);
+            IOverflowEscrow.Status s = escrow.status();
+            if (s == IOverflowEscrow.Status.Settled || s == IOverflowEscrow.Status.Refunded) revert EscrowClosed(to);
         }
 
         // 5. Check and charge every node from the signer up to the root.

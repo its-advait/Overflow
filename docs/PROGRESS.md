@@ -320,3 +320,30 @@ The Base Sepolia treasury at `0xd3A74fA991CA0B5627d30EF27dC699C134848291` was ch
 - `sourceKey` is a single EOA per order; a source that rotates keys needs a new order or an onchain registry (not in spec).
 - Offchain: the service does not yet build or verify records (`buildPayload`/`buildRecord` exist; the seller simulation and sampling protocol are P2).
 - Live Base Sepolia treasury predates escrow support; redeploy pending.
+
+## 2026-10-24: fork suite, invariants, gas report (P1.8)
+
+### Built
+- `contracts/test/fork/UsdcGate.t.sol` (6 tests, `vm.skip` unless chain id 84532): a fresh treasury on a Base Sepolia fork over the real USDC at `0x036C...`, funded with `deal()` (no keys). Domain name "USDC" / version "2" / separator `0x71f1...9818` / 6 decimals; settle moves balances and marks the nonce; a direct `transferWithAuthorization` from anyone reverts `FiatTokenV2: invalid signature`; replay reverts `FiatTokenV2: authorization is used or canceled` with no second charge; the ERC-1271 gate answers INVALID to USDC and to anyone outside settle, and stays closed after an unrelated settle; a reservation lets a facilitator submit the agent's authorization straight to live USDC, and `release` after the window keeps the charge. The live treasury `0xd3A7...8291` is not used (it predates `reserve`); the suite deploys its own.
+- `scripts/fork-test.sh` -> `pnpm contracts:fork` (sources `.env`, needs `BASE_SEPOLIA_RPC_URL`, read-only `forge test --fork-url`).
+- `contracts/test/invariant/TreasuryInvariant.t.sol`: `TreasuryHandler` with 16 actions (settle, reserve, executeReservation as a facilitator via USDC, release, warp, ownerPause, pauseChild by the root key, delegate with caps that sometimes exceed the parent, fundTreasury, createEscrow with bond staked by the seller, markFunded, reveal correct/wrong, accept by any node key, finalize, timeoutRefund, flagSeller as a SIMULATED proven cheat through `recordCheat`). Targets mix allowlisted payees, escrows (value forced to the order amount) and never-allowlisted sellers. Invariants: `spent <= cap` and `spent >= sum of children` on every node; `balance + executedPending >= floor + reservedTotal` (executedPending = reserved USDC a facilitator already pulled but nobody released yet, which stays in `reservedTotal` by design); `reservedTotal == sum of unreleased reservations`; the gate returns MAGIC only to USDC and only for a live reservation digest, INVALID to every other caller and for unknown digests; every escrow has at most one terminal transition, a final terminal status and zero balance afterwards (one tracked exception: a reservation approved while the order was open and executed by the facilitator after it closed); the treasury never authorizes a payment benefiting a flagged seller and the factory refuses them. `afterInvariant` logs per-run coverage; `test_handlerCoverage` runs a deterministic 400-step walk and asserts settles, reserves, treasury-funded escrows, delegations, terminal escrows and flagged sellers all occurred, then re-checks every invariant.
+- `foundry.toml` `[invariant]` now `runs = 256`, `depth = 50` (whole forge suite ~6 s). `pnpm contracts:invariant` runs the two invariant suites.
+- `contracts/test/gas/GasReport.t.sol` + `scripts/gas-report.ts` -> `pnpm contracts:gas` writes `docs/gas.md` from forge gas snapshots (`contracts/snapshots/`, gitignored): settle, reserve, release, escrow create, fund (settle to escrow + markFunded), reveal, accept, refund.
+
+### Fix found by the invariants
+- The treasury would pay a settled or refunded escrow (the payee rule checked factory, buyer, seller flag and amount but not status). A closed escrow has no sweep, so the USDC would be stranded and the agent's allowance burned. `_authorize` now reverts `EscrowClosed(escrow)` inside the escrow branch of step 4; the normative check order is unchanged. Unit test `test_closedEscrow_isNotAPayee` (settle and reserve). Treasury ABI re-exported (71 entries).
+- Not fixed, documented: a reservation approved while an order was open can be executed by the facilitator after the order closes, landing USDC in the closed escrow with no sweep. Candidate P2 fix: an escrow `sweep()` to the buyer after a terminal state.
+
+### Verified (real output, 2026-10-24)
+| Check | Result |
+|---|---|
+| `pnpm contracts:fork` (live Base Sepolia RPC) | 6 passed, 0 failed |
+| `forge test` (invariants at 256 runs x depth 50) | 170 passed, 0 failed, 1 skipped (the fork suite off-chain) across 15 suites; treasury invariants also pass under fuzz seeds 1, 2, 3 |
+| handler metrics (`FOUNDRY_INVARIANT_SHOW_METRICS`) | 12,800 calls per invariant, every action called ~800 times |
+| `pnpm contracts:gas` | docs/gas.md: settle 170,063; reserve 198,444; release 56,011; escrow create 420,958; fund settle 155,912 + markFunded 69,134; reveal 62,855; accept 100,705; refund 61,463 |
+| `forge snapshot` | refreshed |
+| `pnpm test` / `pnpm typecheck` / `pnpm lint` | 122 tests / exit 0 / exit 0 |
+
+### Open issues
+- Late-executed reservation into a closed escrow (above).
+- The fork suite deploys a fresh treasury; the live `0xd3A7...8291` still needs replacing by a deployment with the escrow factory.

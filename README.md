@@ -14,6 +14,9 @@ pnpm install
 cp .env.example .env                     # fill in values
 pnpm typecheck && pnpm build && pnpm test
 pnpm contracts:build && pnpm contracts:test
+pnpm contracts:invariant          # invariant suites only (256 runs x depth 50)
+pnpm contracts:fork               # fork suite against live Base Sepolia USDC (needs BASE_SEPOLIA_RPC_URL; read-only)
+pnpm contracts:gas                # regenerate docs/gas.md
 ```
 
 Optional read-only reference (git-ignored, never imported):

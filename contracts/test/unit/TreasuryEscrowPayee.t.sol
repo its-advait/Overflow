@@ -129,6 +129,28 @@ contract TreasuryEscrowPayeeTest is EscrowBaseTest {
         factory.create(again);
     }
 
+    /// Found by TreasuryInvariant: a settled or refunded escrow has no sweep, so paying it would strand USDC and
+    /// burn the agent's allowance for nothing.
+    function test_closedEscrow_isNotAPayee() public {
+        // refunded after a missed reveal
+        OverflowEscrow r = _create(_termsFor(seller, address(treasury), AMOUNT, "to be refunded"));
+        _pay(rootPk, address(r), AMOUNT);
+        r.markFunded();
+        vm.warp(r.terms().revealDeadline);
+        r.claimTimeoutRefund();
+        uint256 spent = treasury.getNode(1).spent;
+        _expectPayRevert(
+            rootPk, address(r), AMOUNT, abi.encodeWithSelector(IOverflowTreasury.EscrowClosed.selector, address(r))
+        );
+        Auth memory a = _auth(rootPk, address(r), AMOUNT);
+        vm.expectRevert(abi.encodeWithSelector(IOverflowTreasury.EscrowClosed.selector, address(r)));
+        treasury.reserve(a.to, a.value, a.validAfter, a.validBefore, a.nonce, a.sig);
+        assertEq(treasury.getNode(1).spent, spent, "nothing charged");
+        assertEq(_bal(address(r)), 0);
+        // an open order (Created or Funded) is still payable
+        _pay(rootPk, address(e), AMOUNT);
+    }
+
     function test_flaggedSeller_directPathReverts() public {
         vm.prank(owner);
         treasury.setAllow(seller, true);

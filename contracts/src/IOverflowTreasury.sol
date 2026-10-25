@@ -58,6 +58,7 @@ interface IOverflowTreasury {
     error NotOwner();
     error PayeeFlagged(address seller);
     error EscrowAmountMismatch(address escrow, uint256 expected, uint256 actual);
+    error EscrowClosed(address escrow); // settled or refunded: paying it would strand USDC
     error ReservationTooLong();
     error ReservationActive();
     error NoReservation();

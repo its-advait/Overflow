@@ -1067,6 +1067,17 @@ export const overflowTreasuryAbi = [
   },
   {
     "type": "error",
+    "name": "EscrowClosed",
+    "inputs": [
+      {
+        "name": "escrow",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "Expired",
     "inputs": [
       {
