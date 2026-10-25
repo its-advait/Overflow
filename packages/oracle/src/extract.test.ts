@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   EXTRACTION_SYSTEM_PROMPT,
   ExtractionError,
+  clampToHorizon,
   clampToPresent,
   extractRequirements,
   lastCompleteMonthEnd,
@@ -95,6 +96,45 @@ describe("date clamp", () => {
     expect(clamped.assumption).toContain("clamped to 2026-09-30");
     const untouched = clampToPresent({ start: "2021-01-01", end: "2022-12-31" }, NOW);
     expect(untouched).toEqual({ dateRange: { start: "2021-01-01", end: "2022-12-31" } });
+  });
+});
+
+describe("horizon and allowed formats (the owner's constraints, enforced in code)", () => {
+  it("clampToHorizon cuts both ends and says so; no horizon or a range inside it is untouched", () => {
+    const cut = clampToHorizon({ start: "2023-01-01", end: "2026-12-31" }, { start: "2024-01-01", end: "2025-12-31" });
+    expect(cut.dateRange).toEqual({ start: "2024-01-01", end: "2025-12-31" });
+    expect(cut.assumption).toContain("clamped to the mission horizon 2024-01-01..2025-12-31");
+    expect(clampToHorizon({ start: "2024-03-01", end: "2024-06-30" }, { start: "2024-01-01", end: "2025-12-31" })).toEqual({ dateRange: { start: "2024-03-01", end: "2024-06-30" } });
+    expect(clampToHorizon({ start: "2023-01-01", end: "2026-12-31" }, undefined)).toEqual({ dateRange: { start: "2023-01-01", end: "2026-12-31" } });
+    // Entirely outside the horizon: the horizon itself, never an inverted range.
+    expect(clampToHorizon({ start: "2020-01-01", end: "2021-12-31" }, { start: "2024-01-01", end: "2025-12-31" }).dateRange).toEqual({ start: "2024-01-01", end: "2025-12-31" });
+  });
+
+  it("puts the horizon and the allowed formats in the prompt, clamps the dates and drops disallowed formats", async () => {
+    const out = { ...GOOD_OUTPUT, requests: [{ ...GOOD_OUTPUT.requests[0]!, format: ["csv", "parquet", "json"] }] };
+    const { client, calls } = fakeClient([out]);
+    const mission = { ...MISSION, horizon: { start: "2025-01-01", end: "2025-06-30" }, allowedFormats: ["csv", "json"] as ("csv" | "json")[] };
+    const result = await extractRequirements({ mission, knownRegions: ["US"], now: NOW }, { client, model: MODEL, audit: fakeAudit() });
+    const prompt = JSON.stringify(calls[0]!.params["messages"]);
+    expect(prompt).toContain("Data horizon: 2025-01-01 to 2025-06-30");
+    expect(prompt).toContain("Allowed formats: csv, json");
+    expect(result.requests[0]!.dateRange).toEqual({ start: "2025-01-01", end: "2025-06-30" });
+    expect(result.requests[0]!.format).toEqual(["csv", "json"]);
+    expect(result.assumptions).toEqual([
+      "state detail means US plus state codes",
+      expect.stringContaining("clamped to the mission horizon"),
+      "format parquet dropped: the mission allows csv, json",
+    ]);
+  });
+
+  it("a request in none of the allowed formats is a validation issue the model gets to fix once", async () => {
+    const bad = { ...GOOD_OUTPUT, requests: [{ ...GOOD_OUTPUT.requests[0]!, format: ["parquet"] }] };
+    const { client, calls } = fakeClient([bad, GOOD_OUTPUT]);
+    const mission = { ...MISSION, allowedFormats: ["csv"] as "csv"[] };
+    const result = await extractRequirements({ mission, knownRegions: [], now: NOW }, { client, model: MODEL, audit: fakeAudit() });
+    expect(calls).toHaveLength(2);
+    expect(result.modelCalls.map((c) => c.outcome)).toEqual(["invalid", "parsed"]);
+    expect(result.requests[0]!.format).toEqual(["csv"]);
   });
 });
 

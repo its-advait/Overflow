@@ -210,6 +210,50 @@ describe("Oracle routes: plan and propose", () => {
     expect(after.filter((s) => s.status === "open")).toHaveLength(1);
   });
 
+  it("while planning: propose and run answer 409 requirements_unconfirmed; the owner edits one requirement; confirm locks it", async () => {
+    const { app, post } = appWith({});
+    const blocked = await post("/api/purchases/propose", { missionId: "mission-1" });
+    expect(blocked.status).toBe(409);
+    expect((await json(blocked)).error.code).toBe("requirements_unconfirmed");
+    const run = await post("/api/missions/mission-1/run", {});
+    expect(run.status).toBe(409);
+    expect((await json(run)).error.code).toBe("requirements_unconfirmed");
+
+    const open = (await handle.repos.resourceRequests.listByMission("mission-1")).find((r) => r.status === "open")!;
+    const { id: _id, missionId: _m, agentId: _a, status: _s, createdAt: _c, ...fields } = open;
+    void _id; void _m; void _a; void _s; void _c;
+    const put = (requestId: string, body: unknown) =>
+      app.request(`/api/missions/mission-1/requests/${requestId}`, { method: "PUT", headers: JSON_HEADERS, body: JSON.stringify(body) });
+
+    const overBudget = await put(open.id, { ...fields, maxPriceAtomic: "50000001" });
+    expect(overBudget.status).toBe(409);
+    expect((await json(overBudget)).error.code).toBe("over_budget");
+
+    const edited = await put(open.id, { ...fields, topic: "EV registrations by brand", regions: ["US"] });
+    expect(edited.status).toBe(200);
+    const body = await json(edited);
+    expect(body.request).toMatchObject({ id: open.id, topic: "EV registrations by brand", regions: ["US"], status: "open", agentId: open.agentId });
+    expect((await handle.repos.resourceRequests.getById(open.id))!.topic).toBe("EV registrations by brand");
+
+    const withdrawn = (await handle.repos.resourceRequests.listByMission("mission-1")).find((r) => r.status === "withdrawn")!;
+    expect((await put(withdrawn.id, fields)).status).toBe(409);
+    expect((await put("req-nope", fields)).status).toBe(404);
+
+    const confirmed = await post("/api/missions/mission-1/confirm", {});
+    expect(confirmed.status).toBe(200);
+    expect((await json(confirmed)).mission.status).toBe("confirmed");
+    expect((await handle.repos.missions.getById("mission-1"))!.status).toBe("confirmed");
+    const again = await post("/api/missions/mission-1/confirm", {});
+    expect(again.status).toBe(409);
+    expect((await json(again)).error.code).toBe("not_planning");
+    expect((await put(open.id, fields)).status).toBe(409);
+    expect((await json(await put(open.id, fields))).error.code).toBe("not_editable");
+
+    const kinds = (await handle.repos.activityEvents.listRecent(10)).map((e) => e.kind);
+    expect(kinds).toContain("mission.requirement_edited");
+    expect(kinds).toContain("mission.confirmed");
+  });
+
   it("propose with order terms not wired: 501 naming the seller step; the decision is recorded, no purchase row", async () => {
     const { post, fake } = appWith({ orderTerms: notWiredOrderTerms() });
     const res = await post("/api/purchases/propose", { missionId: "mission-1" });
@@ -308,6 +352,7 @@ describe("Oracle routes: plan and propose", () => {
       outputs: [{ ...GOOD_OUTPUT, requests: [{ ...GOOD_OUTPUT.requests[0], regions: ["DE"] }] }],
     });
     expect((await post("/api/missions/mission-2/plan", {})).status).toBe(200);
+    expect((await post("/api/missions/mission-2/confirm", {})).status).toBe(200); // the owner reviews before anything is proposed
     const res = await post("/api/purchases/propose", { missionId: "mission-2" });
     expect(res.status).toBe(201);
     const body = await json(res);

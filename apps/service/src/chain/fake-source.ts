@@ -1,14 +1,16 @@
 import type { Address, Hex } from "viem";
-import type { BalanceReader, GetLogsRequest, LogSource, RawLog } from "./log-source.js";
+import type { BalanceReader, GetLogsRequest, LogSource, RawLog, TreasuryReader } from "./log-source.js";
 
 /** Test-only LogSource serving a fixed (SIMULATED) log set; mutate `logs` / `head` / `balances` to model reorgs and differences. */
-export interface FakeLogSource extends LogSource, BalanceReader {
+export interface FakeLogSource extends LogSource, BalanceReader, TreasuryReader {
   logs: RawLog[];
   head: bigint;
   calls: GetLogsRequest[];
   /** `${token}:${holder}` (lowercase) -> balance. Unknown holders read as 0. */
   balances: Map<string, bigint>;
   setBalance(token: Address, holder: Address, value: bigint): void;
+  /** What `reservedTotal()` answers for any treasury address; 0 until a test sets it. */
+  reserved: bigint;
 }
 
 const matchesTopics = (log: RawLog, topics: GetLogsRequest["topics"]): boolean => {
@@ -29,6 +31,7 @@ export function fakeLogSource(initial: RawLog[], head: bigint, blockTimestamp = 
     head,
     calls: [],
     balances: new Map(),
+    reserved: 0n,
     setBalance(token, holder, value) {
       source.balances.set(key(token, holder), value);
     },
@@ -48,6 +51,9 @@ export function fakeLogSource(initial: RawLog[], head: bigint, blockTimestamp = 
     },
     async balanceOf(token, holder) {
       return source.balances.get(key(token, holder)) ?? 0n;
+    },
+    async reservedTotal() {
+      return source.reserved;
     },
   };
   return source;

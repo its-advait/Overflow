@@ -37,6 +37,10 @@ import type {
   SseMessage,
   SseQuery,
   TreasuryNodesResponse,
+  TreasuryResponse,
+  ConfirmMissionResponse,
+  UpdateRequestBody,
+  UpdateRequestResponse,
 } from "./contracts";
 
 export type { ActivityEvent, AgentRecord, PurchaseRecord };
@@ -70,6 +74,10 @@ export interface OverflowApi {
   getMission(id: string): Promise<MissionDetailResponse>;
   createMission(body: CreateMissionBody): Promise<MissionResponse>;
   planMission(id: string): Promise<PlanResponse>;
+  /** The owner edits one extracted requirement; allowed only while the mission is planning and the request is open. */
+  updateRequest(missionId: string, requestId: string, body: UpdateRequestBody): Promise<UpdateRequestResponse>;
+  /** planning -> confirmed; only then may purchases be proposed or the run start. Nothing is bought. */
+  confirmMission(id: string): Promise<ConfirmMissionResponse>;
   runMission(id: string, body?: RunMissionBody): Promise<RunMissionResponse>;
   pauseMissionAgent(missionId: string, agentId: string): Promise<PauseMissionAgentResponse>;
 
@@ -101,6 +109,8 @@ export interface OverflowApi {
   listControllerRequests(query?: ControllerRequestsQuery): Promise<ControllerRequestsResponse>;
 
   getLedger(query?: LedgerQuery): Promise<LedgerResponse>;
+  /** Onchain treasury balance and reservedTotal at one block (null with a reason when no RPC is wired) plus the USDC the open escrows hold. */
+  getTreasury(): Promise<TreasuryResponse>;
   getReconciliation(): Promise<ReconciliationResponse>;
   runReconciliation(): Promise<RunReconciliationResponse>;
 

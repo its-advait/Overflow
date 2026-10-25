@@ -6,8 +6,15 @@ import {
   IsoDateTimeSchema,
   UintStringSchema,
 } from "./primitives";
+import { DateRangeSchema, FormatSchema } from "./resource";
 
-export const MissionStatusSchema = z.enum(["draft", "planning", "active", "complete", "cancelled"]);
+/**
+ * draft (created) -> planning (Oracle extracted requests; the owner may edit them)
+ * -> confirmed (owner confirmed; purchases may be proposed, the run may start)
+ * -> active (agents running) -> complete | cancelled. Re-planning a confirmed mission
+ * returns it to planning.
+ */
+export const MissionStatusSchema = z.enum(["draft", "planning", "confirmed", "active", "complete", "cancelled"]);
 export type MissionStatus = z.infer<typeof MissionStatusSchema>;
 
 export const MissionSchema = z.object({
@@ -17,6 +24,10 @@ export const MissionSchema = z.object({
   /** Treasury node that pays for the mission's purchases (usually the orchestrator root). */
   rootNodeId: z.number().int().positive(),
   ownerAgentId: IdSchema.optional(),
+  /** Data date range the bought data must cover; extracted requests are clamped inside it. */
+  horizon: DateRangeSchema.optional(),
+  /** Formats the buyer can read; extracted requests only carry these. */
+  allowedFormats: z.array(FormatSchema).min(1).default([...FormatSchema.options]),
   status: MissionStatusSchema,
   createdAt: IsoDateTimeSchema,
 });

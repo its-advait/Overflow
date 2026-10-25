@@ -53,10 +53,10 @@ export const EXTRACTION_SYSTEM_PROMPT = [
   "Return only the requested JSON. You propose requirements; you do not choose listings or sellers and you authorize nothing.",
   "Rules:",
   "- regions: use only codes from the region vocabulary given (US means the national aggregate; US-XX means state detail for that state). If the mission needs state-level detail nationwide, include US and every state code you need, or just US when any national dataset will do.",
-  "- dateRange: calendar dates YYYY-MM-DD. Never end after today's date; data for the current month does not exist yet.",
+  "- dateRange: calendar dates YYYY-MM-DD, inside the data horizon when one is given. Never end after today's date; data for the current month does not exist yet.",
   "- granularity: the finest resolution the mission needs (daily, weekly, monthly, quarterly, annual).",
   "- requiredFields: lowercase column names the mission must have.",
-  "- format: every format the buyer can read.",
+  "- format: every format the buyer can read, only from the allowed formats given.",
   "- license: company-use when more than one person or agent will use the data, single-user otherwise, unclear only if the mission says so.",
   "- freshnessMaxAgeDays: how old the data may be, in whole days.",
   "- maxPriceUsdc: a decimal string with at most 6 fractional digits, never above the mission budget.",
@@ -65,7 +65,8 @@ export const EXTRACTION_SYSTEM_PROMPT = [
 ].join("\n");
 
 export interface ExtractionInput {
-  mission: Pick<Mission, "id" | "goal" | "budgetAtomic">;
+  /** `horizon` and `allowedFormats` are the owner's constraints from MissionComposer; both are enforced in code after the model answers. */
+  mission: Pick<Mission, "id" | "goal" | "budgetAtomic"> & Partial<Pick<Mission, "horizon" | "allowedFormats">>;
   /** Region codes the catalog knows (e.g. from the listings' coverage). */
   knownRegions: readonly string[];
   /** Clock used for "today" and the date clamp. */
@@ -139,6 +140,29 @@ export function clampToPresent(
   };
 }
 
+/**
+ * The owner's data horizon is a hard bound: a request's range is cut to it
+ * (code, not the model). Returns the assumption text when a change was made.
+ */
+export function clampToHorizon(
+  dateRange: { start: string; end: string },
+  horizon: { start: string; end: string } | undefined,
+): { dateRange: { start: string; end: string }; assumption?: string } {
+  if (!horizon) return { dateRange };
+  let start = dateRange.start < horizon.start ? horizon.start : dateRange.start;
+  let end = dateRange.end > horizon.end ? horizon.end : dateRange.end;
+  if (start > end) {
+    // The model's range lies entirely outside the horizon: the horizon itself is the only range the owner allows.
+    start = horizon.start;
+    end = horizon.end;
+  }
+  if (start === dateRange.start && end === dateRange.end) return { dateRange };
+  return {
+    dateRange: { start, end },
+    assumption: `dateRange ${dateRange.start}..${dateRange.end} clamped to the mission horizon ${horizon.start}..${horizon.end}`,
+  };
+}
+
 /** Deterministic post-processing of one model request, then ResourceRequestSchema validation. */
 export function toResourceRequest(
   raw: ExtractionOutput["requests"][number],
@@ -146,8 +170,19 @@ export function toResourceRequest(
   now: Date,
 ): { request: ResourceRequest; assumptions: string[] } {
   const assumptions: string[] = [];
-  const clamped = clampToPresent(raw.dateRange, now);
+  const inHorizon = clampToHorizon(raw.dateRange, mission.horizon);
+  if (inHorizon.assumption) assumptions.push(inHorizon.assumption);
+  const clamped = clampToPresent(inHorizon.dateRange, now);
   if (clamped.assumption) assumptions.push(clamped.assumption);
+
+  // Allowed formats are the owner's choice; anything else the model named is dropped. An empty result fails
+  // ResourceRequestSchema (format min 1) and goes back to the model as a validation issue.
+  const allowed = mission.allowedFormats;
+  const formats = [...new Set(raw.format)];
+  const format = allowed ? formats.filter((f) => allowed.includes(f)) : formats;
+  if (format.length !== formats.length) {
+    assumptions.push(`format ${formats.filter((f) => !format.includes(f)).join(", ")} dropped: the mission allows ${allowed!.join(", ")}`);
+  }
 
   let maxPriceAtomic = toAtomic(raw.maxPriceUsdc.trim());
   if (atomicToBigInt(maxPriceAtomic) > atomicToBigInt(mission.budgetAtomic)) {
@@ -163,7 +198,7 @@ export function toResourceRequest(
     dateRange: clamped.dateRange,
     granularity: raw.granularity,
     requiredFields: [...new Set(raw.requiredFields.map((f) => f.trim().toLowerCase()))],
-    format: [...new Set(raw.format)],
+    format,
     license: raw.license,
     freshness: { maxAgeDays: raw.freshnessMaxAgeDays },
     maxPriceAtomic,
@@ -182,6 +217,8 @@ function missionTurn(input: ExtractionInput): string {
     `Today is ${isoDay(input.now)}.`,
     `Mission goal: ${input.mission.goal}`,
     `Mission budget: ${formatUsdc(input.mission.budgetAtomic)} USDC`,
+    ...(input.mission.horizon ? [`Data horizon: ${input.mission.horizon.start} to ${input.mission.horizon.end} (requests must stay inside it)`] : []),
+    `Allowed formats: ${(input.mission.allowedFormats ?? FormatSchema.options).join(", ")}`,
     `Region vocabulary: ${input.knownRegions.length > 0 ? input.knownRegions.join(", ") : "(none given; use ISO 3166-2 style codes such as US, US-CA)"}`,
   ].join("\n");
 }

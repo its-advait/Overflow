@@ -626,7 +626,8 @@ Amounts are integer atomic units. `idempotencyKey` is unique.
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /api/missions`, `POST /api/missions/:id/plan` | Create a mission; extract requirements |
+| `POST /api/missions`, `POST /api/missions/:id/plan` | Create a mission (goal, budget, data horizon, allowed formats); extract requirements (mission → `planning`) |
+| `PUT /api/missions/:id/requests/:requestId`, `POST /api/missions/:id/confirm` | The owner edits one extracted requirement (only while `planning` and `open`); confirms the set (`planning` → `confirmed`). Propose and run answer 409 `requirements_unconfirmed` while a mission is `planning` |
 | `GET /api/missions`, `GET /api/missions/:id` | List missions; a mission with its requests, purchases and Fusion groups |
 | `GET /api/resources` | Candidates with coverage |
 | `POST /api/purchases/propose` | Oracle plus Fusion proposal |
@@ -636,6 +637,7 @@ Amounts are integer atomic units. `idempotencyKey` is unique.
 | `GET /api/activity`, `GET /events` (SSE) | History and live feed |
 | `GET /api/ledger?purchaseId&account&department&limit` | Journal rows (filters), whole-book balances by account and department, Fusion allocation breakdown (planned vs booked per purchase and department) |
 | `GET /api/reconciliation`, `POST /api/reconciliation/run` | Last run (treasury and every escrow check, differences, materiality) with open exceptions; on-demand run |
+| `GET /api/treasury` | Overview money cards: USDC `balanceOf(treasury)` and `reservedTotal()` read at one block (null with the reason when no RPC is wired) plus the USDC the open, funded escrows hold |
 | `GET /api/exceptions?status`, `POST /api/exceptions/:id/decide` | Exceptions with their prepared controller request; the controller's offchain decision (onchain types: reject only) |
 | Seller: `GET /r/:id` (402), `POST /orders`, `GET /orders/:id/cipher`, `POST /orders/:id/sample` | Recourse seller protocol |
 

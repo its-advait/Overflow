@@ -2,6 +2,7 @@ import {
   ResourceRecordSchema,
   ResourceRequestRecordSchema,
   type ResourceRecord,
+  type ResourceRequest,
   type ResourceRequestRecord,
 } from "@overflow/schemas";
 import { eq } from "drizzle-orm";
@@ -161,6 +162,28 @@ export function resourceRequestsRepository(db: Executor) {
         db
           .update(resourceRequests)
           .set({ status })
+          .where(eq(resourceRequests.id, id))
+          .returning(),
+      );
+      return r ? toRequest(r) : undefined;
+    },
+
+    /** The owner's edit of an extracted request: every requirement field, never status, agent or mission. */
+    async update(id: string, fields: ResourceRequest): Promise<ResourceRequestRecord | undefined> {
+      const [r] = await withDbErrors(() =>
+        db
+          .update(resourceRequests)
+          .set({
+            topic: fields.topic,
+            regions: fields.regions,
+            dateRange: fields.dateRange,
+            granularity: fields.granularity,
+            requiredFields: fields.requiredFields,
+            format: fields.format,
+            license: fields.license,
+            freshness: fields.freshness,
+            maxPrice: fields.maxPriceAtomic,
+          })
           .where(eq(resourceRequests.id, id))
           .returning(),
       );

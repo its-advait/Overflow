@@ -4,6 +4,7 @@ import {
   AgentsResponseSchema,
   ApiErrorBodySchema,
   AuthorizeResponseSchema,
+  ConfirmMissionResponseSchema,
   ControllerRequestsResponseSchema,
   DecideExceptionResponseSchema,
   EscrowListResponseSchema,
@@ -27,6 +28,8 @@ import {
   RunReconciliationResponseSchema,
   ServiceStatusSchema,
   TreasuryNodesResponseSchema,
+  TreasuryResponseSchema,
+  UpdateRequestResponseSchema,
   type SseMessage,
   type SseQuery,
 } from "./contracts";
@@ -46,7 +49,7 @@ async function request<S extends z.ZodType>(
   base: string,
   schema: S,
   path: string,
-  init: { method?: "GET" | "POST"; body?: unknown; headers?: Record<string, string> } = {},
+  init: { method?: "GET" | "POST" | "PUT"; body?: unknown; headers?: Record<string, string> } = {},
 ): Promise<z.infer<S>> {
   const res = await fetch(`${base}${path}`, {
     method: init.method ?? "GET",
@@ -90,6 +93,9 @@ export function createHttpApi(base: string = API_BASE): OverflowApi {
     getMission: (id) => request(base, MissionDetailResponseSchema, `/api/missions/${enc(id)}`),
     createMission: (body) => request(base, MissionResponseSchema, "/api/missions", { method: "POST", body }),
     planMission: (id) => request(base, PlanResponseSchema, `/api/missions/${enc(id)}/plan`, { method: "POST" }),
+    updateRequest: (missionId, requestId, body) =>
+      request(base, UpdateRequestResponseSchema, `/api/missions/${enc(missionId)}/requests/${enc(requestId)}`, { method: "PUT", body }),
+    confirmMission: (id) => request(base, ConfirmMissionResponseSchema, `/api/missions/${enc(id)}/confirm`, { method: "POST" }),
     runMission: (id, body = {}) =>
       request(base, RunMissionResponseSchema, `/api/missions/${enc(id)}/run`, { method: "POST", body }),
     pauseMissionAgent: (missionId, agentId) =>
@@ -126,6 +132,7 @@ export function createHttpApi(base: string = API_BASE): OverflowApi {
       request(base, ControllerRequestsResponseSchema, `/api/controller-requests${qs(query)}`),
 
     getLedger: (query = {}) => request(base, LedgerResponseSchema, `/api/ledger${qs(query)}`),
+    getTreasury: () => request(base, TreasuryResponseSchema, "/api/treasury"),
     getReconciliation: () => request(base, ReconciliationResponseSchema, "/api/reconciliation"),
     runReconciliation: () => request(base, RunReconciliationResponseSchema, "/api/reconciliation/run", { method: "POST" }),
 

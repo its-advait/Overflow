@@ -5,7 +5,7 @@ import { withDbErrors } from "../errors";
 import { missions } from "../schema";
 import { iso, newId, nowIso, nul, opt, parseOne, type WithOptional } from "./base";
 
-export type MissionInsert = WithOptional<MissionRecord, "id" | "createdAt">;
+export type MissionInsert = WithOptional<MissionRecord, "id" | "createdAt" | "allowedFormats">;
 
 const toRecord = (r: typeof missions.$inferSelect): MissionRecord =>
   parseOne(MissionRecordSchema, {
@@ -15,6 +15,8 @@ const toRecord = (r: typeof missions.$inferSelect): MissionRecord =>
     budgetAtomic: r.budget,
     rootNodeId: r.rootNodeId,
     ownerAgentId: opt(r.ownerAgentId),
+    horizon: r.horizon ?? undefined,
+    allowedFormats: r.allowedFormats,
     status: r.status,
     createdAt: iso(r.createdAt),
   });
@@ -37,6 +39,8 @@ export function missionsRepository(db: Executor) {
             budget: row.budgetAtomic,
             rootNodeId: row.rootNodeId,
             ownerAgentId: nul(row.ownerAgentId),
+            horizon: row.horizon ?? null,
+            allowedFormats: row.allowedFormats,
             status: row.status,
             createdAt: new Date(row.createdAt),
           })

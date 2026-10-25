@@ -1,9 +1,17 @@
 import {
+  AddressSchema,
+  AtomicAmountSchema,
+  atomicToBigInt,
+  EscrowStatusSchema,
+  IdSchema,
+  IsoDateTimeSchema,
   NodePaymentsResponseSchema,
   TreasuryNodesResponseSchema,
+  UintStringSchema,
   type Address,
   type AgentRecord,
   type ChainTransaction,
+  type EscrowOrder,
   type NodePayment,
   type NodeStatus,
   type TreasuryNodeView,
@@ -13,13 +21,57 @@ import { z } from "zod";
 import type { TreasuryNode } from "../../orchestration/delegation-plan.js";
 import type { ApiDeps } from "../deps.js";
 import { ApiError, parseParams, respond, type ApiEnv } from "../http.js";
+import { NotWiredError } from "../ports.js";
 
-/**
- * The delegation tree as the chain holds it. Every number on a card comes from
- * a view call made in this request (getNode, remaining) or from an indexed log
- * (AllowSet, Paid); nothing is cached or inferred from local flags. Pause and
- * expiry cascade here exactly as settle()'s ancestor walk sees them.
- */
+// ---------------------------------------------------------------------------
+// GET /api/treasury                    the overview's money cards: USDC balanceOf(treasury) and reservedTotal()
+//                                      read at one block, beside the USDC the open escrows hold (escrow_orders).
+// GET /api/treasury/nodes              the delegation tree as the chain holds it (getNode, remaining, allowlist).
+// GET /api/treasury/nodes/:id/payments indexed Paid logs signed by one node.
+//
+// Every number comes from a view call made in this request or from an indexed log; nothing is cached or inferred
+// from local flags. When no chain reader is wired the chain part is null with the reason (or 501), never a stale
+// or invented number.
+// ---------------------------------------------------------------------------
+
+const ChainSnapshotSchema = z.object({
+  blockNumber: UintStringSchema,
+  /** USDC.balanceOf(treasury). */
+  balanceAtomic: AtomicAmountSchema,
+  /** OverflowTreasury.reservedTotal(): promised to open reservations; the floor check counts it. */
+  reservedTotalAtomic: AtomicAmountSchema,
+  usdc: AddressSchema,
+  readAt: IsoDateTimeSchema,
+});
+
+const OpenEscrowSchema = z.object({
+  purchaseId: IdSchema,
+  escrowAddress: AddressSchema,
+  status: EscrowStatusSchema,
+  amountAtomic: AtomicAmountSchema,
+  /** True once OrderFunded was indexed (Funded or Revealed): the USDC sits in the escrow contract. */
+  funded: z.boolean(),
+});
+
+export const TreasuryResponse = z.object({
+  treasury: AddressSchema.nullable(),
+  chain: ChainSnapshotSchema.nullable(),
+  /** Why `chain` is null (no RPC / deployments). Absent when `chain` is set. */
+  chainUnavailable: z.string().optional(),
+  escrow: z.object({
+    /** Orders not yet Settled or Refunded, including Created ones that hold no USDC yet. */
+    openOrders: z.number().int().min(0),
+    /** Open orders the chain has funded (Funded, Revealed). */
+    fundedOrders: z.number().int().min(0),
+    /** Σ amount over funded open orders: USDC held by escrow contracts for this treasury, bonds excluded. */
+    committedAtomic: AtomicAmountSchema,
+    orders: z.array(OpenEscrowSchema),
+  }),
+});
+export type TreasuryResponseBody = z.infer<typeof TreasuryResponse>;
+
+/** Funded and Revealed orders hold the buyer's USDC; a Created order exists onchain but nothing has moved. */
+export const holdsFunds = (o: Pick<EscrowOrder, "status">): boolean => o.status === "Funded" || o.status === "Revealed";
 
 const IdParams = z.object({ id: z.coerce.number().int().positive() });
 
@@ -82,6 +134,46 @@ export function paidToPayment(row: ChainTransaction): NodePayment | null {
 
 export function treasuryRoutes(deps: ApiDeps) {
   const app = new Hono<ApiEnv>();
+
+  app.get("/", async (c) => {
+    const open = await deps.repos.escrowOrders.listOpen();
+    const funded = open.filter(holdsFunds);
+    const committed = funded.reduce((sum, o) => sum + atomicToBigInt(o.amountAtomic), 0n);
+
+    let chain: z.input<typeof ChainSnapshotSchema> | null = null;
+    let chainUnavailable: string | undefined;
+    try {
+      const snapshot = await deps.ports.treasury.read();
+      chain = {
+        blockNumber: snapshot.blockNumber,
+        balanceAtomic: snapshot.balanceAtomic,
+        reservedTotalAtomic: snapshot.reservedTotalAtomic,
+        usdc: snapshot.usdc,
+        readAt: snapshot.readAt,
+      };
+    } catch (e) {
+      if (!(e instanceof NotWiredError)) throw e;
+      chainUnavailable = e.message;
+    }
+
+    return respond(c, TreasuryResponse, {
+      treasury: deps.treasury,
+      chain,
+      ...(chainUnavailable !== undefined ? { chainUnavailable } : {}),
+      escrow: {
+        openOrders: open.length,
+        fundedOrders: funded.length,
+        committedAtomic: committed.toString(),
+        orders: open.map((o) => ({
+          purchaseId: o.purchaseId,
+          escrowAddress: o.escrowAddress,
+          status: o.status,
+          amountAtomic: o.amountAtomic,
+          funded: holdsFunds(o),
+        })),
+      },
+    });
+  });
 
   app.get("/nodes", async (c) => {
     const treasury = deps.exceptions.treasury;

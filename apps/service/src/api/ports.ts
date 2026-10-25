@@ -11,6 +11,7 @@ import type {
   ResourceRequestRecord,
 } from "@overflow/schemas";
 import type { Hex } from "viem";
+import type { TreasurySnapshot } from "../chain/treasury-snapshot.js";
 import type { ProposeResult } from "../orchestration/oracle-port.js";
 import type { MissionRunResult, RunOptions } from "../orchestration/mission-runner.js";
 import type { TreasuryNode } from "../orchestration/delegation-plan.js";
@@ -125,6 +126,15 @@ export interface EscrowReadPort {
   state(escrow: Address): Promise<EscrowChainRead>;
 }
 
+/**
+ * Onchain treasury reads for the overview (chain/treasury-snapshot.ts): USDC balanceOf(treasury) and
+ * reservedTotal() at one block. Without an RPC and a deployments file the default refuses; the route then
+ * reports the chain part as unavailable instead of a number.
+ */
+export interface TreasuryPort {
+  read(): Promise<TreasurySnapshot>;
+}
+
 export interface Ports {
   orchestration: OrchestrationPort;
   adapters: Partial<Record<PaymentPath, PaymentAdapter>>;
@@ -132,6 +142,7 @@ export interface Ports {
   reconciliation: ReconciliationPort;
   treasuryRead: TreasuryReadPort;
   escrowRead: EscrowReadPort;
+  treasury: TreasuryPort;
 }
 
 /** Defaults for the ports later prompts build. The orchestration port is always real (createApp builds createOraclePort). */
@@ -147,6 +158,11 @@ export function defaultPorts(): Omit<Ports, "orchestration"> {
     },
     treasuryRead: notWiredTreasuryRead(),
     escrowRead: notWiredEscrowRead(),
+    treasury: {
+      read: async () => {
+        throw new NotWiredError("TreasuryPort.read (chain balance reads)", "BASE_SEPOLIA_RPC_URL + deployments/base-sepolia.json");
+      },
+    },
   };
 }
 

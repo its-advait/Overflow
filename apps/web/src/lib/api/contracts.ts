@@ -8,11 +8,14 @@ import {
   ChainTransactionSchema,
   ControllerRequestSchema,
   ControllerRequestStatusSchema,
+  DateRangeSchema,
   EscrowOrderSchema,
+  EscrowStatusSchema,
   ExceptionDecisionSchema,
   ExceptionRecordSchema,
   ExceptionStatusSchema,
   FinancialEntrySchema,
+  FormatSchema,
   IdSchema,
   IsoDateTimeSchema,
   LedgerAccountSchema,
@@ -23,8 +26,10 @@ import {
   ReconciliationRunSchema,
   ResourceRecordSchema,
   ResourceRequestRecordSchema,
+  ResourceRequestSchema,
   SignedAtomicSchema,
   TreasuryNodesResponseSchema,
+  UintStringSchema,
   type AgentRecord,
 } from "@overflow/schemas";
 import { z } from "zod";
@@ -85,6 +90,10 @@ export const CreateMissionBodySchema = z.object({
   budgetAtomic: AtomicAmountSchema,
   rootNodeId: z.number().int().positive().optional(),
   ownerAgentId: IdSchema.optional(),
+  /** MissionComposer "time horizon": the data date range; extracted requests are clamped inside it. */
+  horizon: DateRangeSchema.optional(),
+  /** MissionComposer "allowed resource types": the formats the buyer can read. */
+  allowedFormats: z.array(FormatSchema).min(1).optional(),
 });
 export type CreateMissionBody = z.infer<typeof CreateMissionBodySchema>;
 export const MissionResponseSchema = z.object({ mission: MissionRecordSchema });
@@ -105,6 +114,18 @@ export const PlanResponseSchema = z.object({
   requests: z.array(ResourceRequestRecordSchema),
 });
 export type PlanResponse = z.infer<typeof PlanResponseSchema>;
+// PUT /api/missions/:id/requests/:requestId: the owner's edit of one extracted requirement (SPEC "Oracle": editable
+// before any purchase). Only while the mission is planning and the request is open; 409 not_editable / over_budget otherwise.
+export const UpdateRequestBodySchema = ResourceRequestSchema;
+export type UpdateRequestBody = z.infer<typeof UpdateRequestBodySchema>;
+export const UpdateRequestResponseSchema = z.object({ request: ResourceRequestRecordSchema });
+export type UpdateRequestResponse = z.infer<typeof UpdateRequestResponseSchema>;
+// POST /api/missions/:id/confirm: planning -> confirmed. Propose and run answer 409 requirements_unconfirmed until then.
+export const ConfirmMissionResponseSchema = z.object({
+  mission: MissionRecordSchema,
+  requests: z.array(ResourceRequestRecordSchema),
+});
+export type ConfirmMissionResponse = z.infer<typeof ConfirmMissionResponseSchema>;
 export const RunMissionBodySchema = z.object({ forceInjectionBeat: z.boolean().optional() });
 export type RunMissionBody = z.infer<typeof RunMissionBodySchema>;
 export const RunMissionResponseSchema = z.object({
@@ -340,6 +361,45 @@ export const ReconciliationResponseSchema = z.object({
 export type ReconciliationResponse = z.infer<typeof ReconciliationResponseSchema>;
 export const RunReconciliationResponseSchema = z.object({ run: ReconciliationRunSchema });
 export type RunReconciliationResponse = z.infer<typeof RunReconciliationResponseSchema>;
+
+// GET /api/treasury (apps/service/src/api/routes/treasury.ts): the overview's money cards. The chain part is read
+// at one block (USDC balanceOf(treasury), reservedTotal()) and is null, with the reason, when no RPC is wired; the
+// escrow part is the escrow_orders table, which mirrors confirmed escrow events.
+export const TreasuryChainSnapshotSchema = z.object({
+  blockNumber: UintStringSchema,
+  /** USDC.balanceOf(treasury). */
+  balanceAtomic: AtomicAmountSchema,
+  /** OverflowTreasury.reservedTotal(): promised to open reservations; the floor check counts it. */
+  reservedTotalAtomic: AtomicAmountSchema,
+  usdc: AddressSchema,
+  readAt: IsoDateTimeSchema,
+});
+export type TreasuryChainSnapshot = z.infer<typeof TreasuryChainSnapshotSchema>;
+export const OpenEscrowSchema = z.object({
+  purchaseId: IdSchema,
+  escrowAddress: AddressSchema,
+  status: EscrowStatusSchema,
+  amountAtomic: AtomicAmountSchema,
+  /** True once OrderFunded was indexed (Funded or Revealed): the USDC sits in the escrow contract. */
+  funded: z.boolean(),
+});
+export type OpenEscrow = z.infer<typeof OpenEscrowSchema>;
+export const TreasuryResponseSchema = z.object({
+  treasury: AddressSchema.nullable(),
+  chain: TreasuryChainSnapshotSchema.nullable(),
+  /** Why `chain` is null. Absent when `chain` is set. */
+  chainUnavailable: z.string().optional(),
+  escrow: z.object({
+    /** Orders not yet Settled or Refunded, including Created ones that hold no USDC yet. */
+    openOrders: z.number().int().min(0),
+    /** Open orders the chain has funded (Funded, Revealed). */
+    fundedOrders: z.number().int().min(0),
+    /** Σ amount over funded open orders: USDC held by escrow contracts, bonds excluded. */
+    committedAtomic: AtomicAmountSchema,
+    orders: z.array(OpenEscrowSchema),
+  }),
+});
+export type TreasuryResponse = z.infer<typeof TreasuryResponseSchema>;
 
 // GET /events (SSE)
 export const SseQuerySchema = z.object({

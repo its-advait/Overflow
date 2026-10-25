@@ -91,12 +91,14 @@ export function createApp(opts: CreateAppOptions) {
       reconciliation: opts.ports?.reconciliation ?? base.reconciliation,
       treasuryRead: opts.ports?.treasuryRead ?? base.treasuryRead,
       escrowRead: opts.ports?.escrowRead ?? base.escrowRead,
+      treasury: opts.ports?.treasury ?? base.treasury,
     },
     session: opts.session ?? resolveSession(),
+    treasury: opts.treasury ?? null,
   };
 
   const app = new Hono<ApiEnv>();
-  app.use("*", cors({ origin: "*", allowHeaders: ["content-type", "idempotency-key"], allowMethods: ["GET", "POST", "OPTIONS"] }));
+  app.use("*", cors({ origin: "*", allowHeaders: ["content-type", "idempotency-key"], allowMethods: ["GET", "POST", "PUT", "OPTIONS"] }));
   app.use("*", async (c, next) => {
     c.set("requestId", c.req.header("x-request-id") ?? randomUUID());
     c.set("session", deps.session);
@@ -124,8 +126,8 @@ export function createApp(opts: CreateAppOptions) {
   app.route("/api/activity", activityRoutes(deps));
   app.route("/api/exceptions", exceptionRoutes(deps));
   app.route("/api/controller-requests", controllerRequestRoutes(deps));
-  app.route("/api/treasury", treasuryRoutes(deps));
   app.route("/api", ledgerRoutes(deps));
+  app.route("/api/treasury", treasuryRoutes(deps));
   app.route("/events", eventsRoutes(deps));
 
   return { app, deps };

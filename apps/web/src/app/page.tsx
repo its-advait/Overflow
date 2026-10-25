@@ -1,12 +1,13 @@
-import { Construction } from "lucide-react";
-import { EmptyState } from "@/components/shared/empty-state";
+import { CreateMissionAction, OverviewView } from "@/components/overview/overview-view";
 import { PageHeader } from "@/components/shell/page-header";
-import { OverviewStats } from "@/components/overview/overview-stats";
 
 /**
- * Overview. The stat cards read the ledger and the mission through the typed
- * client; everything else waits for its own prompt. Nothing on this page is a
- * local flag: balances come from GET /api/ledger (or the MOCK fixtures).
+ * Overview: four questions at a glance. What agents are doing (missions with a
+ * progress strip, the latest events), how much they can spend (onchain treasury
+ * balance, reservedTotal), what is being bought (escrow committed, spent this
+ * mission) and whether the money is safe (blocked events in the danger color with
+ * their reason). Everything comes from the typed client: GET /api/treasury,
+ * /api/missions(/:id), /api/ledger, /api/activity, or the MOCK fixtures.
  */
 export default function OverviewPage() {
   return (
@@ -14,14 +15,9 @@ export default function OverviewPage() {
       <PageHeader
         title="Overview"
         description="Treasury balance, budget utilization and what the agents are doing right now."
+        actions={<CreateMissionAction />}
       />
-      <OverviewStats />
-      <EmptyState
-        className="mt-6"
-        icon={Construction}
-        title="Activity, Blocked lane and agent tree land in later prompts"
-        description="Each will read confirmed chain events and service responses only."
-      />
+      <OverviewView />
     </>
   );
 }

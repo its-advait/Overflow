@@ -9,7 +9,7 @@ import { verifyBoot } from "./chain/boot";
 import { viemChainClient } from "./chain/client";
 import { viemEscrowRead } from "./chain/escrow-read.js";
 import { viemTreasuryRead } from "./chain/treasury-read.js";
-import { createActivityBus, createIndexer, createLogSource, resolveIndexerConfig, type Indexer } from "./chain/index.js";
+import { createActivityBus, createIndexer, createLogSource, readTreasurySnapshot, resolveIndexerConfig, type Indexer } from "./chain/index.js";
 import { loadEnv, readConfig } from "./config";
 import { createFacilitatorApp } from "./facilitator/app";
 import { createBus, createLogPoller } from "./facilitator/events";
@@ -102,6 +102,7 @@ async function main(): Promise<void> {
   const indexerConfig = await resolveIndexerConfig();
   let indexer: Indexer | undefined;
   let reconciliation: Reconciliation | undefined;
+  let treasurySnapshotRead: (() => ReturnType<typeof readTreasurySnapshot>) | undefined;
   let chainStatus: string;
   let ledgerStatus: string;
   if (indexerConfig.ok) {
@@ -118,6 +119,7 @@ async function main(): Promise<void> {
       ...(materiality ? { materialityAtomic: BigInt(materiality) } : {}),
     });
     reconciliation = recon;
+    treasurySnapshotRead = () => readTreasurySnapshot(source, { treasury: ic.treasury, usdc: ic.usdc });
     indexer = createIndexer({
       db: database.db,
       source,
@@ -187,6 +189,8 @@ async function main(): Promise<void> {
     bus: activityBus,
     ports: {
       ...(reconciliation ? { reconciliation: { run: (trigger) => reconciliation!.run(trigger) } } : {}),
+      // USDC balanceOf(treasury) + reservedTotal() for GET /api/treasury (overview money cards); read-only.
+      ...(treasurySnapshotRead ? { treasury: { read: treasurySnapshotRead } } : {}),
       // Treasury view calls for GET /api/treasury/nodes: the same read-only client, no signing.
       treasuryRead: viemTreasuryRead(client, boot.treasury),
       // Escrow view calls + USDC balance for GET /api/escrow/:id; read-only.

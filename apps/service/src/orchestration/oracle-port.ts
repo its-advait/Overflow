@@ -103,6 +103,14 @@ export class NoOpenRequestsError extends Error {
   }
 }
 
+/** The owner has not confirmed the extracted requirements yet (mission status `planning`). Nothing may be proposed or run. */
+export class RequirementsUnconfirmedError extends Error {
+  constructor(public readonly missionId: string) {
+    super(`mission ${missionId} has extracted requirements awaiting the owner's confirmation; POST /api/missions/${missionId}/confirm first`);
+    this.name = "RequirementsUnconfirmedError";
+  }
+}
+
 export const OracleDecisionSchema = z.object({
   requestId: IdSchema,
   /** Listing (resource id) the deterministic pipeline ranked first; null when every listing was rejected. */
@@ -216,6 +224,7 @@ export function createOraclePort(opts: OraclePortOptions): OrchestrationPort {
     },
 
     async propose(mission: MissionRecord): Promise<ProposeResult> {
+      if (mission.status === "planning") throw new RequirementsUnconfirmedError(mission.id);
       const repos = createRepositories(opts.db);
       const open = (await repos.resourceRequests.listByMission(mission.id)).filter((r) => r.status === "open");
       if (open.length === 0) throw new NoOpenRequestsError(mission.id);
