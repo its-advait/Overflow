@@ -104,6 +104,8 @@ async function main(): Promise<void> {
   process.env["DISABLE_CDP_ERROR_REPORTING"] ??= "true";
 
   const { values } = parseArgs({
+    // pnpm 12 forwards the literal "--" that separates script args; parseArgs would stop reading options at it.
+    args: process.argv.slice(2).filter((a) => a !== "--"),
     options: {
       name: { type: "string", default: process.env["CDP_ACCOUNT_NAME"] || "overflow-node-root" },
       treasury: { type: "string" },

@@ -107,7 +107,8 @@ async function main(): Promise<void> {
       ttl: { type: "string", default: "120" },
       "dry-run": { type: "boolean", default: false },
     },
-    // pnpm forwards a literal "--"; tolerate it.
+    // pnpm forwards a literal "--"; drop it so the options after it are still parsed.
+    args: process.argv.slice(2).filter((a) => a !== "--"),
     allowPositionals: true,
   });
 

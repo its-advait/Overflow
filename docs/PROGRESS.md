@@ -1035,7 +1035,18 @@ Follow-ups: a facilitator route for `releaseClosed` (the Coinbase adapter's reco
 | env-key boot of the bundle | unreachable service → exit 1, 0 bytes on stdout, `NODE_DEBUG=module` shows no `cdp-sdk` resolution |
 | `cdp:sign-check` without credentials | exits 1 with `missing in the environment: CDP_API_KEY_ID or CDP_API_KEY_NAME, CDP_API_KEY_SECRET, CDP_WALLET_SECRET`; no network call |
 
+### Live sign check (run 2026-10-25, after the user added `CDP_WALLET_SECRET`; nothing broadcast)
+| Check | Result |
+|---|---|
+| `cdp:sign-check -- --name overflow-node-root --json` | exit 0, verdict **yes**. Account `overflow-node-root` → `0x646F2bb89286aD517E0cc5420589a65dDe30A415` (lookup 1424 ms) |
+| TransferWithAuthorization (USDC domain, from = treasury) | 65 bytes, raw v = 27, low s, no normalization, recovers to the account from the typed data and from the EIP-712 digest, 431 ms |
+| CreateChild (Overflow delegation domain) | 65 bytes, raw v = 28, low s, recovers to the account, 225 ms |
+| PauseChild (Overflow delegation domain) | 65 bytes, raw v = 27, low s, recovers to the account, 317 ms |
+| `NODE_SIGNER=cdp CDP_ACCOUNT_NAME=overflow-node-root CDP_ACCOUNT_ADDRESS=0x646F…A415 settle:live -- --to 0x2222…2222 --amount 1 --dry-run` | exit 0: live USDC domain verified over RPC, one authorization `from = 0xd3A7…8291` signed by `0x646F2bb89286aD517E0cc5420589a65dDe30A415`, digest `0x98d1660f…caad28`, "dry run: not submitting settle()" |
+| Fix found by the run | pnpm 12 forwards the literal `--` to the script and `parseArgs` stopped reading options at it (`--json` was ignored, the default account name hid it). `cdp-sign-check.ts` and `settle-live.ts` now drop that token before parsing. |
+
+Full JSON in `docs/coinbase-feedback.md`, "CDP server accounts as agent keys". BUILD 1 answered **yes**; BUILD 2 is the code above.
+
 ### Not yet done
-- **BUILD 1 live**: `.env` has `CDP_API_KEY_ID` and `CDP_API_KEY_SECRET` but no `CDP_WALLET_SECRET` (checked by name). The user creates a Wallet Secret in the CDP portal; then `pnpm --filter @overflow/payment-client cdp:sign-check -- --name overflow-node-root --json` answers "yes/no" and its output goes into `docs/coinbase-feedback.md`.
-- **DONE WHEN** (one `settle()` on Base Sepolia signed by a CDP account): needs the check to pass, `AGENT_ROOT_ADDRESS` = the CDP address before the Stage B deploy (root key CDP-held, user decision 2026-10-25), the controller's `createRoot` + `setAllow(payee)` batch, USDC in the treasury, then `NODE_SIGNER=cdp ... settle:live -- --to <payee> --amount 10000` (dry run first; live only on the user's go). Tx hash into feedback + here.
+- **DONE WHEN** (one `settle()` on Base Sepolia signed by a CDP account): the node key exists and signs; it is not registered on any treasury yet (the current deployments file points at the retired treasury). Order: `.env` `AGENT_ROOT_ADDRESS=0x646F2bb89286aD517E0cc5420589a65dDe30A415`, `NODE_SIGNER=cdp`, `CDP_ACCOUNT_NAME=overflow-node-root`, `CDP_ACCOUNT_ADDRESS=0x646F2bb89286aD517E0cc5420589a65dDe30A415` (user); Stage B deploy with `OWNER_ADDRESS` = the controller smart wallet (user); controller batch `[setEscrowFactory, createRoot(0x646F…A415, 50e6, 15e6, expiry), setAllow(payee, true)]`; USDC into the treasury; then `NODE_SIGNER=cdp ... settle:live -- --to <payee> --amount 10000` (dry run first, live on the user's go). Tx hash into feedback + here.
 - With a CDP-held root, `scripts/facilitator-demo.ts`, `adapter-demo.ts` and `coinbase-spike.ts` (which read `AGENT_ROOT_KEY`) sign with a key that is not a node until a child is delegated to it; follow-up: one `/delegate` signed by the CDP root.
