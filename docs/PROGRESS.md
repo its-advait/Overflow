@@ -1014,3 +1014,28 @@ Follow-ups: a facilitator route for `releaseClosed` (the Coinbase adapter's reco
 ### Not yet done (needs the live stack)
 - The DONE WHEN on Base Sepolia (fresh clone pays `/api/search`, `/premium-intel` refused with `PayeeNotAllowed`) needs the new treasury (Stage B of the controller plan), `setAllow(PAYEE_SEARCH_ADDRESS)` by the controller, USDC in the treasury, a registered node key and the service running. Nothing in the package has been run against a live seller yet; the README describes only what the tests prove and what the live run will show. Results go here when it runs.
 - `/verify` needs a real signature even for a quote; the probe is 60 s and goes only to SERVICE_URL, but it is a signature a malicious facilitator could relay. Acceptable for the operator's own service; documented in the README.
+
+## 2026-10-25: optional CDP-held agent keys (`NODE_SIGNER=cdp`)
+
+### Built
+- **`@overflow/payment-client/signers`** (Node-only subpath): `ResolvedNodeSigner {signer, address, kind: env-key | keystore | cdp, source}`; `envKeySigner` wraps the existing `resolveSigner` (keystore module untouched; the service's RELAYER path is unchanged); `cdpSigner({accountName, expectedAddress?, create?, client?, inspect?})` wraps a CDP EVM server account (EOA): lookup by name with `getAccount` (create only on request), address pin, every signature normalized by `normalizeEcdsaSignature` (65 bytes, `v` 0/1 lifted to 27/28, high-`s` rejected) and checked to recover to the account before use, for TransferWithAuthorization and CreateChild/PauseChild alike; `@coinbase/cdp-sdk` is imported lazily, so env-key users never load it. `resolveNodeSigner(env, {label, cdp?})` switches on `<LABEL>_SIGNER=env|cdp`; in `cdp` mode the three CDP credentials are required **by name** (the error names the missing one and never echoes a value), `CDP_ACCOUNT_NAME` must match CDP's name rule before any network call, `CDP_ACCOUNT_ADDRESS` pins the address.
+- **Check script** `pnpm --filter @overflow/payment-client cdp:sign-check -- [--name] [--treasury] [--json]`: `getOrCreateAccount`, then signs (1) a TransferWithAuthorization through the real `signTransfer` (USDC domain, 60 s probe), (2) `signCreateChild`, (3) `signPauseChild` (Overflow delegation domain), and reports raw byte length, raw `v`, low-`s`, whether normalization was needed, recovery from the typed data and from `hashTypedData` (proves a raw ECDSA over the EIP-712 digest), latency. Broadcasts nothing, writes nothing; sets `DISABLE_CDP_USAGE_TRACKING`/`DISABLE_CDP_ERROR_REPORTING` when unset.
+- **overflow-mcp**: `NODE_CDP_ACCOUNT` (refuse-to-start stub) removed; `readConfig` is async and uses `resolveNodeSigner` (fake CDP client injectable); boot log shows signer kind + source. `@coinbase/cdp-sdk` is a declared dependency so tsup keeps it external (`dist/server.js` holds exactly one dynamic `import("@coinbase/cdp-sdk")`, no Solana/axios inlined; 105.91 KB).
+- **`settle:live`**: `NODE_SIGNER=cdp` swaps only the node signer (CDP account `CDP_ACCOUNT_NAME`, pinned to `CDP_ACCOUNT_ADDRESS`); relayer, `nodeOfKey` precheck, `--dry-run` and the direct `treasury.settle()` call unchanged.
+- **Docs/env**: `.env.example` (`NODE_SIGNER`, `CDP_ACCOUNT_NAME`, `CDP_ACCOUNT_ADDRESS`, `CDP_WALLET_SECRET`, the two `DISABLE_CDP_*` flags, `AGENT_ROOT_ADDRESS` comment for a CDP-held root); overflow-mcp README section; `docs/coinbase-feedback.md` "CDP server accounts as agent keys" (SDK findings incl. the telemetry surprise and the create-by-typo hazard); SPEC l.232 and the Known-limitations bullet.
+
+### Verified (real output, 2026-10-25)
+| Check | Result |
+|---|---|
+| `pnpm install` | lockfile gains the `@coinbase/cdp-sdk@1.60.0` snapshot for both packages; no new build scripts |
+| `pnpm -r typecheck` | exit 0 |
+| `pnpm lint` | exit 0 |
+| `pnpm test` | 64 files passed, 1 skipped; 566 tests passed, 1 skipped (26 new: `signers/signature`, `signers/cdp`, `signers/resolve`, overflow-mcp `config`) |
+| `pnpm --filter @overflow/overflow-mcp build` | `dist/server.js` 105.91 KB; `grep -c cdp-sdk` = 1 (the dynamic import); `@solana/kit` not inlined |
+| env-key boot of the bundle | unreachable service → exit 1, 0 bytes on stdout, `NODE_DEBUG=module` shows no `cdp-sdk` resolution |
+| `cdp:sign-check` without credentials | exits 1 with `missing in the environment: CDP_API_KEY_ID or CDP_API_KEY_NAME, CDP_API_KEY_SECRET, CDP_WALLET_SECRET`; no network call |
+
+### Not yet done
+- **BUILD 1 live**: `.env` has `CDP_API_KEY_ID` and `CDP_API_KEY_SECRET` but no `CDP_WALLET_SECRET` (checked by name). The user creates a Wallet Secret in the CDP portal; then `pnpm --filter @overflow/payment-client cdp:sign-check -- --name overflow-node-root --json` answers "yes/no" and its output goes into `docs/coinbase-feedback.md`.
+- **DONE WHEN** (one `settle()` on Base Sepolia signed by a CDP account): needs the check to pass, `AGENT_ROOT_ADDRESS` = the CDP address before the Stage B deploy (root key CDP-held, user decision 2026-10-25), the controller's `createRoot` + `setAllow(payee)` batch, USDC in the treasury, then `NODE_SIGNER=cdp ... settle:live -- --to <payee> --amount 10000` (dry run first; live only on the user's go). Tx hash into feedback + here.
+- With a CDP-held root, `scripts/facilitator-demo.ts`, `adapter-demo.ts` and `coinbase-spike.ts` (which read `AGENT_ROOT_KEY`) sign with a key that is not a node until a child is delegated to it; follow-up: one `/delegate` signed by the CDP root.

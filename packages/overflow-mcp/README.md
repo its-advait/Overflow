@@ -26,20 +26,34 @@ The server loads `<repo>/.env` on start (variables already in the environment wi
 | Variable | Required | Meaning |
 |---|---|---|
 | `SERVICE_URL` | default `http://localhost:4000` | The Overflow facilitator. Its `/health` tells the server the treasury and USDC it settles with. |
-| `NODE_PRIVATE_KEY` | one of | `0x` + 64 hex: the node key. Or just its address when the key lives in a Foundry keystore. |
-| `NODE_ACCOUNT` + `NODE_PASSWORD_FILE` | one of | Foundry keystore name (`cast wallet list`) and a chmod-600 password file; decrypted in memory. |
+| `NODE_SIGNER` | default `env` | Where the node key lives: `env` (the two rows below) or `cdp` (a Coinbase Developer Platform server account, see below). |
+| `NODE_PRIVATE_KEY` | `env`: one of | `0x` + 64 hex: the node key. Or just its address when the key lives in a Foundry keystore. |
+| `NODE_ACCOUNT` + `NODE_PASSWORD_FILE` | `env`: one of | Foundry keystore name (`cast wallet list`) and a chmod-600 password file; decrypted in memory. |
+| `CDP_ACCOUNT_NAME` | `cdp`: required | The CDP EVM server account (EOA) that holds the node key. Looked up by name, never created by the server. |
+| `CDP_ACCOUNT_ADDRESS` | `cdp`: optional | Pin: refuse to start if the account's address differs. |
+| `CDP_API_KEY_ID`, `CDP_API_KEY_SECRET`, `CDP_WALLET_SECRET` | `cdp`: required | Read by the CDP SDK itself (`@coinbase/cdp-sdk`); the server only checks they are set and never logs them. |
 | `BASE_SEPOLIA_RPC_URL` | recommended | RPC for the chain reads. Unset = `https://sepolia.base.org` (rate limited) with a warning on stderr. |
 | `TREASURY` | optional | Pin: the server refuses to start if `/health` reports a different treasury. |
 | `CHAIN_ID` | optional | Must be `84532`. Anything else is refused. |
 
-A CDP account as node signer (`NODE_CDP_ACCOUNT`) is **not implemented**: that CDP accounts sign arbitrary EIP-712 typed data is unconfirmed (docs/SPEC.md). Setting it refuses to start. `NodeSigner` in `@overflow/payment-client` is the extension point.
+### CDP-held node keys (`NODE_SIGNER=cdp`)
+
+With `NODE_SIGNER=cdp` the node key is a Coinbase Developer Platform EVM **server account** (an EOA whose key lives in CDP's TEE; smart accounts are not supported because they sign ERC-6492 wrapped signatures). The server resolves `CDP_ACCOUNT_NAME` with `getAccount` (a typo fails instead of creating a key), checks the optional `CDP_ACCOUNT_ADDRESS` pin, and signs every `TransferWithAuthorization` through CDP. Each signature is normalized to the chain's `v in {27, 28}` form and must recover to the account before it is used; `@coinbase/cdp-sdk` is loaded only in this mode. Node 20.19+ (the SDK's `jose` is ESM-only).
+
+Before relying on it, run the check once (creates the account if needed, signs three payloads, broadcasts nothing) and register the printed address as a node key (root via `AGENT_ROOT_ADDRESS` at deploy time, or a child via `POST /delegate`):
+
+```bash
+pnpm --filter @overflow/payment-client cdp:sign-check -- --name overflow-node-root --json
+```
+
+The CDP SDK reports usage and errors to Coinbase unless `DISABLE_CDP_USAGE_TRACKING=true` and `DISABLE_CDP_ERROR_REPORTING=true` are set (`.env.example` sets both). Result of the live check: `docs/coinbase-feedback.md`, "CDP server accounts as agent keys".
 
 ## Install
 
 ```bash
 git clone <this repo> && cd Overflow
 pnpm install
-cp .env.example .env            # fill BASE_SEPOLIA_RPC_URL, SERVICE_URL, SELLER_URL, NODE_PRIVATE_KEY (or NODE_ACCOUNT + NODE_PASSWORD_FILE)
+cp .env.example .env            # fill BASE_SEPOLIA_RPC_URL, SERVICE_URL, SELLER_URL, NODE_PRIVATE_KEY (or NODE_ACCOUNT + NODE_PASSWORD_FILE, or NODE_SIGNER=cdp)
 pnpm --filter @overflow/overflow-mcp build   # -> packages/overflow-mcp/dist/server.js (one ESM file)
 ```
 

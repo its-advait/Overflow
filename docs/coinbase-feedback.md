@@ -175,3 +175,45 @@ The controller flow (`docs/controller.md`, skill `.claude/skills/overflow-contro
 SIMULATED fixture only. No `get_wallets`, `send`, `send_calls` or `get_request_status` call has been made yet: this
 session had no Wallet MCP server connected. The live spike (smart wallet address, Base Sepolia support, one harmless
 `send_calls`, treasury funding, setAllow + raiseCap approvals with tx hashes) is recorded here once it runs.
+
+## CDP server accounts as agent keys (code done 2026-10-25; live check pending)
+
+Goal: an Overflow agent node key that never exists as a raw private key. A CDP EVM **server account** (EOA, key
+in Coinbase's TEE) signs the two EIP-712 payloads the treasury verifies: USDC's `TransferWithAuthorization`
+(`from` = treasury, `_twaDigest`) and Overflow's `CreateChild` / `PauseChild` (delegation domain). Both need a
+plain 65-byte `r || s || v` signature with `v in {27, 28}` because the contracts use `ecrecover` / OpenZeppelin
+`ECDSA`; an ERC-1271 or ERC-6492 wrapped signature would not do.
+
+### What the SDK says (`@coinbase/cdp-sdk` 1.60.0, read from the installed types)
+- `EvmServerAccount.signTypedData(parameters: TypedDataDefinition) => Promise<Hex>`: the exact viem shape our
+  `NodeSigner` / `TypedDataSigner` already pass (`{domain, types, primaryType, message}`); the SDK adds
+  `EIP712Domain` to `types` and converts `bigint`s to strings in its auth interceptor. Arbitrary domains and
+  structs are accepted at the type level; nothing restricts `verifyingContract`.
+- Smart accounts (`EvmSmartAccount`) differ: their `signTypedData` needs a `network` and returns an ERC-6492
+  signature. Not usable as a node key; we use server accounts only.
+- The REST response type is `{ signature: string }`. Byte length and the `v` encoding (27/28 vs 0/1) are not
+  documented, so `@overflow/payment-client/signers` normalizes `v` and rejects anything that is not 65 bytes
+  with a low `s`, then checks recovery before using a signature.
+- Credentials: `CDP_API_KEY_ID`, `CDP_API_KEY_SECRET` (Secret API key) and `CDP_WALLET_SECRET` (needed for every
+  signing `POST`). The SDK reads them itself; Overflow checks presence by name and never logs values.
+- Undocumented surprise: the SDK posts usage and error telemetry to Coinbase on every action unless
+  `DISABLE_CDP_USAGE_TRACKING=true` and `DISABLE_CDP_ERROR_REPORTING=true`. Our scripts set both when unset.
+- `getOrCreateAccount` by a mistyped name silently creates a fresh (unregistered) key; node paths therefore use
+  `getAccount` and only the check script creates.
+
+### Built
+`resolveNodeSigner` (`NODE_SIGNER=env|cdp`), `envKeySigner`, `cdpSigner`, `normalizeEcdsaSignature`; overflow-mcp
+and `settle:live` honour the flag; `pnpm --filter @overflow/payment-client cdp:sign-check -- --json` signs the
+three payloads with a CDP account and prints length, raw `v`, low-`s`, recovery from the typed data and from the
+EIP-712 digest, and latency. Nothing is broadcast. 26 unit tests run against a fake CDP client.
+
+### Live check
+Not yet run: `.env` has the API key pair but no `CDP_WALLET_SECRET` (presence checked by name). Once it is set,
+the `cdp:sign-check --json` output is pasted here verbatim, and the "yes / no" verdict decides whether
+`NODE_SIGNER=cdp` stays recommended or is documented as blocked.
+
+### First settle() signed by a CDP account
+Pending the new treasury (controller plan Stage B, `AGENT_ROOT_ADDRESS` = the CDP address so the root key is
+CDP-held), `setAllow` of the payee and USDC in the treasury. Command:
+`NODE_SIGNER=cdp pnpm --filter @overflow/payment-client settle:live -- --to <payee> --amount 10000 [--dry-run]`.
+Tx hash goes here.

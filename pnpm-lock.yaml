@@ -391,6 +391,9 @@ importers:
 
   packages/overflow-mcp:
     dependencies:
+      '@coinbase/cdp-sdk':
+        specifier: ^1.60.0
+        version: 1.60.0(@x402/core@2.28.0)(@x402/evm@2.28.0(typescript@5.9.3))(@x402/extensions@2.28.0(typescript@5.9.3))(debug@4.4.3(supports-color@7.2.0))(supports-color@7.2.0)(typescript@5.9.3)
       '@modelcontextprotocol/server':
         specifier: ^2.4.0
         version: 2.4.0
@@ -422,6 +425,9 @@ importers:
 
   packages/payment-client:
     dependencies:
+      '@coinbase/cdp-sdk':
+        specifier: ^1.60.0
+        version: 1.60.0(@x402/core@2.28.0)(@x402/evm@2.28.0(typescript@5.9.3))(@x402/extensions@2.28.0(typescript@5.9.3))(debug@4.4.3(supports-color@7.2.0))(supports-color@7.2.0)(typescript@5.9.3)
       '@overflow/schemas':
         specifier: workspace:*
         version: link:../schemas
