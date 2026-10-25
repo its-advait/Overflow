@@ -634,6 +634,9 @@ Amounts are integer atomic units. `idempotencyKey` is unique.
 | `GET /api/purchases/:id`, `GET /api/escrow/:id` | Order, chain and escrow state |
 | `GET /api/agents`, `POST /api/agents/:id/pause` | Tree; pause opens a controller approval |
 | `GET /api/activity`, `GET /events` (SSE) | History and live feed |
+| `GET /api/ledger?purchaseId&account&department&limit` | Journal rows (filters), whole-book balances by account and department, Fusion allocation breakdown (planned vs booked per purchase and department) |
+| `GET /api/reconciliation`, `POST /api/reconciliation/run` | Last run (treasury and every escrow check, differences, materiality) with open exceptions; on-demand run |
+| `GET /api/exceptions?status`, `POST /api/exceptions/:id/decide` | Exceptions with their prepared controller request; the controller's offchain decision (onchain types: reject only) |
 | Seller: `GET /r/:id` (402), `POST /orders`, `GET /orders/:id/cipher`, `POST /orders/:id/sample` | Recourse seller protocol |
 
 There is no generic `/api/execute`.

@@ -241,6 +241,35 @@ export type ReconciliationDifference = z.infer<typeof ReconciliationDifferenceSc
 export const ReconciliationTriggerSchema = z.enum(["indexer", "api", "test"]);
 export type ReconciliationTrigger = z.infer<typeof ReconciliationTriggerSchema>;
 
+/** Escrow order states (the contract's). Defined here so the reconciliation check can name them without a cycle through tables.ts. */
+export const ESCROW_STATUSES = ["Created", "Funded", "Revealed", "Settled", "Refunded"] as const;
+export const EscrowStatusSchema = z.enum(ESCROW_STATUSES);
+export type EscrowStatus = z.infer<typeof EscrowStatusSchema>;
+
+/**
+ * One escrow order compared against its escrow-deposit line, recorded for every
+ * order a run looked at (matched or not), so the controller sees chain vs ledger
+ * for each open escrow rather than only the differences.
+ */
+export const ReconciliationEscrowCheckSchema = z.object({
+  purchaseId: IdSchema,
+  escrowAddress: AddressSchema,
+  status: EscrowStatusSchema,
+  /** Created, Funded or Revealed: the order can still hold the treasury's USDC. */
+  open: z.boolean(),
+  /** USDC balanceOf(escrow) at the run's block; read only for Funded/Revealed orders. */
+  chainAtomic: AtomicAmountSchema.optional(),
+  bondAtomic: AtomicAmountSchema,
+  /** What the chain says the escrow holds for the treasury (balance minus bond), or 0 for Created and closed orders. */
+  expectedAtomic: SignedAtomicSchema,
+  /** The order's net escrow-deposit line in the books. */
+  ledgerAtomic: SignedAtomicSchema,
+  /** expected - ledger. */
+  differenceAtomic: SignedAtomicSchema,
+  material: z.boolean(),
+});
+export type ReconciliationEscrowCheck = z.infer<typeof ReconciliationEscrowCheckSchema>;
+
 export const ReconciliationRunSchema = z.object({
   id: IdSchema,
   ranAt: IsoDateTimeSchema,
@@ -252,6 +281,10 @@ export const ReconciliationRunSchema = z.object({
   treasuryDifferenceAtomic: SignedAtomicSchema,
   escrowsChecked: z.number().int().min(0),
   eventsChecked: z.number().int().min(0),
+  /** Every escrow order the run compared, matched or not (runs stored before this field existed have none). */
+  escrows: z.array(ReconciliationEscrowCheckSchema).default([]),
+  /** The materiality threshold this run applied. */
+  materialityAtomic: AtomicAmountSchema.default(DEFAULT_MATERIALITY_ATOMIC),
   differences: z.array(ReconciliationDifferenceSchema),
   /** Exceptions opened by this run (ids). Already-open subjects are not reopened. */
   exceptionIds: z.array(IdSchema),

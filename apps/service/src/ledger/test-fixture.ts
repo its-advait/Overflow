@@ -20,8 +20,11 @@ const config = {
   chunkBlocks: 50,
 };
 
-/** The SIMULATED fixture replayed through the indexer: p1 settles, p2 refunds with a forfeited bond, p3 is never funded, p4 is a direct x402 buy. */
-export async function replayFixture() {
+/**
+ * The SIMULATED fixture replayed through the indexer: p1 settles, p2 refunds with a forfeited bond, p3 is never funded, p4 is a direct x402 buy.
+ * `exclude` drops logs before replay (e.g. p3's PaidOut, to get a chain whose books can fully reconcile).
+ */
+export async function replayFixture(opts: { exclude?: ((log: RawLog) => boolean) | undefined } = {}) {
   const handle = await testDatabase();
   await fixtureMissionAndResource(handle.repos);
   const svc = createPurchaseService(handle.db);
@@ -55,7 +58,8 @@ export async function replayFixture() {
     await svc.transition(id, "PAYMENT_PENDING", { reason: "sent", source: { kind: "adapter", reference: "t" }, authorizationDigest: digest });
   }
   const warnings: string[] = [];
-  const source = fakeLogSource(fixture.logs, BigInt(FIXTURE.head));
+  const logs = opts.exclude ? fixture.logs.filter((l) => !opts.exclude!(l)) : fixture.logs;
+  const source = fakeLogSource(logs, BigInt(FIXTURE.head));
   const indexer = createIndexer({ db: handle.db, source, config, log: () => undefined, warn: (m) => warnings.push(m) });
   const tick = await indexer.tick();
   return { handle, source, indexer, tick, warnings };

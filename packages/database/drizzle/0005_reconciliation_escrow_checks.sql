@@ -1,0 +1,2 @@
+ALTER TABLE "reconciliation_runs" ADD COLUMN "escrows" jsonb DEFAULT '[]'::jsonb NOT NULL;--> statement-breakpoint
+ALTER TABLE "reconciliation_runs" ADD COLUMN "materiality" numeric(78, 0) DEFAULT '10000' NOT NULL;

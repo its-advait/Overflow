@@ -278,6 +278,13 @@ export function purchasesRepository(db: Executor) {
       return hydrate(db, rows);
     },
 
+    /** The given purchases with their allocations, one query each way; unknown ids are skipped. */
+    async listByIds(ids: readonly string[]): Promise<PurchaseRecord[]> {
+      if (ids.length === 0) return [];
+      const rows = await db.select().from(purchases).where(inArray(purchases.id, [...ids])).orderBy(purchases.createdAt);
+      return hydrate(db, rows);
+    },
+
     async listByStatus(status: PurchaseStatus): Promise<PurchaseRecord[]> {
       const rows = await db.select().from(purchases).where(eq(purchases.status, status)).orderBy(purchases.createdAt);
       return hydrate(db, rows);

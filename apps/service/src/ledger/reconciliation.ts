@@ -7,6 +7,7 @@ import {
   type Address,
   type ChainTransaction,
   type ReconciliationDifference,
+  type ReconciliationEscrowCheck,
   type ReconciliationRun,
   type ReconciliationTrigger,
 } from "@overflow/schemas";
@@ -81,8 +82,9 @@ export function createReconciliation(deps: ReconciliationDeps): Reconciliation {
       });
     }
 
-    // 2. Escrows.
+    // 2. Escrows: one check per order, recorded whether or not it matches.
     const orders = await repos.escrowOrders.listAll();
+    const escrows: ReconciliationEscrowCheck[] = [];
     for (const order of orders) {
       const line = await repos.financialEntries.depositLineForPurchase(order.purchaseId);
       const open = order.status === "Created" || order.status === "Funded" || order.status === "Revealed";
@@ -101,6 +103,18 @@ export function createReconciliation(deps: ReconciliationDeps): Reconciliation {
         note = `escrow ${order.escrowAddress} holds ${chain} (bond ${order.bondAtomic}) at block ${block}`;
       }
       const diff = expected - line;
+      escrows.push({
+        purchaseId: order.purchaseId,
+        escrowAddress: order.escrowAddress,
+        status: order.status,
+        open,
+        ...(chain !== undefined ? { chainAtomic: chain.toString() } : {}),
+        bondAtomic: order.bondAtomic,
+        expectedAtomic: expected.toString(),
+        ledgerAtomic: line.toString(),
+        differenceAtomic: diff.toString(),
+        material: diff !== 0n && material(diff),
+      });
       if (diff !== 0n) {
         differences.push({
           kind: "escrow",
@@ -189,6 +203,8 @@ export function createReconciliation(deps: ReconciliationDeps): Reconciliation {
           treasuryDifferenceAtomic: treasuryDiff.toString(),
           escrowsChecked: orders.length,
           eventsChecked,
+          escrows,
+          materialityAtomic: materiality.toString(),
           differences,
           exceptionIds,
           status: differences.length === 0 ? "ok" : "differences",

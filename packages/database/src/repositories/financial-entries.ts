@@ -5,7 +5,7 @@ import {
   type FinancialEntry,
   type LedgerAccount,
 } from "@overflow/schemas";
-import { desc, eq, or } from "drizzle-orm";
+import { and, desc, eq, or, type SQL } from "drizzle-orm";
 import type { Executor } from "../client";
 import { withDbErrors } from "../errors";
 import { financialEntries } from "../schema";
@@ -123,10 +123,22 @@ export function financialEntriesRepository(db: Executor) {
       return rows.map(toRecord);
     },
 
-    /** Newest first when a limit is given (the API view); chronological otherwise. */
-    async listAll(opts: { purchaseId?: string | undefined; limit?: number | undefined } = {}): Promise<FinancialEntry[]> {
+    /**
+     * Newest first when a limit is given (the API view); chronological otherwise.
+     * `account` matches rows that debit OR credit it; `department` matches the split lines of that department.
+     */
+    async listAll(
+      opts: { purchaseId?: string | undefined; account?: LedgerAccount | undefined; department?: string | undefined; limit?: number | undefined } = {},
+    ): Promise<FinancialEntry[]> {
+      const conditions: SQL[] = [];
+      if (opts.purchaseId) conditions.push(eq(financialEntries.purchaseId, opts.purchaseId));
+      if (opts.account) {
+        const acct = LedgerAccountSchema.parse(opts.account);
+        conditions.push(or(eq(financialEntries.debitAccount, acct), eq(financialEntries.creditAccount, acct))!);
+      }
+      if (opts.department) conditions.push(eq(financialEntries.department, opts.department));
       const base = db.select().from(financialEntries);
-      const filtered = opts.purchaseId ? base.where(eq(financialEntries.purchaseId, opts.purchaseId)) : base;
+      const filtered = conditions.length > 0 ? base.where(and(...conditions)) : base;
       const rows =
         opts.limit !== undefined
           ? await filtered.orderBy(desc(financialEntries.postedAt), desc(financialEntries.sourceEventId)).limit(opts.limit)
@@ -181,6 +193,24 @@ export function financialEntriesRepository(db: Executor) {
         if (r.creditAccount === "data-expense") bump(r.department, "creditsAtomic", amount);
       }
       return [...totals.values()].sort((a, b) => a.department.localeCompare(b.department));
+    },
+
+    /**
+     * Net data-expense booked per (purchase, department): the Fusion split as the books recorded it.
+     * Rows without a purchase or a department are skipped. Sorted by purchase then department.
+     */
+    async expenseByPurchaseAndDepartment(): Promise<{ purchaseId: string; department: string; netAtomic: bigint }[]> {
+      const totals = new Map<string, { purchaseId: string; department: string; netAtomic: bigint }>();
+      for (const r of await db.select().from(financialEntries)) {
+        if (!r.purchaseId || !r.department) continue;
+        const amount = atomicToBigInt(r.amount);
+        const k = `${r.purchaseId}\u0000${r.department}`;
+        const t = totals.get(k) ?? { purchaseId: r.purchaseId, department: r.department, netAtomic: 0n };
+        if (r.debitAccount === "data-expense") t.netAtomic += amount;
+        if (r.creditAccount === "data-expense") t.netAtomic -= amount;
+        totals.set(k, t);
+      }
+      return [...totals.values()].sort((a, b) => a.purchaseId.localeCompare(b.purchaseId) || a.department.localeCompare(b.department));
     },
 
     /** Net escrow-deposit line for one order (debits - credits); what the books say the escrow holds for the treasury. */

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { LedgerAccountSchema } from "./ledger";
+import { EscrowStatusSchema, LedgerAccountSchema, type EscrowStatus } from "./ledger";
 import { MissionSchema } from "./mission";
 import {
   AddressSchema,
@@ -114,9 +114,6 @@ export const ChainTransactionSchema = z.object({
 export type ChainTransaction = z.infer<typeof ChainTransactionSchema>;
 
 /** Mirrors OverflowEscrow `enum Status`. */
-export const ESCROW_STATUSES = ["Created", "Funded", "Revealed", "Settled", "Refunded"] as const;
-export const EscrowStatusSchema = z.enum(ESCROW_STATUSES);
-export type EscrowStatus = z.infer<typeof EscrowStatusSchema>;
 
 /** Created → Funded → Revealed → Settled; Refunded from Funded (timeout) or Revealed (proof). */
 export const ESCROW_TRANSITIONS: Readonly<Record<EscrowStatus, readonly EscrowStatus[]>> = {

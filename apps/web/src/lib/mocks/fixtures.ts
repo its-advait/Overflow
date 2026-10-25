@@ -10,6 +10,7 @@ import {
   MissionRecordSchema,
   PurchaseGroupSchema,
   PurchaseRecordSchema,
+  ReconciliationEscrowCheckSchema,
   ReconciliationRunSchema,
   ResourceRecordSchema,
   ResourceRequestRecordSchema,
@@ -722,6 +723,35 @@ export const exception: ExceptionRecord = ExceptionRecordSchema.parse({
   details: { nodeId: 3, agentId: "agent-research" },
 });
 
+const T6 = "2026-10-24T18:30:00.000Z";
+
+/** One check per fixture escrow, as the service records them: open funded orders read balanceOf(escrow) = line + bond. */
+const escrowCheck = (purchaseId: string, ledgerAtomic: string): z.input<typeof ReconciliationEscrowCheckSchema> => {
+  const e = escrowByPurchase(purchaseId)!;
+  const open = e.status === "Created" || e.status === "Funded" || e.status === "Revealed";
+  const funded = e.status === "Funded" || e.status === "Revealed";
+  const expected = funded ? ledgerAtomic : "0";
+  return {
+    purchaseId,
+    escrowAddress: e.escrowAddress,
+    status: e.status,
+    open,
+    ...(funded ? { chainAtomic: (BigInt(ledgerAtomic) + BigInt(e.bondAtomic)).toString() } : {}),
+    bondAtomic: e.bondAtomic,
+    expectedAtomic: expected,
+    ledgerAtomic,
+    differenceAtomic: (BigInt(expected) - BigInt(ledgerAtomic)).toString(),
+    material: false,
+  };
+};
+const escrowChecks = [
+  escrowCheck("pur-california-weekly", "0"),
+  escrowCheck("pur-weather-daily", "4500000"),
+  escrowCheck("pur-oregon-monthly", "8000000"),
+  escrowCheck("pur-merged-national", "0"),
+  escrowCheck("pur-freight-weekly", "0"),
+];
+
 export const reconciliationRun: ReconciliationRun = ReconciliationRunSchema.parse({
   id: "rec-1",
   ranAt: T5,
@@ -732,9 +762,54 @@ export const reconciliationRun: ReconciliationRun = ReconciliationRunSchema.pars
   treasuryDifferenceAtomic: "0",
   escrowsChecked: 5,
   eventsChecked: 8,
+  escrows: escrowChecks,
+  materialityAtomic: "10000",
   differences: [],
   exceptionIds: [],
   status: "ok",
+});
+
+// MOCK planted difference (SPEC test 20: "the ledger is off by a planted 0.50 USDC"). The mock's
+// "Run reconciliation" returns this run and opens the exception below; nothing on any chain changed.
+const PLANTED_REASON = "treasury USDC: chain 226000000 vs ledger 225500000 at block 49850420 (difference 500000)";
+
+export const plantedException: ExceptionRecord = ExceptionRecordSchema.parse({
+  id: "exc-recon-treasury",
+  type: "RECONCILIATION_DIFF",
+  reason: PLANTED_REASON,
+  amountAtomic: "500000",
+  status: "open",
+  openedAt: T6,
+  subject: "treasury",
+  requestedBy: "system:reconciliation",
+  details: { kind: "treasury", chainAtomic: "226000000", ledgerAtomic: "225500000", differenceAtomic: "500000" },
+});
+
+export const reconciliationRunPlanted: ReconciliationRun = ReconciliationRunSchema.parse({
+  id: "rec-2-mock-planted",
+  ranAt: T6,
+  trigger: "api",
+  blockNumber: "49850420",
+  treasuryChainAtomic: "226000000",
+  treasuryLedgerAtomic: "225500000",
+  treasuryDifferenceAtomic: "500000",
+  escrowsChecked: 5,
+  eventsChecked: 8,
+  escrows: escrowChecks,
+  materialityAtomic: "10000",
+  differences: [
+    {
+      kind: "treasury",
+      subject: "treasury",
+      reason: PLANTED_REASON,
+      chainAtomic: "226000000",
+      ledgerAtomic: "225500000",
+      differenceAtomic: "500000",
+      material: true,
+    },
+  ],
+  exceptionIds: [plantedException.id],
+  status: "differences",
 });
 
 // Oracle and Fusion decisions for the merged purchase -------------------------

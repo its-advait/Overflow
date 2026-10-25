@@ -264,6 +264,10 @@ export type ControllerRequestsResponse = z.infer<typeof ControllerRequestsRespon
 // Ledger and reconciliation
 export const LedgerQuerySchema = z.object({
   purchaseId: IdSchema.optional(),
+  /** Rows that debit or credit this account. */
+  account: LedgerAccountSchema.optional(),
+  /** Split lines booked to this department. */
+  department: z.string().min(1).optional(),
   limit: z.number().int().min(1).max(1000).optional(),
 });
 export type LedgerQuery = z.infer<typeof LedgerQuerySchema>;
@@ -277,10 +281,24 @@ export const BalanceSchema = z.object({
 export type Balance = z.infer<typeof BalanceSchema>;
 export const DepartmentBalanceSchema = BalanceSchema.extend({ department: z.string().min(1) });
 export type DepartmentBalance = z.infer<typeof DepartmentBalanceSchema>;
+/** Fusion allocation breakdown: a purchase's planned department share beside what the books expensed for it. */
+export const AllocationBreakdownSchema = z.object({
+  purchaseId: IdSchema,
+  purchaseGroupId: IdSchema.nullable(),
+  department: z.string().min(1),
+  /** Planned share from the purchase's allocations; null when the purchase has none for this department. */
+  allocatedAtomic: AtomicAmountSchema.nullable(),
+  /** Net data-expense booked to this purchase and department. */
+  bookedAtomic: SignedAtomicSchema,
+});
+export type AllocationBreakdown = z.infer<typeof AllocationBreakdownSchema>;
 export const LedgerResponseSchema = z.object({
+  /** Filtered by the query; newest first when `limit` is given. */
   entries: z.array(FinancialEntrySchema),
+  /** Whole-book totals, regardless of the entry filters. */
   balances: z.array(BalanceSchema),
   departments: z.array(DepartmentBalanceSchema),
+  allocations: z.array(AllocationBreakdownSchema),
 });
 export type LedgerResponse = z.infer<typeof LedgerResponseSchema>;
 export const ReconciliationResponseSchema = z.object({

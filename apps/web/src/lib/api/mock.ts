@@ -1,7 +1,8 @@
-import type { Hex, LedgerAccount, PurchaseRecord } from "@overflow/schemas";
-import { ApiError, type OverflowApi } from "./client";
-import type { Balance, DepartmentBalance } from "./contracts";
+import { isOnchainExceptionType, type ControllerRequest, type ExceptionRecord, type Hex, type LedgerAccount, type PurchaseRecord, type ReconciliationRun } from "@overflow/schemas";
+import { filterEntries } from "../ledger/journal";
 import * as fx from "../mocks/fixtures";
+import { ApiError, type OverflowApi } from "./client";
+import type { AllocationBreakdown, Balance, DepartmentBalance } from "./contracts";
 
 // ---------------------------------------------------------------------------
 // MOCK client: serves the fixtures with a short delay so loading states show.
@@ -24,6 +25,47 @@ const storedPurchase = (id: string): PurchaseRecord | undefined => purchaseStore
 const missionPurchases = (missionId: string): PurchaseRecord[] => [...purchaseStore.values()].filter((p) => p.missionId === missionId);
 const delay = <T>(value: T, ms = LATENCY_MS): Promise<T> => new Promise((r) => setTimeout(() => r(value), ms));
 const notFound = (what: string, id: string) => new ApiError(404, "not_found", `${what} ${id} not found (${fx.MOCK_LABEL})`);
+
+/**
+ * Exceptions and the reconciliation state the mock has handed out this session. "Run reconciliation" switches to the
+ * planted run and opens its exception (once); decisions update the stored row. In memory only; a reload resets it.
+ */
+const exceptionStore = new Map<string, ExceptionRecord>([[fx.exception.id, fx.exception], ...([] as [string, ExceptionRecord][])]);
+const requestStore = new Map<string, ControllerRequest>([[fx.controllerRequest.id, fx.controllerRequest]]);
+const reconState: { lastRun: ReconciliationRun } = { lastRun: fx.reconciliationRun };
+const requestFor = (exceptionId: string): ControllerRequest | null => [...requestStore.values()].find((r) => r.exceptionId === exceptionId) ?? null;
+const openExceptions = (): ExceptionRecord[] => [...exceptionStore.values()].filter((e) => e.status === "open");
+
+/** The service's allocation breakdown over the fixture books: booked data-expense per (purchase, department) beside the plan. */
+function allocationBreakdown(entries: typeof fx.ledgerEntries): AllocationBreakdown[] {
+  const booked = new Map<string, bigint>();
+  for (const e of entries) {
+    if (!e.purchaseId || !e.department) continue;
+    const k = `${e.purchaseId}\u0000${e.department}`;
+    const v = BigInt(e.amountAtomic);
+    booked.set(k, (booked.get(k) ?? 0n) + (e.debitAccount === "data-expense" ? v : 0n) - (e.creditAccount === "data-expense" ? v : 0n));
+  }
+  const rows = new Map<string, AllocationBreakdown>();
+  const purchaseIds = new Set([...booked.keys()].map((k) => k.split("\u0000")[0]!));
+  for (const purchaseId of purchaseIds) {
+    const purchase = storedPurchase(purchaseId);
+    const departments = new Set([
+      ...[...booked.keys()].filter((k) => k.startsWith(`${purchaseId}\u0000`)).map((k) => k.split("\u0000")[1]!),
+      ...(purchase?.allocations.map((a) => a.department) ?? []),
+    ]);
+    for (const department of departments) {
+      const planned = purchase?.allocations.filter((a) => a.department === department) ?? [];
+      rows.set(`${purchaseId}\u0000${department}`, {
+        purchaseId,
+        purchaseGroupId: purchase?.purchaseGroupId ?? null,
+        department,
+        allocatedAtomic: planned.length > 0 ? planned.reduce((s, a) => s + BigInt(a.amountAtomic), 0n).toString() : null,
+        bookedAtomic: (booked.get(`${purchaseId}\u0000${department}`) ?? 0n).toString(),
+      });
+    }
+  }
+  return [...rows.values()].sort((a, b) => a.purchaseId.localeCompare(b.purchaseId) || a.department.localeCompare(b.department));
+}
 
 function sumBalances(entries: typeof fx.ledgerEntries): { balances: Balance[]; departments: DepartmentBalance[] } {
   const acc = new Map<LedgerAccount, { debits: bigint; credits: bigint }>();
@@ -174,41 +216,63 @@ export function createMockApi(): OverflowApi {
     },
     listExceptions: (query = {}) => {
       const status = query.status ?? "open";
-      const rows = [{ ...fx.exception, request: fx.controllerRequest }];
-      return delay({ exceptions: rows.filter((r) => status === "all" || r.status === status) });
+      const rows = [...exceptionStore.values()].filter((e) => status === "all" || e.status === status);
+      return delay({ exceptions: rows.map((e) => ({ ...e, request: requestFor(e.id) })) });
     },
+    // The service's decide rules, with its exact error codes: 404, 409 already_decided, 403 self_resolution,
+    // 409 onchain_approval_required. Only the returned record changes status; nothing claims a chain outcome.
     decideException: (id, body) => {
-      if (id !== fx.exception.id) return Promise.reject(notFound("exception", id));
-      if (body.decision === "approve") {
+      const current = exceptionStore.get(id);
+      if (!current) return Promise.reject(notFound("exception", id));
+      if (current.status !== "open") {
+        return Promise.reject(new ApiError(409, "already_decided", `exception ${id} is already ${current.status} (${fx.MOCK_LABEL})`, { exceptionId: id, status: current.status }));
+      }
+      if (current.requestedBy !== undefined && current.requestedBy === body.decidedBy) {
+        return Promise.reject(new ApiError(403, "self_resolution", `${body.decidedBy} raised exception ${id} and cannot decide it (${fx.MOCK_LABEL})`, { exceptionId: id, principal: body.decidedBy }));
+      }
+      const request = requestFor(id);
+      if (isOnchainExceptionType(current.type) && body.decision === "approve") {
         return Promise.reject(
-          new ApiError(409, "onchain_approval_only", `${fx.MOCK_LABEL}: PAUSE_REQUEST is approved only by the treasury's NodePaused event`),
+          new ApiError(409, "onchain_approval_required", `${fx.MOCK_LABEL}: ${current.type} is approved only by the treasury event the controller's Coinbase Wallet call emits`, { exceptionId: id, requestId: request?.id }),
         );
       }
-      return delay({
-        exception: {
-          ...fx.exception,
-          status: "dismissed" as const,
-          decision: "reject" as const,
-          decisionReason: body.reason,
-          resolvedBy: body.decidedBy,
-          resolvedAt: new Date().toISOString(),
-        },
-        request: { ...fx.controllerRequest, status: "rejected" as const, resolvedAt: new Date().toISOString() },
-      });
+      const resolvedAt = new Date().toISOString();
+      const exception: ExceptionRecord = {
+        ...current,
+        status: body.decision === "approve" ? "resolved" : "dismissed",
+        decision: body.decision,
+        decisionReason: body.reason,
+        resolvedBy: body.decidedBy,
+        resolvedAt,
+      };
+      exceptionStore.set(id, exception);
+      let updated: ControllerRequest | null = null;
+      if (request && request.status === "pending") {
+        updated = { ...request, status: "rejected", resolvedAt };
+        requestStore.set(request.id, updated);
+      }
+      return delay({ exception, request: updated ?? request });
     },
     listControllerRequests: (query = {}) => {
       const status = query.status ?? "pending";
-      const rows = [fx.controllerRequest].filter((r) => status === "all" || r.status === status);
+      const rows = [...requestStore.values()].filter((r) => status === "all" || r.status === status);
       return delay({ requests: rows, treasury: fx.TREASURY_ADDRESS });
     },
 
     getLedger: (query = {}) => {
-      const entries = query.purchaseId ? fx.ledgerEntries.filter((e) => e.purchaseId === query.purchaseId) : fx.ledgerEntries;
-      // Balances always cover the whole book, as the service does; `limit` only trims the entry list.
-      return delay({ entries: entries.slice(0, query.limit ?? 1000), ...sumBalances(fx.ledgerEntries) });
+      const entries = filterEntries(fx.ledgerEntries, query);
+      // Balances and the breakdown always cover the whole book, as the service does; filters and `limit` only trim the entry list.
+      return delay({ entries: entries.slice(0, query.limit ?? 1000), ...sumBalances(fx.ledgerEntries), allocations: allocationBreakdown(fx.ledgerEntries) });
     },
-    getReconciliation: () => delay({ lastRun: fx.reconciliationRun, openExceptions: [fx.exception], note: `${fx.MOCK_LABEL}: fixture run` }),
-    runReconciliation: () => delay({ run: { ...fx.reconciliationRun, id: "rec-mock-api", trigger: "api" as const, ranAt: new Date().toISOString() } }),
+    getReconciliation: () => delay({ lastRun: reconState.lastRun, openExceptions: openExceptions(), note: `${fx.MOCK_LABEL}: fixture run` }),
+    // MOCK: a run "finds" the planted 0.50 USDC treasury difference and opens its exception once (an open subject is never duplicated).
+    runReconciliation: () => {
+      const run: ReconciliationRun = { ...fx.reconciliationRunPlanted, ranAt: new Date().toISOString() };
+      const alreadyOpen = openExceptions().some((e) => e.type === "RECONCILIATION_DIFF" && e.subject === fx.plantedException.subject);
+      if (!alreadyOpen) exceptionStore.set(fx.plantedException.id, { ...fx.plantedException, openedAt: run.ranAt });
+      reconState.lastRun = { ...run, exceptionIds: alreadyOpen ? [] : run.exceptionIds };
+      return delay({ run: reconState.lastRun });
+    },
 
     subscribe: (onMessage) => {
       const timers: ReturnType<typeof setTimeout>[] = [];

@@ -26,6 +26,14 @@ describe("reconciliation (SIMULATED fixture, fake balances)", () => {
     expect(run.treasuryLedgerAtomic).toBe(LEDGER_TREASURY.toString());
     expect(run.treasuryDifferenceAtomic).toBe("0");
     expect(run.escrowsChecked).toBe(3);
+    expect(run.materialityAtomic).toBe("10000");
+    // Every order is recorded, matched or not: p1 settled and p2 refunded net to zero, p3 was never funded.
+    expect(run.escrows.map((e) => [e.purchaseId, e.status, e.open, e.expectedAtomic, e.ledgerAtomic, e.differenceAtomic, e.material]).sort()).toEqual([
+      ["p1", "Settled", false, "0", "0", "0", false],
+      ["p2", "Refunded", false, "0", "0", "0", false],
+      ["p3", "Created", true, "0", "0", "0", false],
+    ]);
+    expect(run.escrows.every((e) => e.chainAtomic === undefined)).toBe(true); // no open funded order, so no escrow balance was read
     expect(run.eventsChecked).toBe(5); // PaidOut x2, Refunded x1, Paid x2
     expect(run.differences.map((d) => d.kind)).toEqual(["event-coverage"]);
     // The refused PaidOut handler rolled back its purchase link, so the difference names the event, not p3.

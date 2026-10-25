@@ -464,6 +464,10 @@ export const reconciliationRuns = pgTable(
     treasuryDifference: money("treasury_difference").notNull(),
     escrowsChecked: integer("escrows_checked").notNull(),
     eventsChecked: integer("events_checked").notNull(),
+    /** Every escrow check (ReconciliationEscrowCheck[]); runs stored before 0005 default to none. */
+    escrows: jsonb("escrows").notNull().default([]),
+    /** Materiality the run applied, atomic USDC. */
+    materiality: money("materiality").notNull().default("10000"),
     differences: jsonb("differences").notNull(),
     exceptionIds: text("exception_ids").array().notNull(),
     status: text("status").notNull(),
