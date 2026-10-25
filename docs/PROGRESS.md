@@ -271,3 +271,28 @@ The Base Sepolia treasury at `0xd3A74fA991CA0B5627d30EF27dC699C134848291` was ch
 - Redeploy the treasury + escrow factory to Base Sepolia and record the new addresses (replaces `0xd3A7…8291`).
 - The service's Coinbase-facilitator path must call `reserve()` before handing the authorization to the facilitator, and `release()` after `validBefore`; `Paid` is not emitted for reserved payments, so the ledger must watch USDC `Transfer`/`AuthorizationUsed` instead.
 - Treasury invariants T1, T2, T4, T13/T16 still lack Foundry invariant handlers (only the escrow has them).
+
+## 2026-10-24: tier-2 mismatch proofs (P1.6)
+
+### Built
+- `contracts/src/RecourseCrypto.sol`: `deriveKey(sellerSecret, orderId, buyer) = keccak256(abi.encodePacked(...))`, `keyCommitment(k) = keccak256(k)`, `chunkKey(k, i) = keccak256(abi.encodePacked(k, uint256 i))`, `keystreamBlock(k_i, j) = keccak256(abi.encodePacked(k_i, uint256 j))`, `xorChunk(k_i, chunk)` over exactly 160 bytes (5 x 32-byte blocks, assembly XOR). Merkle rules stay in `MerkleLib` (domain-separated `0x00` leaf / `0x01` node, unpaired node promoted, index-dependent proof length) per the extra requirement; the prompt's plain `keccak256(chunk)` / `keccak256(left, right)` wording is superseded by that requirement, as in P1.3.
+- `OverflowEscrow.complainMismatch`: `Revealed` and inside the window, `i < chunkCount`, 160-byte chunk, both proof lengths exact, both proofs verified; then `k_i` from `revealedKey`, decrypt, and if `leaf(plaintext) != plainLeaf`: `status = Refunded` (effect first), `CheatProven(seller, i)`, `factory.recordCheat(seller)`, whole balance (price + bond + surplus) to the buyer, `Refunded("mismatch")`. Matching chunk reverts `ChunkMatches`. `complainPromise` remains the tier-3 stub (structural checks, then `NotImplemented`).
+- `packages/recourse-crypto`: `src/crypto.ts` (`deriveKey`, `chunkKey`, `keystreamBlock`, `xorChunk`, `encryptChunk`/`decryptChunk`, `commitDelivery` -> `{keyCommitment, rootPlain, rootCipher, plainLeaves, cipherChunks, cipherLeaves, chunkCount}`, `chunkMatches`, `recordTimestamp`, `RECORD_LAYOUT`), `README.md` (record byte layout: 95-byte payload whose first 8 bytes are a big-endian uint64 timestamp + 65-byte signature; keystream; Merkle rules; complaint flow), `src/crypto.test.ts`.
+- Golden vectors (KEY = `keccak256("overflow.golden.key")`, chunk i = 160 bytes of value i, n = 5) pinned identically in `contracts/test/escrow/RecourseCrypto.t.sol` and `crypto.test.ts`: `k_0`, `k_2`, `ks_0_0`, `ks_0_4`, full `c_0` and `c_2`, `keyCommitment`, `rootPlain`, `rootCipher`, cipher leaf 0, `deriveKey` vector.
+- Test harness `EscrowBase` now commits real ciphertext (`_cipher(i)`, `_cipherLeaves(n)`); existing complaint-structure tests moved onto it (`test_complaint_wellFormed_honestSeller` now expects `ChunkMatches` for tier 2 and `NotImplemented` for tier 3).
+- `contracts/test/escrow/EscrowMismatch.t.sol` (7 tests): a seller commits honest plaintext hashes but serves a swapped ciphertext for chunk 2; the treasury funds the escrow through `settle()`; the proof refunds price + bond to the treasury, flags the seller, leaves the agent's allowance charged; a correct chunk complaint reverts (cheating and honest sellers); complaints before reveal and after the window revert and an unchallenged cheat pays out; a second complaint after the refund reverts; tampered chunk or foreign plain leaf revert `BadProof`; internal-node-as-leaf reverts (length, then hash); the flagged seller is then blocked by the treasury for new escrows via `settle` and `reserve` and for direct payment (P1.4 `PayeeFlagged`).
+- Escrow ABI re-exported (52 entries).
+
+### Verified (real output, 2026-10-24)
+| Check | Result |
+|---|---|
+| `forge build` | success |
+| `forge test` | 153 passed, 0 failed across 11 suites (7 mismatch, 6 RecourseCrypto golden/fuzz, 51 original treasury unchanged) |
+| `forge snapshot` | refreshed; `test_swappedChunk_refundsBuyerAndFlagsSeller` 890,194 gas whole-test |
+| `pnpm test` | 7 files / 118 tests (6 new crypto tests; TS and Solidity golden constants identical) |
+| `pnpm typecheck` / `pnpm lint` | exit 0 / exit 0 |
+
+### Open issues
+- Tier 3 (`complainPromise`: source signature over the 95-byte payload, `minTimestamp`, bond flows) is not implemented.
+- The live Base Sepolia treasury and no escrow contracts are deployed with this code; redeploy pending (see P1.5 section).
+- Sampling (`k_i` reveal for random indices before funding) is an offchain protocol in the service, not yet built.

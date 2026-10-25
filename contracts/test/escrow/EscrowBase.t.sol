@@ -6,16 +6,16 @@ import {OverflowEscrowFactory} from "../../src/OverflowEscrowFactory.sol";
 import {OverflowEscrow} from "../../src/OverflowEscrow.sol";
 import {IOverflowEscrow} from "../../src/IOverflowEscrow.sol";
 import {MerkleLib} from "../../src/MerkleLib.sol";
+import {RecourseCrypto} from "../../src/RecourseCrypto.sol";
 import {UsdcV22} from "../usdc/UsdcV22.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /// @notice Escrow harness on top of the treasury harness (real USDC v2.2, treasury with root node 1).
-/// Chunk i of the plaintext tree is 160 bytes of value i; the cipher tree uses value i + 100.
+/// Plaintext chunk i is 160 bytes of value i; ciphertext c_i = p_i XOR keystream(KEY, i) (honest seller).
 abstract contract EscrowBaseTest is TreasuryBaseTest {
     bytes32 constant KEY = keccak256("overflow.test.delivery.key");
     uint256 constant AMOUNT = 5e4; // 0.05 USDC, within the root's 0.10 maxPerCall
     uint256 constant BOND = 1e4; // 0.01 USDC
-    uint8 constant CIPHER_OFFSET = 100;
 
     uint256 sellerPk = 0x5E11E4;
     address seller;
@@ -40,6 +40,22 @@ abstract contract EscrowBaseTest is TreasuryBaseTest {
         l = new bytes32[](n);
         for (uint256 i; i < n; i++) {
             l[i] = MerkleLib.leaf(_chunk(uint8(i) + offset));
+        }
+    }
+
+    function _plain(uint256 i) internal pure returns (bytes memory) {
+        return _chunk(uint8(i));
+    }
+
+    /// Honest ciphertext of plaintext chunk i under KEY.
+    function _cipher(uint256 i) internal pure returns (bytes memory) {
+        return RecourseCrypto.xorChunk(RecourseCrypto.chunkKey(KEY, i), _plain(i));
+    }
+
+    function _cipherLeaves(uint256 n) internal pure returns (bytes32[] memory l) {
+        l = new bytes32[](n);
+        for (uint256 i; i < n; i++) {
+            l[i] = MerkleLib.leaf(_cipher(i));
         }
     }
 
@@ -87,7 +103,7 @@ abstract contract EscrowBaseTest is TreasuryBaseTest {
         t.bond = bond;
         t.manifestHash = keccak256("manifest");
         t.rootPlain = _root(_leaves(n, 0));
-        t.rootCipher = _root(_leaves(n, CIPHER_OFFSET));
+        t.rootCipher = _root(_cipherLeaves(n));
         t.keyCommitment = keccak256(abi.encodePacked(KEY));
         t.revealDeadline = uint64(block.timestamp + 1 hours);
         t.challengeWindow = 30 minutes;

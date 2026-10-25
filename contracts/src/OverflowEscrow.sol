@@ -3,7 +3,9 @@ pragma solidity 0.8.28;
 
 import {IOverflowEscrow} from "./IOverflowEscrow.sol";
 import {IOverflowTreasury} from "./IOverflowTreasury.sol";
+import {IOverflowEscrowFactory} from "./IOverflowEscrowFactory.sol";
 import {MerkleLib} from "./MerkleLib.sol";
+import {RecourseCrypto} from "./RecourseCrypto.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 import {SafeERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -13,7 +15,8 @@ import {SafeERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeE
 /// or a quiet challenge window; a missed reveal refunds the buyer (the treasury). Exactly one terminal state.
 /// @dev Clone implementation: FACTORY is immutable (shared by every clone through the code); the implementation
 /// itself is marked initialized in the constructor so only clones can be initialized, and only by the factory.
-/// Tier 2/3 complaints are stubs: they enforce every structural check, then revert NotImplemented.
+/// Tier 2 (complainMismatch) refunds on a proven ciphertext/plaintext mismatch; tier 3 (complainPromise) is a stub
+/// that enforces every structural check, then reverts NotImplemented.
 contract OverflowEscrow is IOverflowEscrow, ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
 
@@ -90,16 +93,19 @@ contract OverflowEscrow is IOverflowEscrow, ReentrancyGuardTransient {
         _refund("timeout");
     }
 
-    // ---------------------------------------------------------------- complaints (tier 2/3 stubs)
+    // ---------------------------------------------------------------- complaints
 
-    /// @dev Tier 2 fills in decryption and the refund. Every structural check is already enforced here.
+    /// @notice Tier 2: prove ciphertext chunk `i` does not decrypt to the committed plaintext leaf. Both proofs
+    /// must verify (exact length, domain-separated hashing); then k_i is derived from the revealed key, `cipherChunk`
+    /// is decrypted and compared. A mismatch refunds the whole balance (price + bond) to the buyer, records the
+    /// seller's cheat on the factory and closes the escrow. A matching chunk reverts ChunkMatches.
     function complainMismatch(
         uint256 i,
         bytes calldata cipherChunk,
         bytes32[] calldata cipherProof,
         bytes32 plainLeaf,
         bytes32[] calldata plainProof
-    ) external view {
+    ) external nonReentrant {
         _checkComplaintWindow();
         uint256 n = _t.chunkCount;
         if (i >= n) revert ChunkOutOfRange();
@@ -108,7 +114,16 @@ contract OverflowEscrow is IOverflowEscrow, ReentrancyGuardTransient {
         _checkProofLength(plainProof, i, n);
         if (!MerkleLib.verify(cipherProof, _t.rootCipher, MerkleLib.leaf(cipherChunk), i, n)) revert BadProof();
         if (!MerkleLib.verify(plainProof, _t.rootPlain, plainLeaf, i, n)) revert BadProof();
-        revert NotImplemented();
+
+        bytes memory plaintext = RecourseCrypto.xorChunk(RecourseCrypto.chunkKey(revealedKey, i), cipherChunk);
+        if (MerkleLib.leaf(plaintext) == plainLeaf) revert ChunkMatches();
+
+        address seller_ = _t.seller;
+        status = Status.Refunded; // effect first; the factory and token calls follow
+        emit CheatProven(seller_, i);
+        IOverflowEscrowFactory(FACTORY).recordCheat(seller_);
+        _sweepToBuyer();
+        emit Refunded("mismatch");
     }
 
     /// @dev Tier 3 fills in the source-signature and timestamp checks and the refund.
@@ -183,9 +198,13 @@ contract OverflowEscrow is IOverflowEscrow, ReentrancyGuardTransient {
     /// Whole balance (price, bond and any surplus) returns to the buyer.
     function _refund(string memory reason) internal {
         status = Status.Refunded;
+        _sweepToBuyer();
+        emit Refunded(reason);
+    }
+
+    function _sweepToBuyer() internal {
         IERC20 token = IERC20(_t.token);
         uint256 bal = token.balanceOf(address(this));
         if (bal > 0) token.safeTransfer(_t.buyer, bal);
-        emit Refunded(reason);
     }
 }

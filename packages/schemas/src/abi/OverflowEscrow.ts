@@ -167,7 +167,7 @@ export const overflowEscrowAbi = [
       }
     ],
     "outputs": [],
-    "stateMutability": "view"
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -493,6 +493,25 @@ export const overflowEscrowAbi = [
   },
   {
     "type": "event",
+    "name": "CheatProven",
+    "inputs": [
+      {
+        "name": "seller",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "index",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "KeyRevealed",
     "inputs": [
       {
@@ -573,6 +592,11 @@ export const overflowEscrowAbi = [
   },
   {
     "type": "error",
+    "name": "BadChunkLength",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "BadKey",
     "inputs": []
   },
@@ -616,6 +640,11 @@ export const overflowEscrowAbi = [
   {
     "type": "error",
     "name": "ChallengeOpen",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ChunkMatches",
     "inputs": []
   },
   {

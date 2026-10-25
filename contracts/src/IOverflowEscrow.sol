@@ -49,6 +49,7 @@ interface IOverflowEscrow {
     error BadChunkLength();
     error BadProofLength(uint256 expected, uint256 actual);
     error BadProof();
+    error ChunkMatches();
     error NotImplemented();
 
     event OrderFunded(uint256 balance);
@@ -56,6 +57,7 @@ interface IOverflowEscrow {
     event Accepted(address signer, uint256 nodeId);
     event PaidOut(address seller, uint256 amount, uint256 bond);
     event Refunded(string reason);
+    event CheatProven(address indexed seller, uint256 index);
 
     function initialize(OrderTerms calldata t) external; // factory only, once
 

@@ -352,19 +352,21 @@ contract OverflowEscrowTest is EscrowBaseTest {
         e2.revealKey(KEY);
     }
 
-    // ------------------------------------------------------------ complaint stubs (structure enforced, logic P1.6/P1.7)
+    // ------------------------------------------------------------ complaint structure (mismatch logic: EscrowMismatch.t.sol)
 
     function _revealed() internal {
         _fundViaMint(e, t);
         _reveal(e);
     }
 
-    function test_complaint_wellFormedRevertsNotImplemented() public {
+    function test_complaint_wellFormed_honestSeller() public {
         _revealed();
         bytes32[] memory plain = _leaves(4, 0);
-        bytes32[] memory cipher = _leaves(4, CIPHER_OFFSET);
-        vm.expectRevert(_err(IOverflowEscrow.NotImplemented.selector));
-        e.complainMismatch(1, _chunk(CIPHER_OFFSET + 1), _proof(cipher, 1), plain[1], _proof(plain, 1));
+        bytes32[] memory cipher = _cipherLeaves(4);
+        // tier 2: a correct chunk is not a cheat
+        vm.expectRevert(_err(IOverflowEscrow.ChunkMatches.selector));
+        e.complainMismatch(1, _cipher(1), _proof(cipher, 1), plain[1], _proof(plain, 1));
+        // tier 3 still a stub
         vm.expectRevert(_err(IOverflowEscrow.NotImplemented.selector));
         e.complainPromise(2, _chunk(2), _proof(plain, 2));
     }
@@ -385,7 +387,7 @@ contract OverflowEscrowTest is EscrowBaseTest {
         vm.expectRevert(_err(IOverflowEscrow.ChunkOutOfRange.selector));
         e.complainPromise(4, _chunk(0), _proof(plain, 0));
         vm.expectRevert(_err(IOverflowEscrow.ChunkOutOfRange.selector));
-        e.complainMismatch(4, _chunk(CIPHER_OFFSET), _proof(plain, 0), plain[0], _proof(plain, 0));
+        e.complainMismatch(4, _cipher(0), _proof(plain, 0), plain[0], _proof(plain, 0));
     }
 
     function test_complaint_badChunkLengthReverts() public {
@@ -408,7 +410,7 @@ contract OverflowEscrowTest is EscrowBaseTest {
         e.complainPromise(0, _chunk(0), one);
         bytes32[] memory three = new bytes32[](3);
         vm.expectRevert(abi.encodeWithSelector(IOverflowEscrow.BadProofLength.selector, 2, 3));
-        e.complainMismatch(0, _chunk(CIPHER_OFFSET), _proof(_leaves(4, CIPHER_OFFSET), 0), plain[0], three);
+        e.complainMismatch(0, _cipher(0), _proof(_cipherLeaves(4), 0), plain[0], three);
     }
 
     function test_complaint_wrongProofElementReverts() public {
@@ -435,15 +437,15 @@ contract OverflowEscrowTest is EscrowBaseTest {
 
         bytes32[] memory shortProof = new bytes32[](1);
         shortProof[0] = node23;
-        bytes32[] memory cipherProof = _proof(_leaves(4, CIPHER_OFFSET), 0);
+        bytes32[] memory cipherProof = _proof(_cipherLeaves(4), 0);
         vm.expectRevert(abi.encodeWithSelector(IOverflowEscrow.BadProofLength.selector, 2, 1));
-        e.complainMismatch(0, _chunk(CIPHER_OFFSET), cipherProof, node01, shortProof);
+        e.complainMismatch(0, _cipher(0), cipherProof, node01, shortProof);
 
         bytes32[] memory padded = new bytes32[](2);
         padded[0] = node23;
         padded[1] = bytes32(0);
         vm.expectRevert(_err(IOverflowEscrow.BadProof.selector));
-        e.complainMismatch(0, _chunk(CIPHER_OFFSET), cipherProof, node01, padded);
+        e.complainMismatch(0, _cipher(0), cipherProof, node01, padded);
 
         // The 32-byte internal node can never pose as a 160-byte chunk either.
         vm.expectRevert(_err(IOverflowEscrow.BadChunkLength.selector));
