@@ -1,0 +1,714 @@
+{
+  "generatedBy": "pnpm proof (scripts/proof/run.ts)",
+  "fork": {
+    "mode": "fork",
+    "startedAt": "2026-10-25T12:57:19.768Z",
+    "finishedAt": "2026-10-25T12:57:40.732Z",
+    "chain": {
+      "chainId": 84532,
+      "startBlock": "50055856",
+      "endBlock": "50055885",
+      "forkBlock": "50055856",
+      "node": "anvil Version: 1.8.6 on 127.0.0.1 forking Base Sepolia (BASE_SEPOLIA_RPC_URL, not printed)"
+    },
+    "contracts": {
+      "treasury": "0x03805bdE8BD8266Ad525A9eb13A0eDa7fAcaDca2",
+      "escrowFactory": "0x933Bc257a24D94786D0021745470D343d3391808",
+      "usdc": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+      "owner": "0xB6F4162192F753C9998B63893CBb48FA046906C3"
+    },
+    "actors": {
+      "owner": "0xB6F4162192F753C9998B63893CBb48FA046906C3 (impersonated on the fork)",
+      "relayer": "0x2E1F6163F64DAF8D119e4B78516767d936012747 (fresh fork-only key)",
+      "search payee (SIMULATED)": "0x347072252BA2B5Ed76D0D372678d120372c68760",
+      "scrape payee (SIMULATED)": "0x739317f37155B35477c641BbAFc8d3d7fDe95965",
+      "attacker (SIMULATED, never allowlisted)": "0xbe0e9A2810aa4E2ebd5BCc462a3a8c5167712eF7"
+    },
+    "summary": {
+      "total": 20,
+      "passed": 7,
+      "failed": 13,
+      "blocked": 0,
+      "notRun": 0
+    },
+    "results": [
+      {
+        "id": 1,
+        "slug": "attacker-payee",
+        "plantedError": "A listing tells the agent to pay an attacker",
+        "expected": "`PayeeNotAllowed(0)`",
+        "caughtBy": "Treasury",
+        "onchain": true,
+        "verdict": "PASS",
+        "actual": "reverted onchain: PayeeNotAllowed(0) (expected PayeeNotAllowed(0)); attacker USDC 0 -> 0",
+        "txHash": "0xc3ea58894b6b776098bc9d4a424b57e65703ef64defb42a028d98c1bccb7b4fc",
+        "txs": [
+          {
+            "label": "owner createRoot",
+            "hash": "0xef07ae30d159b7117c88d456ced330894250117f18778338a2ea8c33340c1254",
+            "status": "success"
+          },
+          {
+            "label": "settle to SIMULATED attacker (forced broadcast)",
+            "hash": "0xc3ea58894b6b776098bc9d4a424b57e65703ef64defb42a028d98c1bccb7b4fc",
+            "status": "reverted"
+          }
+        ],
+        "durationMs": 1536
+      },
+      {
+        "id": 2,
+        "slug": "direct-usdc",
+        "plantedError": "The same signature sent straight to USDC",
+        "expected": "`FiatTokenV2: invalid signature`",
+        "caughtBy": "ERC-1271 gate",
+        "onchain": true,
+        "verdict": "PASS",
+        "actual": "reverted onchain: Error(\"FiatTokenV2: invalid signature\") (expected Error(\"FiatTokenV2: invalid signature\")); nonce used: false; attacker USDC 0",
+        "txHash": "0x5205164443451162972e21114f1dd7948427029563e323022a38a5f94eb21d64",
+        "txs": [
+          {
+            "label": "owner createRoot",
+            "hash": "0x5178a63a3bf7939a8846afa7712ff9e326fcec9fb8b2b93d33a0f4f9c64933c3",
+            "status": "success"
+          },
+          {
+            "label": "settle to SIMULATED attacker (forced broadcast)",
+            "hash": "0x0977b5f85e89af84840125097c72502c0c2dc84d51d9f38418bf4b0ecf3d0df1",
+            "status": "reverted"
+          },
+          {
+            "label": "same signature straight to USDC.transferWithAuthorization (forced broadcast)",
+            "hash": "0x5205164443451162972e21114f1dd7948427029563e323022a38a5f94eb21d64",
+            "status": "reverted"
+          }
+        ],
+        "durationMs": 1391
+      },
+      {
+        "id": 3,
+        "slug": "search-only-scrape",
+        "plantedError": "A search-only agent pays a scraping seller",
+        "expected": "`PayeeNotAllowed(n)`",
+        "caughtBy": "Node allowlist",
+        "onchain": true,
+        "verdict": "PASS",
+        "actual": "reverted onchain: PayeeNotAllowed(5) (expected PayeeNotAllowed(5)) (n = search-only child node 5)",
+        "txHash": "0xdbf4cdfe53e659c58608a778dea8b59b53c8db65e3e1328c400b67c24c94bd7c",
+        "txs": [
+          {
+            "label": "owner createRoot",
+            "hash": "0x30e1336d3ef8b7ac85d2a115c6487c6fc414fba11d16ba6f51f2e10438d68fe6",
+            "status": "success"
+          },
+          {
+            "label": "relayer createChild (gasless delegation)",
+            "hash": "0x0ffd89a8bc6be33b3ee5ab580659d6e6cf0064d790a356f96aab9e7deec4dbf6",
+            "status": "success"
+          },
+          {
+            "label": "search-only child pays scrape seller (forced broadcast)",
+            "hash": "0xdbf4cdfe53e659c58608a778dea8b59b53c8db65e3e1328c400b67c24c94bd7c",
+            "status": "reverted"
+          }
+        ],
+        "durationMs": 2139
+      },
+      {
+        "id": 4,
+        "slug": "over-per-call",
+        "plantedError": "A payment above the per-call limit",
+        "expected": "`OverPerCall(n)`",
+        "caughtBy": "Treasury",
+        "onchain": true,
+        "verdict": "PASS",
+        "actual": "reverted onchain: OverPerCall(7) (expected OverPerCall(7)) (n = node 7, maxPerCall 0.04 USDC, value 0.05 USDC)",
+        "txHash": "0xf8f7b601b8efe21a59f6396c9241494ff6402fe5f9c5eeca4f33d5a64a37896d",
+        "txs": [
+          {
+            "label": "owner createRoot",
+            "hash": "0x3c568c7b0a60267723d97c1fd02a1a48163f4d21c4df15f82a13c57e2e9ac925",
+            "status": "success"
+          },
+          {
+            "label": "relayer createChild (gasless delegation)",
+            "hash": "0x299aa410e31362e7e1788043e52a95ebae63964c640e8c77bf80977fd1d4efe3",
+            "status": "success"
+          },
+          {
+            "label": "0.05 USDC from a 0.04 per-call node (forced broadcast)",
+            "hash": "0xf8f7b601b8efe21a59f6396c9241494ff6402fe5f9c5eeca4f33d5a64a37896d",
+            "status": "reverted"
+          }
+        ],
+        "durationMs": 1838
+      },
+      {
+        "id": 5,
+        "slug": "over-budget-parent",
+        "plantedError": "Sub-agents together exceed the parent's cap",
+        "expected": "`OverBudget(parent)`",
+        "caughtBy": "Tree walk",
+        "onchain": true,
+        "verdict": "PASS",
+        "actual": "reverted onchain: OverBudget(9) (expected OverBudget(9)); sub-agent 1 paid in 0x8be14bd43fe41cc19ff57c4ffe64b10d4605c776ffb3a420a543293a9ff3e973 (success) (parent = node 9)",
+        "txHash": "0x98cbdcc785005f1dd518d28cb0896637af0a2ec499fb14c6513a4c455a5e8cdd",
+        "txs": [
+          {
+            "label": "owner createRoot",
+            "hash": "0xc3fc52dc92d50fb15992889bb8d78351276366a8087ebc2ca3baf99e66c77da4",
+            "status": "success"
+          },
+          {
+            "label": "relayer createChild (gasless delegation)",
+            "hash": "0x1a445de830f624ae50d70e99d0c6ebb4ce581e66967c5679bcd8260bdc3ebe19",
+            "status": "success"
+          },
+          {
+            "label": "relayer createChild (gasless delegation)",
+            "hash": "0x81637b769810eca7ebde1d7ebcb6c669d6e4ca1c182117579c9a37a6c96f6204",
+            "status": "success"
+          },
+          {
+            "label": "relayer createChild (gasless delegation)",
+            "hash": "0xa2fa030d60b85b6549deb2f3ff77553da004107cc7d578a693bc7d2efa5c48ba",
+            "status": "success"
+          },
+          {
+            "label": "sub-agent 1 pays 0.05",
+            "hash": "0x8be14bd43fe41cc19ff57c4ffe64b10d4605c776ffb3a420a543293a9ff3e973",
+            "status": "success"
+          },
+          {
+            "label": "sub-agent 2 pays 0.05 (forced broadcast)",
+            "hash": "0x98cbdcc785005f1dd518d28cb0896637af0a2ec499fb14c6513a4c455a5e8cdd",
+            "status": "reverted"
+          }
+        ],
+        "durationMs": 4091
+      },
+      {
+        "id": 6,
+        "slug": "expired",
+        "plantedError": "A payment after expiry",
+        "expected": "`Expired(n)`",
+        "caughtBy": "Treasury",
+        "onchain": true,
+        "verdict": "PASS",
+        "actual": "reverted onchain: Expired(13) (expected Expired(13)) (n = node 13)",
+        "txHash": "0x2a6982df27e426de2a15a2f379b9e7b11dd3bb5147416773d8061e11550251aa",
+        "txs": [
+          {
+            "label": "owner createRoot",
+            "hash": "0x1bd6efcb92f4c47ea758bc1f553d75695748a79eccb7bb33bb6ae34432112185",
+            "status": "success"
+          },
+          {
+            "label": "relayer createChild (gasless delegation)",
+            "hash": "0x3ae6a2a04d27b47e6cc8859d69d3c70387b8939f7b4c3a1508f7e1f3b398fc76",
+            "status": "success"
+          },
+          {
+            "label": "payment after expiry (forced broadcast)",
+            "hash": "0x2a6982df27e426de2a15a2f379b9e7b11dd3bb5147416773d8061e11550251aa",
+            "status": "reverted"
+          }
+        ],
+        "durationMs": 2021
+      },
+      {
+        "id": 7,
+        "slug": "paused-root",
+        "plantedError": "The orchestrator is paused and a child pays",
+        "expected": "`Paused(root)`",
+        "caughtBy": "Tree walk",
+        "onchain": true,
+        "verdict": "PASS",
+        "actual": "reverted onchain: Paused(14) (expected Paused(14)) (root = node 14)",
+        "txHash": "0x48df3014d6ee10a70ae6b66bd23ade3f5134c3530cd050a2195dddcf6ba63ef4",
+        "txs": [
+          {
+            "label": "owner createRoot",
+            "hash": "0xb443fa1cc3524f31a72145115ff0b1fd1e239424b8954032b84aafa5e13c70a1",
+            "status": "success"
+          },
+          {
+            "label": "relayer createChild (gasless delegation)",
+            "hash": "0x685801192fe55f8a732716bc436e87b6a4638c8ff37a484276d0893553d8a1a2",
+            "status": "success"
+          },
+          {
+            "label": "owner pause(orchestrator root)",
+            "hash": "0xe4da2fa6feba0903248421b8bfba53069fbb49e37df99cb4e8e9d2bfa211c70f",
+            "status": "success"
+          },
+          {
+            "label": "child pays while root paused (forced broadcast)",
+            "hash": "0x48df3014d6ee10a70ae6b66bd23ade3f5134c3530cd050a2195dddcf6ba63ef4",
+            "status": "reverted"
+          }
+        ],
+        "durationMs": 2032
+      },
+      {
+        "id": 8,
+        "slug": "timeout-refund",
+        "plantedError": "The seller never reveals the key",
+        "expected": "Timeout refund",
+        "caughtBy": "Escrow",
+        "onchain": true,
+        "verdict": "FAIL",
+        "actual": "NOT IMPLEMENTED: this case has no harness yet (counts as a mismatch)",
+        "txs": [],
+        "durationMs": 0
+      },
+      {
+        "id": 9,
+        "slug": "swapped-chunk",
+        "plantedError": "The seller swaps one chunk after sampling",
+        "expected": "Mismatch proof, refund plus bond",
+        "caughtBy": "Escrow",
+        "onchain": true,
+        "verdict": "FAIL",
+        "actual": "NOT IMPLEMENTED: this case has no harness yet (counts as a mismatch)",
+        "txs": [],
+        "durationMs": 0
+      },
+      {
+        "id": 10,
+        "slug": "wrong-source-key",
+        "plantedError": "A record is signed by the wrong source key",
+        "expected": "Promise proof, refund",
+        "caughtBy": "Escrow",
+        "onchain": true,
+        "verdict": "FAIL",
+        "actual": "NOT IMPLEMENTED: this case has no harness yet (counts as a mismatch)",
+        "txs": [],
+        "durationMs": 0
+      },
+      {
+        "id": 11,
+        "slug": "false-complaint",
+        "plantedError": "The buyer complains about a correct file",
+        "expected": "Complaint reverts; seller paid",
+        "caughtBy": "Escrow",
+        "onchain": true,
+        "verdict": "FAIL",
+        "actual": "NOT IMPLEMENTED: this case has no harness yet (counts as a mismatch)",
+        "txs": [],
+        "durationMs": 0
+      },
+      {
+        "id": 12,
+        "slug": "fusion-merge",
+        "plantedError": "Two agents request the same compatible data",
+        "expected": "One purchase, two allocations",
+        "caughtBy": "Fusion",
+        "onchain": false,
+        "verdict": "FAIL",
+        "actual": "NOT IMPLEMENTED: this case has no harness yet (counts as a mismatch)",
+        "txs": [],
+        "durationMs": 0
+      },
+      {
+        "id": 13,
+        "slug": "fusion-wrong-region",
+        "plantedError": "Same topic, wrong region",
+        "expected": "Two separate decisions",
+        "caughtBy": "Fusion",
+        "onchain": false,
+        "verdict": "FAIL",
+        "actual": "NOT IMPLEMENTED: this case has no harness yet (counts as a mismatch)",
+        "txs": [],
+        "durationMs": 0
+      },
+      {
+        "id": 14,
+        "slug": "fusion-single-user",
+        "plantedError": "A single-user license",
+        "expected": "No merge",
+        "caughtBy": "Fusion",
+        "onchain": false,
+        "verdict": "FAIL",
+        "actual": "NOT IMPLEMENTED: this case has no harness yet (counts as a mismatch)",
+        "txs": [],
+        "durationMs": 0
+      },
+      {
+        "id": 15,
+        "slug": "oracle-missing-dates",
+        "plantedError": "A dataset missing required dates",
+        "expected": "Rejected before purchase",
+        "caughtBy": "Oracle",
+        "onchain": false,
+        "verdict": "FAIL",
+        "actual": "NOT IMPLEMENTED: this case has no harness yet (counts as a mismatch)",
+        "txs": [],
+        "durationMs": 0
+      },
+      {
+        "id": 16,
+        "slug": "concurrent-buys",
+        "plantedError": "Two concurrent buys of one order",
+        "expected": "One funded order",
+        "caughtBy": "Idempotency key",
+        "onchain": true,
+        "verdict": "FAIL",
+        "actual": "NOT IMPLEMENTED: this case has no harness yet (counts as a mismatch)",
+        "txs": [],
+        "durationMs": 0
+      },
+      {
+        "id": 17,
+        "slug": "rpc-timeout",
+        "plantedError": "An RPC timeout after broadcast",
+        "expected": "Reconciled; no second payment",
+        "caughtBy": "State machine",
+        "onchain": true,
+        "verdict": "FAIL",
+        "actual": "NOT IMPLEMENTED: this case has no harness yet (counts as a mismatch)",
+        "txs": [],
+        "durationMs": 0
+      },
+      {
+        "id": 18,
+        "slug": "flagged-seller",
+        "plantedError": "A flagged seller opens a new order",
+        "expected": "`PayeeFlagged`",
+        "caughtBy": "Treasury and factory",
+        "onchain": true,
+        "verdict": "FAIL",
+        "actual": "NOT IMPLEMENTED: this case has no harness yet (counts as a mismatch)",
+        "txs": [],
+        "durationMs": 0
+      },
+      {
+        "id": 19,
+        "slug": "quote-mismatch",
+        "plantedError": "The seller's quote differs from the order",
+        "expected": "Not signed",
+        "caughtBy": "Payment client",
+        "onchain": false,
+        "verdict": "FAIL",
+        "actual": "NOT IMPLEMENTED: this case has no harness yet (counts as a mismatch)",
+        "txs": [],
+        "durationMs": 0
+      },
+      {
+        "id": 20,
+        "slug": "ledger-planted-diff",
+        "plantedError": "The ledger is off by a planted 0.50 USDC",
+        "expected": "Exception opened for the controller",
+        "caughtBy": "Reconciliation",
+        "onchain": false,
+        "verdict": "FAIL",
+        "actual": "NOT IMPLEMENTED: this case has no harness yet (counts as a mismatch)",
+        "txs": [],
+        "durationMs": 0
+      }
+    ],
+    "notes": [
+      "Fork setup: owner 0xB6F4162192F753C9998B63893CBb48FA046906C3 impersonated; fresh fork-only relayer; SIMULATED payees allowlisted by the owner; 100 USDC minted to the treasury through USDC's masterMinter (fork only). Setup txs are not listed per case."
+    ]
+  },
+  "live": {
+    "mode": "live",
+    "startedAt": "2026-10-25T12:55:23.564Z",
+    "finishedAt": "2026-10-25T12:55:25.460Z",
+    "chain": {
+      "chainId": 84532,
+      "startBlock": "50055274",
+      "endBlock": "50055283",
+      "node": "Base Sepolia via BASE_SEPOLIA_RPC_URL (not printed)"
+    },
+    "contracts": {
+      "treasury": "0x03805bdE8BD8266Ad525A9eb13A0eDa7fAcaDca2",
+      "escrowFactory": "0x933Bc257a24D94786D0021745470D343d3391808",
+      "usdc": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+      "owner": "0xB6F4162192F753C9998B63893CBb48FA046906C3"
+    },
+    "actors": {
+      "owner": "0xB6F4162192F753C9998B63893CBb48FA046906C3",
+      "relayer": "0xa0943Eb0ccf97DF2B3B3FF4E2259e3B2785b46A1"
+    },
+    "summary": {
+      "total": 20,
+      "passed": 0,
+      "failed": 13,
+      "blocked": 6,
+      "notRun": 1
+    },
+    "results": [
+      {
+        "id": 1,
+        "slug": "attacker-payee",
+        "plantedError": "A listing tells the agent to pay an attacker",
+        "expected": "`PayeeNotAllowed(0)`",
+        "caughtBy": "Treasury",
+        "onchain": true,
+        "verdict": "BLOCKED",
+        "actual": "",
+        "reasons": [
+          "relayer 0xa0943Eb0ccf97DF2B3B3FF4E2259e3B2785b46A1 has 0 wei (0 ETH), needs >= 7000000000000 wei for 1 tx(s) (500000 gas x 7000000 wei maxFee x2); shortfall 7000000000000 wei",
+          "nothing was sent"
+        ],
+        "txs": [],
+        "durationMs": 261
+      },
+      {
+        "id": 2,
+        "slug": "direct-usdc",
+        "plantedError": "The same signature sent straight to USDC",
+        "expected": "`FiatTokenV2: invalid signature`",
+        "caughtBy": "ERC-1271 gate",
+        "onchain": true,
+        "verdict": "BLOCKED",
+        "actual": "",
+        "reasons": [
+          "relayer 0xa0943Eb0ccf97DF2B3B3FF4E2259e3B2785b46A1 has 0 wei (0 ETH), needs >= 14000000000000 wei for 2 tx(s) (500000 gas x 7000000 wei maxFee x2); shortfall 14000000000000 wei",
+          "nothing was sent"
+        ],
+        "txs": [],
+        "durationMs": 246
+      },
+      {
+        "id": 3,
+        "slug": "search-only-scrape",
+        "plantedError": "A search-only agent pays a scraping seller",
+        "expected": "`PayeeNotAllowed(n)`",
+        "caughtBy": "Node allowlist",
+        "onchain": true,
+        "verdict": "BLOCKED",
+        "actual": "",
+        "reasons": [
+          "relayer 0xa0943Eb0ccf97DF2B3B3FF4E2259e3B2785b46A1 has 0 wei (0 ETH), needs >= 14000000000000 wei for 2 tx(s) (500000 gas x 7000000 wei maxFee x2); shortfall 14000000000000 wei",
+          "nothing was sent"
+        ],
+        "txs": [],
+        "durationMs": 250
+      },
+      {
+        "id": 4,
+        "slug": "over-per-call",
+        "plantedError": "A payment above the per-call limit",
+        "expected": "`OverPerCall(n)`",
+        "caughtBy": "Treasury",
+        "onchain": true,
+        "verdict": "BLOCKED",
+        "actual": "",
+        "reasons": [
+          "relayer 0xa0943Eb0ccf97DF2B3B3FF4E2259e3B2785b46A1 has 0 wei (0 ETH), needs >= 14000000000000 wei for 2 tx(s) (500000 gas x 7000000 wei maxFee x2); shortfall 14000000000000 wei",
+          "nothing was sent"
+        ],
+        "txs": [],
+        "durationMs": 251
+      },
+      {
+        "id": 5,
+        "slug": "over-budget-parent",
+        "plantedError": "Sub-agents together exceed the parent's cap",
+        "expected": "`OverBudget(parent)`",
+        "caughtBy": "Tree walk",
+        "onchain": true,
+        "verdict": "BLOCKED",
+        "actual": "",
+        "reasons": [
+          "relayer 0xa0943Eb0ccf97DF2B3B3FF4E2259e3B2785b46A1 has 0 wei (0 ETH), needs >= 35000000000000 wei for 5 tx(s) (500000 gas x 7000000 wei maxFee x2); shortfall 35000000000000 wei",
+          "nothing was sent"
+        ],
+        "txs": [],
+        "durationMs": 248
+      },
+      {
+        "id": 6,
+        "slug": "expired",
+        "plantedError": "A payment after expiry",
+        "expected": "`Expired(n)`",
+        "caughtBy": "Treasury",
+        "onchain": true,
+        "verdict": "NOT_RUN",
+        "actual": "",
+        "reasons": [
+          "not run live: fork-only in this build (needs chain time to pass the node's expiry)"
+        ],
+        "txs": [],
+        "durationMs": 0
+      },
+      {
+        "id": 7,
+        "slug": "paused-root",
+        "plantedError": "The orchestrator is paused and a child pays",
+        "expected": "`Paused(root)`",
+        "caughtBy": "Tree walk",
+        "onchain": true,
+        "verdict": "BLOCKED",
+        "actual": "",
+        "reasons": [
+          "relayer 0xa0943Eb0ccf97DF2B3B3FF4E2259e3B2785b46A1 has 0 wei (0 ETH), needs >= 14000000000000 wei for 2 tx(s) (500000 gas x 7000000 wei maxFee x2); shortfall 14000000000000 wei",
+          "nothing was sent"
+        ],
+        "txs": [],
+        "durationMs": 400
+      },
+      {
+        "id": 8,
+        "slug": "timeout-refund",
+        "plantedError": "The seller never reveals the key",
+        "expected": "Timeout refund",
+        "caughtBy": "Escrow",
+        "onchain": true,
+        "verdict": "FAIL",
+        "actual": "NOT IMPLEMENTED: this case has no harness yet (counts as a mismatch)",
+        "txs": [],
+        "durationMs": 0
+      },
+      {
+        "id": 9,
+        "slug": "swapped-chunk",
+        "plantedError": "The seller swaps one chunk after sampling",
+        "expected": "Mismatch proof, refund plus bond",
+        "caughtBy": "Escrow",
+        "onchain": true,
+        "verdict": "FAIL",
+        "actual": "NOT IMPLEMENTED: this case has no harness yet (counts as a mismatch)",
+        "txs": [],
+        "durationMs": 1
+      },
+      {
+        "id": 10,
+        "slug": "wrong-source-key",
+        "plantedError": "A record is signed by the wrong source key",
+        "expected": "Promise proof, refund",
+        "caughtBy": "Escrow",
+        "onchain": true,
+        "verdict": "FAIL",
+        "actual": "NOT IMPLEMENTED: this case has no harness yet (counts as a mismatch)",
+        "txs": [],
+        "durationMs": 0
+      },
+      {
+        "id": 11,
+        "slug": "false-complaint",
+        "plantedError": "The buyer complains about a correct file",
+        "expected": "Complaint reverts; seller paid",
+        "caughtBy": "Escrow",
+        "onchain": true,
+        "verdict": "FAIL",
+        "actual": "NOT IMPLEMENTED: this case has no harness yet (counts as a mismatch)",
+        "txs": [],
+        "durationMs": 0
+      },
+      {
+        "id": 12,
+        "slug": "fusion-merge",
+        "plantedError": "Two agents request the same compatible data",
+        "expected": "One purchase, two allocations",
+        "caughtBy": "Fusion",
+        "onchain": false,
+        "verdict": "FAIL",
+        "actual": "NOT IMPLEMENTED: this case has no harness yet (counts as a mismatch)",
+        "txs": [],
+        "durationMs": 0
+      },
+      {
+        "id": 13,
+        "slug": "fusion-wrong-region",
+        "plantedError": "Same topic, wrong region",
+        "expected": "Two separate decisions",
+        "caughtBy": "Fusion",
+        "onchain": false,
+        "verdict": "FAIL",
+        "actual": "NOT IMPLEMENTED: this case has no harness yet (counts as a mismatch)",
+        "txs": [],
+        "durationMs": 0
+      },
+      {
+        "id": 14,
+        "slug": "fusion-single-user",
+        "plantedError": "A single-user license",
+        "expected": "No merge",
+        "caughtBy": "Fusion",
+        "onchain": false,
+        "verdict": "FAIL",
+        "actual": "NOT IMPLEMENTED: this case has no harness yet (counts as a mismatch)",
+        "txs": [],
+        "durationMs": 0
+      },
+      {
+        "id": 15,
+        "slug": "oracle-missing-dates",
+        "plantedError": "A dataset missing required dates",
+        "expected": "Rejected before purchase",
+        "caughtBy": "Oracle",
+        "onchain": false,
+        "verdict": "FAIL",
+        "actual": "NOT IMPLEMENTED: this case has no harness yet (counts as a mismatch)",
+        "txs": [],
+        "durationMs": 0
+      },
+      {
+        "id": 16,
+        "slug": "concurrent-buys",
+        "plantedError": "Two concurrent buys of one order",
+        "expected": "One funded order",
+        "caughtBy": "Idempotency key",
+        "onchain": true,
+        "verdict": "FAIL",
+        "actual": "NOT IMPLEMENTED: this case has no harness yet (counts as a mismatch)",
+        "txs": [],
+        "durationMs": 0
+      },
+      {
+        "id": 17,
+        "slug": "rpc-timeout",
+        "plantedError": "An RPC timeout after broadcast",
+        "expected": "Reconciled; no second payment",
+        "caughtBy": "State machine",
+        "onchain": true,
+        "verdict": "FAIL",
+        "actual": "NOT IMPLEMENTED: this case has no harness yet (counts as a mismatch)",
+        "txs": [],
+        "durationMs": 0
+      },
+      {
+        "id": 18,
+        "slug": "flagged-seller",
+        "plantedError": "A flagged seller opens a new order",
+        "expected": "`PayeeFlagged`",
+        "caughtBy": "Treasury and factory",
+        "onchain": true,
+        "verdict": "FAIL",
+        "actual": "NOT IMPLEMENTED: this case has no harness yet (counts as a mismatch)",
+        "txs": [],
+        "durationMs": 0
+      },
+      {
+        "id": 19,
+        "slug": "quote-mismatch",
+        "plantedError": "The seller's quote differs from the order",
+        "expected": "Not signed",
+        "caughtBy": "Payment client",
+        "onchain": false,
+        "verdict": "FAIL",
+        "actual": "NOT IMPLEMENTED: this case has no harness yet (counts as a mismatch)",
+        "txs": [],
+        "durationMs": 0
+      },
+      {
+        "id": 20,
+        "slug": "ledger-planted-diff",
+        "plantedError": "The ledger is off by a planted 0.50 USDC",
+        "expected": "Exception opened for the controller",
+        "caughtBy": "Reconciliation",
+        "onchain": false,
+        "verdict": "FAIL",
+        "actual": "NOT IMPLEMENTED: this case has no harness yet (counts as a mismatch)",
+        "txs": [],
+        "durationMs": 0
+      }
+    ],
+    "notes": [
+      "Live mode in this build: balance preflight per onchain case; nothing is sent for a BLOCKED case. Live execution of a funded case is NOT IMPLEMENTED in this build and reports FAIL."
+    ]
+  }
+}

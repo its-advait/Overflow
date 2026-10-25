@@ -1330,3 +1330,23 @@ Confirmed, no change needed: `apps/service/src/orchestration/oracle-port.ts` `pr
 
 ### Observed
 - The relayer holds 1 USDC, although the design says it holds gas ETH only. Nothing moved it; left for the owner to decide.
+
+## 2026-10-25: `pnpm proof` planted-error runner (partial: 7 of 20 cases implemented)
+
+### Built
+- `scripts/proof/`: `run.ts` (CLI `--fork` / `--live`, writes `docs/proof/results.{md,json}` keeping the last run of each mode, exit 1 on any FAIL or BLOCKED), `anvil.ts` (anvil 1.8.6 on a free port checked with lsof, forks Base Sepolia from `BASE_SEPOLIA_RPC_URL` loaded by code and never printed, killed on every exit path), `context.ts` (deployed treasury/factory on the fork; owner impersonated; fresh fork-only relayer and node keys; USDC minted through the real FiatToken masterMinter; reverts decoded from the mined tx's `debug_traceTransaction`), `decode.ts` (service `decodeRevertData` + escrow/factory ABIs), `answer-key.ts` (the SPEC table verbatim), `report.ts`, `types.ts`, `cases/01..20`.
+- Implemented: 1-7 (agent node signs EIP-3009 with `@overflow/payment-client`, relayer submits `settle()`; refusals force-broadcast so the revert is mined and decoded, args checked against the scenario's node ids). Cases 8-20 have files but are NOT IMPLEMENTED and report FAIL (never faked).
+- Live mode: per-case gas/USDC preflight (500k gas x current maxFee x2 per tx); BLOCKED cases send nothing. Funded live execution is NOT IMPLEMENTED and would report FAIL.
+- Root `pnpm proof`; `@overflow/scripts` gains `proof` and workspace deps (database, datasets, fusion, oracle, recourse-crypto, hono).
+
+### Verified (real output, 2026-10-25)
+| Check | Result |
+|---|---|
+| `pnpm proof --fork` | exit 1: 7/20 PASS (1 `PayeeNotAllowed(0)`, 2 `Error("FiatTokenV2: invalid signature")`, 3 `PayeeNotAllowed(5)`, 4 `OverPerCall(7)`, 5 `OverBudget(9)` after sibling paid, 6 `Expired(13)`, 7 `Paused(14)`); 8-20 FAIL (not implemented) |
+| `pnpm proof --live` | exit 1: 1-5 and 7 BLOCKED (relayer 0xa094…46A1 holds 0 wei; shortfall per case in results.md), 6 NOT RUN (fork-only), 8-20 FAIL (not implemented); nothing sent |
+| `pnpm typecheck` | exit 0 |
+| `pnpm test` | exit 0, 87 files, 736 tests |
+
+### Open issues
+- Cases 8-20 still need harnesses (escrow beats via `buildOrder` + recourse-crypto; Fusion/Oracle through `POST /api/purchases/propose`; 16/17/19 through the service flow; 20 through the indexer + reconciliation).
+- No unit tests yet for report/answer-key drift.
