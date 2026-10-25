@@ -319,6 +319,15 @@ async function main() {
   console.log(`flow-demo: ${selectedBeats.join(", ")} against ${SERVICE} (sellers at ${SELLER}); timeout ${timeoutMs / 1000}s per beat`);
   console.log(`Every seller, dataset and misbehavior in this run is SIMULATED (data/catalog.json). Money is real Base Sepolia test USDC moved only by the treasury and escrow contracts.`);
   console.log(`Budget per mission: ${BUDGET_ATOMIC} atomic USDC. This script never signs or sends; it only drives the API.`);
+  const status = await api.get("/");
+  const scripted = status.json["scripted"] as { mode?: string; recording?: { name?: string; model?: string } | null } | undefined;
+  if (scripted?.mode === "replay") {
+    console.log(`[SCRIPTED] service mode: replay from recording ${scripted.recording?.name ?? "?"} (recorded with ${scripted.recording?.model ?? "?"}). Model answers are replayed; every transaction below is new and live.`);
+  } else if (scripted?.mode === "record") {
+    console.log(`[RECORDING] service mode: record; every model answer of this run is saved for replay.`);
+  } else {
+    console.log(`service scripted mode: ${scripted?.mode ?? "unknown (GET / answered " + status.status + ")"}; model answers are live.`);
+  }
 
   const results: { beat: Beat; checks: Check[]; error?: string }[] = [];
   try {

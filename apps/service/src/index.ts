@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { serve } from "@hono/node-server";
-import { createDatabase, seed } from "@overflow/database";
+import { createDatabase, createRepositories, seed } from "@overflow/database";
 import { oracleModelFromEnv } from "@overflow/oracle";
 import { resolveSigner } from "@overflow/payment-client/keystore";
 import { CHAIN_ID, formatUsdc, loadDeployments, PACKAGE_NAME as SCHEMAS, type Address } from "@overflow/schemas";
@@ -24,6 +24,7 @@ import {
   createMissionRunner,
   createPurchaseService,
   createSampleJudge,
+  createScriptedModel,
   createSellerOrderTerms,
   notWiredSampleJudge,
   orchestrationStatus,
@@ -34,6 +35,7 @@ import {
   type MissionRunner,
   type OracleModel,
   type OrderTermsPort,
+  type PlannerClient,
   type SampleFetch,
   type SampleJudge,
 } from "./orchestration/index.js";
@@ -46,7 +48,9 @@ import { resolveRecourseConfig } from "./sellers/recourse/config.js";
 import { loadRecourseCatalog } from "./sellers/recourse/datasets.js";
 import { createRecourseSellers } from "./sellers/recourse/index.js";
 
-const log = (line: string) => console.log(`${new Date().toISOString()} ${line}`);
+/** Every line carries the scripted mode once it is known: [SCRIPTED] in replay, [RECORDING] in record (Leash's setPrefix). */
+let logPrefix = "";
+const log = (line: string) => console.log(`${new Date().toISOString()} ${logPrefix}${line}`);
 
 /**
  * One process, three listeners' worth of modules:
@@ -58,6 +62,8 @@ const log = (line: string) => console.log(`${new Date().toISOString()} ${line}`)
 async function main(): Promise<void> {
   loadEnv();
   const config = readConfig();
+  if (config.scripted.mode === "replay") logPrefix = "[SCRIPTED] ";
+  else if (config.scripted.mode === "record") logPrefix = "[RECORDING] ";
   const deployments = await loadDeployments(config.deploymentsPath);
 
   // Signer: a Foundry keystore decrypted in memory (RELAYER_ACCOUNT + RELAYER_PASSWORD_FILE) or a dev key. Never logged.
@@ -76,6 +82,7 @@ async function main(): Promise<void> {
   // Database: DATABASE_URL selects Postgres; otherwise PGlite at PGLITE_DATA_DIR (or in-memory). Migrate, then seed
   // the SIMULATED demo company and its agents (idempotent), then the SIMULATED seller catalog into `resources`.
   const database = await createDatabase({ log: console.log });
+  const activityBus = createActivityBus();
   await database.migrate();
   log(`[database] migrations applied (dialect=${database.dialect}, from ${database.migrationsFolder})`);
   const seeded = await seed(database.db);
@@ -83,10 +90,22 @@ async function main(): Promise<void> {
   const catalog = await seedCatalog(database.db);
   log(`[catalog] SIMULATED catalog: ${catalog.total} listings (${catalog.inserted} inserted, ${catalog.existing} existing) from ${catalog.catalogPath}`);
 
-  // Oracle extraction model: only with ANTHROPIC_API_KEY and CLAUDE_MODEL; otherwise plan answers 503.
+  // Model: ANTHROPIC_API_KEY + CLAUDE_MODEL give the live client; otherwise plan/authorize answer 503 and the runner idles.
+  // DEMO_SCRIPTED=record wraps the live client and saves every answer; DEMO_SCRIPTED=replay needs no API key at all:
+  // answers come from the recording (loud failure if it is missing), everything after the model stays real.
   let oracle: OracleModel | null = null;
-  if (process.env["ANTHROPIC_API_KEY"] && process.env["CLAUDE_MODEL"]?.trim()) {
-    oracle = { client: new Anthropic(), model: oracleModelFromEnv() };
+  const liveClient = process.env["ANTHROPIC_API_KEY"] && process.env["CLAUDE_MODEL"]?.trim() ? new Anthropic() : null;
+  if (config.scripted.mode === "replay") {
+    const scripted = createScriptedModel({ mode: "replay", file: config.scripted.file, live: null, model: null, audit: createRepositories(database.db).activityEvents, publish: (e) => activityBus.publish(e), log });
+    oracle = { client: scripted.forStep("oracle.extract", "boot") as unknown as OracleModel["client"], model: scripted.model, scripted };
+    log(`[oracle] ${scripted.status()}`);
+  } else if (config.scripted.mode === "record") {
+    if (!liveClient) throw new Error("DEMO_SCRIPTED=record needs ANTHROPIC_API_KEY and CLAUDE_MODEL: a recording is made from real model answers");
+    const scripted = createScriptedModel({ mode: "record", file: config.scripted.file, live: liveClient as unknown as PlannerClient, model: oracleModelFromEnv(), log });
+    oracle = { client: liveClient, model: scripted.model, scripted };
+    log(`[oracle] ${scripted.status()}`);
+  } else if (liveClient) {
+    oracle = { client: liveClient, model: oracleModelFromEnv() };
     log(`[oracle] extraction model ${oracle.model}`);
   } else {
     log("[oracle] idle: ANTHROPIC_API_KEY / CLAUDE_MODEL not set; POST /api/missions/:id/plan answers 503");
@@ -112,7 +131,6 @@ async function main(): Promise<void> {
   });
 
   // Chain indexer + ledger reconciliation: read-only, over the activity bus the API streams.
-  const activityBus = createActivityBus();
   const indexerConfig = await resolveIndexerConfig();
   let indexer: Indexer | undefined;
   let reconciliation: Reconciliation | undefined;
@@ -297,7 +315,7 @@ async function main(): Promise<void> {
       intervalMs: config.eventsPollMs,
       log,
     });
-    const judgeStatus = oracle ? `sample judge ${oracle.model} (size ${config.sampleSize}, confidence >= ${config.sampleConfidenceMin})` : "sample judge idle: CLAUDE_MODEL / ANTHROPIC_API_KEY unset (authorize answers 503)";
+    const judgeStatus = oracle ? `sample judge ${oracle.model}${oracle.scripted ? ` [${oracle.scripted.mode.toUpperCase()}]` : ""} (size ${config.sampleSize}, confidence >= ${config.sampleConfidenceMin})` : "sample judge idle: CLAUDE_MODEL / ANTHROPIC_API_KEY unset (authorize answers 503)";
     flowBoot = `live: adapter overflow-facilitator (signers ${nodeSigners.candidates().map((c) => `${c.agentId}=${c.address}`).join(", ")}), ${judgeStatus}, SIMULATED seller ${sellerConfig.sellerUrl}`;
   }
   const flowStatus = (): string => (watcher ? `${flowBoot}, delivery watcher ${watcher.status()}` : flowBoot);
@@ -315,7 +333,7 @@ async function main(): Promise<void> {
     runner = createMissionRunner({
       db: database.db,
       bus: activityBus,
-      model: { client: oracle.client as Parameters<typeof createMissionRunner>[0]["model"]["client"], model: oracle.model },
+      model: { client: oracle.client as Parameters<typeof createMissionRunner>[0]["model"]["client"], model: oracle.model, scripted: oracle.scripted },
       treasury: boot.treasury,
       chain: client,
       relay: relayViaApp(facilitatorApp),
@@ -325,7 +343,7 @@ async function main(): Promise<void> {
       demoMode: config.demoMode,
       log,
     });
-    runnerStatus = `live: orchestrator ${agentKeys.keys.root.address} (${agentKeys.keys.rootSource}); sub-agents research ${agentKeys.keys.children.research.address}, finance ${agentKeys.keys.children.finance.address}, verification ${agentKeys.keys.children.verification.address}; ${AGENT_KEYS_LIMITATION}`;
+    runnerStatus = `live${oracle.scripted ? ` [${oracle.scripted.mode.toUpperCase()} model answers]` : ""}: orchestrator ${agentKeys.keys.root.address} (${agentKeys.keys.rootSource}); sub-agents research ${agentKeys.keys.children.research.address}, finance ${agentKeys.keys.children.finance.address}, verification ${agentKeys.keys.children.verification.address}; ${AGENT_KEYS_LIMITATION}`;
   }
   log(`[orchestration] mission runner ${runnerStatus}`);
 
@@ -353,7 +371,7 @@ async function main(): Promise<void> {
       database: { dialect: database.dialect, migrationsFolder: database.migrationsFolder, migrated: true },
       modules: {
         api: "ready",
-        orchestration: `${orchestrationStatus({ model: oracle?.model ?? null, treasury: boot.treasury, orderTermsWired: orderTerms !== undefined })}; mission runner ${runnerStatus}`,
+        orchestration: `${orchestrationStatus({ model: oracle?.model ?? null, treasury: boot.treasury, orderTermsWired: orderTerms !== undefined, scripted: oracle?.scripted?.status() })}; mission runner ${runnerStatus}`,
         facilitator: `live: relayer ${account.address} (${signer.source}); routes at / and /facilitator`,
         sellers: sellersStatus(sellerConfig, true, recourseStatus),
         chain: chainStatus,
@@ -366,6 +384,8 @@ async function main(): Promise<void> {
         },
       },
       dependsOn: [SCHEMAS],
+      // The web top bar shows the SCRIPTED badge from this field, never from its own environment.
+      scripted: { mode: config.scripted.mode, recording: oracle?.scripted?.recording ?? null },
     },
   });
   // Facilitator routes at the root (/settle, /reserve, /release, /verify, /delegate, /health) for the adapters and

@@ -24,6 +24,7 @@ import {
 import { z } from "zod";
 import { NotWiredError, type OrchestrationPort } from "../api/ports.js";
 import type { ProposeInput } from "./purchase-service.js";
+import { stepClient, type ScriptedModel } from "./scripted-model.js";
 
 // ---------------------------------------------------------------------------
 // OrchestrationPort backed by @overflow/oracle.
@@ -52,8 +53,10 @@ import type { ProposeInput } from "./purchase-service.js";
 
 export interface OracleModel {
   client: ExtractionClient;
-  /** From CLAUDE_MODEL; never hardcoded. */
+  /** From CLAUDE_MODEL (or the recording's model in SCRIPTED replay); never hardcoded. */
   model: string;
+  /** DEMO_SCRIPTED record/replay wrapper; absent or `off` means every call goes to the API. */
+  scripted?: ScriptedModel | undefined;
 }
 
 export interface OrderTermsInput {
@@ -204,7 +207,7 @@ export function createOraclePort(opts: OraclePortOptions): OrchestrationPort {
 
       const result = await extractRequirements(
         { mission, knownRegions, now: now() },
-        { client: opts.model.client, model: opts.model.model, audit: repos.activityEvents },
+        { client: stepClient(opts.model, "oracle.extract", mission.id), model: opts.model.model, audit: repos.activityEvents },
       );
 
       return opts.db.transaction(async (tx) => {
@@ -422,10 +425,10 @@ export function createOraclePort(opts: OraclePortOptions): OrchestrationPort {
 }
 
 /** GET / module line; says what is wired instead of claiming readiness. */
-export function orchestrationStatus(w: { model: string | null; treasury: Address | null; orderTermsWired: boolean }): string {
+export function orchestrationStatus(w: { model: string | null; treasury: Address | null; orderTermsWired: boolean; scripted?: string | undefined }): string {
   return [
     "purchase state machine ready",
-    w.model ? `Oracle extraction via ${w.model}` : "Oracle extraction idle: CLAUDE_MODEL / ANTHROPIC_API_KEY unset (plan answers 503)",
+    w.model ? `Oracle extraction via ${w.model}${w.scripted ? ` (${w.scripted})` : ""}` : "Oracle extraction idle: CLAUDE_MODEL / ANTHROPIC_API_KEY unset (plan answers 503)",
     "Oracle recommend over the resources table",
     w.treasury ? `buyer treasury ${w.treasury}` : "no treasury address (propose answers 501 once a listing is chosen)",
     w.orderTermsWired ? "order terms from the seller" : "order terms not wired (propose answers 501 until the Recourse seller lands)",

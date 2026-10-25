@@ -7,6 +7,10 @@ import { b32, ESCROW, fixtureMissionAndResource, NOW, purchaseInput, SELLER, tes
 import { OracleUnavailableError } from "./oracle-port.js";
 import { createPurchaseService } from "./purchase-service.js";
 import { createSampleJudge, SAMPLE_SYSTEM_PROMPT, type SampleJudge } from "./sample-judgment.js";
+import { createScriptedModel, type OracleModel } from "./index.js";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fakeModel, fakeSeller, SAMPLE_ROWS } from "./sample-judgment.test-util.js";
 
 describe("step 4: sample judgment", () => {
@@ -59,7 +63,7 @@ describe("step 4: sample judgment", () => {
     return { purchase, order, resource };
   }
 
-  function judgeWith(model: ReturnType<typeof fakeModel> | null, over: { sampleSize?: number; confidenceMin?: number } = {}): SampleJudge {
+  function judgeWith(model: { model: OracleModel } | null, over: { sampleSize?: number; confidenceMin?: number } = {}): SampleJudge {
     const bus = createActivityBus();
     return createSampleJudge({
       db: handle.db,
@@ -178,6 +182,38 @@ describe("step 4: sample judgment", () => {
     await expect(judgeWith(null).judge(purchase.id)).rejects.toBeInstanceOf(OracleUnavailableError);
     expect(seller.calls).toEqual(before);
     expect((await repos.purchases.getById(purchase.id))!.status).toBe("PROPOSED");
+  });
+
+  it("SCRIPTED replay: the recorded verdict is used, the API is never called, the sample is still verified by code and the audit says so", async () => {
+    const { purchase } = await proposed();
+    const file = join(mkdtempSync(join(tmpdir(), "overflow-judge-")), "honest-seller.json");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1,
+        scripted: true,
+        name: "honest-seller",
+        recordedAt: "2026-10-25T00:00:00.000Z",
+        model: "claude-recorded",
+        scope: { missionId: "mission-recorded" },
+        steps: { "sample.judge": [{ n: 1, promptHash: b32(1), stopReason: "end_turn", content: [{ type: "text", text: JSON.stringify({ verdict: "buy", reason: "replayed: rows fit", confidence: 0.9 }) }], recordedAt: "2026-10-25T00:00:00.000Z" }] },
+      }),
+    );
+    const live = fakeModel([]); // throws "script exhausted" if any call reaches it
+    const scripted = createScriptedModel({ mode: "replay", file, live: null, model: null, audit: repos.activityEvents });
+    const judge = judgeWith({ model: { client: live.model.client, model: scripted.model, scripted } });
+    const result = await judge.judge(purchase.id);
+    expect(result.outcome).toBe("buy");
+    expect(live.calls).toBe(0);
+    const [sample] = await repos.samples.listByPurchase(purchase.id);
+    expect(sample).toMatchObject({ verdict: "buy", reason: "replayed: rows fit", confidence: 0.9 });
+    expect(sample?.indices).toHaveLength(4);
+    const calls = (await repos.activityEvents.listByMission(purchase.missionId)).filter((e) => e.kind === "oracle.model_call" && e.message.includes("SCRIPTED replay"));
+    expect(calls.map((e) => e.message)).toEqual([expect.stringContaining("sample.judge#1 from recording honest-seller (recorded model claude-recorded, prompt hash differs from the recording); no API call made")]);
+    // A second purchase in the same mission has no second recorded answer: loud failure, nothing signed, purchase untouched.
+    const second = await proposed();
+    await expect(judge.judge(second.purchase.id)).rejects.toThrow(/SCRIPTED replay sample.judge#2/);
+    expect((await repos.purchases.getById(second.purchase.id))?.status).toBe("PROPOSED");
   });
 
   it("refuses a purchase that is not PROPOSED", async () => {

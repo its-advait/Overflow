@@ -33,6 +33,7 @@ import type { ExceptionService } from "../exceptions/service.js";
 import { SampleResponseSchema } from "../sellers/recourse/protocol.js";
 import { OracleUnavailableError, type OracleModel } from "./oracle-port.js";
 import type { PurchaseService } from "./purchase-service.js";
+import { stepClient } from "./scripted-model.js";
 
 // ---------------------------------------------------------------------------
 // Step 4 of docs/SPEC.md "One purchase, end to end": sample before paying.
@@ -232,7 +233,8 @@ export function createSampleJudge(deps: SampleJudgeDeps): SampleJudge {
     const userText = sampleTurn(requests, resource, manifest, rows);
     const pHash = promptHash({ model: model.model, system: SAMPLE_SYSTEM_PROMPT, user: userText, schema: schemaJson });
     const messages: Anthropic.MessageParam[] = [{ role: "user", content: userText }];
-    const response = await model.client.messages.parse({
+    // SCRIPTED replay returns the recorded answer for this step; the Zod parse below runs either way.
+    const response = await stepClient(model, "sample.judge", purchase.missionId).messages.parse({
       model: model.model,
       max_tokens: 2000,
       system: SAMPLE_SYSTEM_PROMPT,

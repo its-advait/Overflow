@@ -16,3 +16,4 @@ export * from "./mission-runner.js";
 export * from "./tools.js";
 export * from "./sample-judgment.js";
 export * from "./purchase-flow.js";
+export * from "./scripted-model.js";

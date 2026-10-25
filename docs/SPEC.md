@@ -677,6 +677,10 @@ For live pitches outside Hyphenate, swap the first two rows so the problem comes
 - Pausing the orchestrator stops its whole subtree.
 - Every refusal appears in the Blocked lane with its reason and a Basescan link.
 
+### Scripted replay (labeled fallback)
+
+`DEMO_SCRIPTED=record` saves every model answer of one mission, keyed by call site (`oracle.extract`, `sample.judge`, `mission.plan`, `mission.synthesize`, `agent.<role>`), to `data/scripted/<name>.json`. `DEMO_SCRIPTED=replay` answers each model call from that file and never calls the API; the call site runs the same Zod validation, and everything after the model (order terms, signing, settle, escrow funding, reveal, accept, indexing, ledger) runs for real with new transactions. Replay never fakes a chain result, and a missing or exhausted recording fails that call loudly. Labels: every service log line starts with `[SCRIPTED]`, each replayed call is an `oracle.model_call` event saying "SCRIPTED replay", `GET /` reports `scripted.mode`, and the web top bar shows the SCRIPTED badge from that field.
+
 ### A judge's own scenario
 
 Hyphenate may run its own case. Expose these controls in Settings, each working live with no code change: seller behavior (honest, swap, ghost), price, agent caps, a new payee, and a license flag.
