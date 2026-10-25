@@ -1,6 +1,7 @@
 import { MergeDecisionSchema } from "@overflow/fusion";
 import {
   ActivityEventSchema,
+  AddressSchema,
   AgentRecordSchema,
   AtomicAmountSchema,
   Bytes32Schema,
@@ -16,11 +17,13 @@ import {
   IsoDateTimeSchema,
   LedgerAccountSchema,
   MissionRecordSchema,
+  NodePaymentsResponseSchema,
   PurchaseRecordSchema,
   ReconciliationRunSchema,
   ResourceRecordSchema,
   ResourceRequestRecordSchema,
   SignedAtomicSchema,
+  TreasuryNodesResponseSchema,
   type AgentRecord,
 } from "@overflow/schemas";
 import { z } from "zod";
@@ -206,11 +209,16 @@ export const PauseAgentResponseSchema = z.object({
 });
 export type PauseAgentResponse = z.infer<typeof PauseAgentResponseSchema>;
 
+// Treasury nodes (the delegation tree read from the chain) and one node's Paid logs
+export { NodePaymentsResponseSchema, TreasuryNodesResponseSchema };
+export type { NodePayment, NodePaymentsResponse, NodeStatus, TreasuryNodesResponse, TreasuryNodeView } from "@overflow/schemas";
+
 // Activity
 export const ActivityQuerySchema = z.object({
   limit: z.number().int().min(1).max(500).optional(),
   purchaseId: IdSchema.optional(),
   missionId: IdSchema.optional(),
+  agentId: IdSchema.optional(),
 });
 export type ActivityQuery = z.infer<typeof ActivityQuerySchema>;
 export const ActivityResponseSchema = z.object({ events: z.array(ActivityEventSchema) });
@@ -238,6 +246,30 @@ export const DecideExceptionResponseSchema = z.object({
   request: ControllerRequestSchema.nullable(),
 });
 export type DecideExceptionResponse = z.infer<typeof DecideExceptionResponseSchema>;
+/**
+ * POST /api/exceptions, the three onchain kinds the agent menu raises. Each opens an exception
+ * with a prepared owner call; the service answers 202 `created: true`, or 200 `created: false`
+ * with the request that is already open for the same subject. NEW_PAYEE is the treasury's
+ * GLOBAL allowlist (setAllow): per-node payees are fixed when a child is created.
+ */
+const RaiseCommon = {
+  requestedBy: z.string().min(1),
+  reason: z.string().min(1).max(2000),
+  agentId: IdSchema.optional(),
+};
+export const RaiseExceptionBodySchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("PAUSE_REQUEST"), ...RaiseCommon, nodeId: z.number().int().positive() }),
+  z.object({ type: z.literal("CAP_RAISE"), ...RaiseCommon, nodeId: z.number().int().positive(), newCapAtomic: AtomicAmountSchema }),
+  z.object({ type: z.literal("NEW_PAYEE"), ...RaiseCommon, payee: AddressSchema }),
+]);
+export type RaiseExceptionBody = z.infer<typeof RaiseExceptionBodySchema>;
+export const RaiseExceptionResponseSchema = z.object({
+  exception: ExceptionRecordSchema,
+  request: ControllerRequestSchema.nullable(),
+  /** False when an open exception for the same subject already existed and was returned instead. */
+  created: z.boolean(),
+});
+export type RaiseExceptionResponse = z.infer<typeof RaiseExceptionResponseSchema>;
 export const ControllerRequestsQuerySchema = z.object({
   status: ControllerRequestStatusSchema.or(z.literal("all")).optional(),
 });

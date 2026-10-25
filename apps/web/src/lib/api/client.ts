@@ -1,4 +1,4 @@
-import type { ActivityEvent, AgentRecord, PurchaseRecord } from "@overflow/schemas";
+import type { ActivityEvent, AgentRecord, ControllerRequest, PurchaseRecord } from "@overflow/schemas";
 import type {
   ActivityQuery,
   ActivityResponse,
@@ -16,12 +16,15 @@ import type {
   LedgerQuery,
   LedgerResponse,
   MissionResponse,
+  NodePaymentsResponse,
   PauseAgentBody,
   PauseAgentResponse,
   PauseMissionAgentResponse,
   PlanResponse,
   ProposeResponse,
   PurchaseResponse,
+  RaiseExceptionBody,
+  RaiseExceptionResponse,
   ReconciliationResponse,
   ResourcesResponse,
   RunMissionBody,
@@ -30,6 +33,7 @@ import type {
   ServiceStatus,
   SseMessage,
   SseQuery,
+  TreasuryNodesResponse,
 } from "./contracts";
 
 export type { ActivityEvent, AgentRecord, PurchaseRecord };
@@ -75,6 +79,13 @@ export interface OverflowApi {
   listAgents(): Promise<AgentsResponse>;
   /** Opens a PAUSE_REQUEST exception with a prepared controller call; nothing is paused until the chain says so. */
   pauseAgent(id: string, body: PauseAgentBody): Promise<PauseAgentResponse>;
+  /** The delegation tree as the treasury holds it: getNode + remaining per node, AllowSet replay, agent labels. */
+  listTreasuryNodes(): Promise<TreasuryNodesResponse>;
+  /** Indexed Paid logs signed by one node, newest first. */
+  listNodePayments(nodeId: number): Promise<NodePaymentsResponse>;
+  /** Raises an onchain exception (pause / raise cap / new payee): a pending ControllerRequest, never a state change. */
+  raiseException(body: RaiseExceptionBody): Promise<RaiseExceptionResponse>;
+  getControllerRequest(id: string): Promise<ControllerRequest>;
 
   listActivity(query?: ActivityQuery): Promise<ActivityResponse>;
   listExceptions(query?: ExceptionsQuery): Promise<ExceptionsResponse>;

@@ -9,5 +9,6 @@ export * from "./ledger";
 export * from "./hashing";
 export * from "./chain";
 export * from "./abi";
+export * from "./reasons";
 export * from "./deployments";
 export * from "./tables";

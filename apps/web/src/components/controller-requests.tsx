@@ -2,6 +2,7 @@
 
 import type { ControllerRequest } from "@overflow/schemas";
 import { useEffect, useState } from "react";
+import { phaseOf, type Phase } from "@/lib/controller-phase";
 
 /**
  * Controller requests: owner actions agents proposed, which the controller approves in Coinbase Wallet through
@@ -14,13 +15,7 @@ const POLL_MS = 5000;
 
 type ListResponse = { requests: ControllerRequest[]; treasury: string | null };
 
-type Phase = "pending" | "awaiting-approval" | "done" | "rejected";
-
-export function phaseOf(r: ControllerRequest): Phase {
-  if (r.status === "done") return "done";
-  if (r.status === "rejected") return "rejected";
-  return r.submission ? "awaiting-approval" : "pending";
-}
+export { phaseOf };
 
 const BADGE: Record<Phase, { label: string; className: string }> = {
   pending: { label: "pending", className: "border-border bg-muted text-muted-foreground" },

@@ -47,7 +47,10 @@ runs the `overflow-controller` skill: it lists `GET /api/controller-requests`, s
 `send_calls` on `base-sepolia`, records `{requestId, approvalUrl}` at `POST /api/controller-requests/:id/submission`,
 shows the approval URL, and checks `get_request_status` once the human approved. A request becomes DONE only when
 the indexer stores the treasury event. Details: `docs/controller.md`; live results: `docs/coinbase-feedback.md`.
-UI: `pnpm --filter @overflow/web dev` then `/controller` (needs `NEXT_PUBLIC_SERVICE_URL`).
+UI: `pnpm --filter @overflow/web dev` then `/agents` (the delegation tree: live budgets from the treasury's view calls, the
+per-agent menu that opens controller requests, a side panel of payments and refusals; `NEXT_PUBLIC_USE_MOCKS=1` swaps in a
+labelled SIMULATED treasury) and `/controller` (every request and its approval state). The typed client reads
+`NEXT_PUBLIC_API_URL` (see `apps/web/.env.example`); the older `/controller` page still reads `NEXT_PUBLIC_SERVICE_URL`.
 
 ## Run the facilitator (service)
 

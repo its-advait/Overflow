@@ -7,6 +7,7 @@ import { CHAIN_ID, loadDeployments, PACKAGE_NAME as SCHEMAS } from "@overflow/sc
 import { createApp } from "./api/index.js";
 import { verifyBoot } from "./chain/boot";
 import { viemChainClient } from "./chain/client";
+import { viemTreasuryRead } from "./chain/treasury-read.js";
 import { createActivityBus, createIndexer, createLogSource, resolveIndexerConfig, type Indexer } from "./chain/index.js";
 import { loadEnv, readConfig } from "./config";
 import { createFacilitatorApp } from "./facilitator/app";
@@ -167,7 +168,11 @@ async function main(): Promise<void> {
   const { app } = createApp({
     db: database.db,
     bus: activityBus,
-    ...(reconciliation ? { ports: { reconciliation: { run: (trigger) => reconciliation!.run(trigger) } } } : {}),
+    ports: {
+      ...(reconciliation ? { reconciliation: { run: (trigger) => reconciliation!.run(trigger) } } : {}),
+      // Treasury view calls for GET /api/treasury/nodes: the same read-only client, no signing.
+      treasuryRead: viemTreasuryRead(client, boot.treasury),
+    },
     treasury: boot.treasury,
     oracle,
     ...(runner ? { runner } : {}),

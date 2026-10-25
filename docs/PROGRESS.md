@@ -1212,3 +1212,51 @@ Confirmed, no change needed: `apps/service/src/orchestration/oracle-port.ts` `pr
 - `OracleDecisionSchema`, `PayerSchema`/`FusionOutcomeSchema`, `SubmissionSchema` and `IndexerStatusSchema` are mirrored in `apps/web/src/lib/api/contracts.ts` because they live in service modules the web cannot import. Move them into `packages/schemas` (or a shared api-contracts module) so the two cannot drift.
 - `apps/web` has no vitest project yet; `Money`'s grouping and the mock ledger balance sums are only exercised by the demo page.
 - The seven nav pages are placeholders; `next dev` writes an `AGENTS.md` into `apps/web` (Next 16 `agentRules`), deleted here and worth disabling in `next.config.ts` if it keeps reappearing.
+
+## 2026-10-25: agents and delegation tree (`/agents`)
+
+### Step 0: merge
+`origin/main` 4d7cc90 (web design system, shell, typed API client, mocks; mission runner; ops scripts) merged into `person1` as `35d28ea`. Conflicts: both import sets in `apps/service/src/api/http.ts`, both env blocks in `.env.example`, main's shell `Overview` page, both PROGRESS sections in date order. Typecheck, lint and 619 tests passed on the merge before any new code.
+
+### Built
+- **Service: treasury reads.** `TreasuryReadPort` (`api/ports.ts`: `blockNumber`, `nodeCount`, `getNode`, `remaining`, `allowlist`, `nodeAllow`; default refuses with 501) implemented by `chain/treasury-read.ts` over the existing viem client (view calls only, the relayer key is never used) and wired in `index.ts`. `GET /api/treasury/nodes` (`api/routes/treasury.ts`): `nodeCount`, then `getNode` + `remaining` for ids 1..n in one pass; agents joined by `nodeId`, falling back to a case-insensitive key match; the global allowlist replayed from indexed `AllowSet` logs (last write wins); restricted nodes probe `nodeAllow` over that set and are marked `complete: false` (per-node payees are a mapping onchain and cannot be enumerated); `status` / `pausedBy` / `expiredBy` derived by walking `parent` exactly as `settle()` does, so a grandchild under a paused child reads Paused with `pausedBy` = the child. `GET /api/treasury/nodes/:id/payments`: indexed `Paid` logs with `args.id` = the node, newest first (`observedAt` is indexer time, labelled). `GET /api/activity?agentId=` + `activityEvents.listByAgent`. `GET /api/agents` is unchanged (`node: null`).
+- **Schemas.** `TreasuryNodeViewSchema`, `TreasuryNodesResponseSchema`, `NodePaymentSchema`, `NodePaymentsResponseSchema`, `NodeStatusSchema` (`packages/schemas/src/mission.ts`); `TREASURY_REVERT_REASONS` + `parseDecodedRevert` (`reasons.ts`), re-exported by the service's `chain/abi.ts` as `REVERT_REASONS` so web and service share one table.
+- **Web `/agents`.** `components/agents/`: `agent-hierarchy.tsx` (loads the tree and all controller requests through the typed client; subscribes to `/events` and re-reads both after a 300 ms debounce on `treasury.paid|node|policy`, `controller.*`, `policy.blocked`, with a 15 s poll fallback; keeps the last successful read while a refetch is in flight so bars animate instead of flashing; header with treasury, block, as-of, `SimulatedBadge` when `simulated`), `agent-tree.tsx` (root → children → grandchildren, connector lines), `agent-card.tsx` (role, name or "Unlabeled node #id", `Address` key, `Pill` Running / Paused / Expired with the cause in its tooltip, `BudgetBar`, `Money` for spent / cap / `remaining()` / per call, expiry countdown, payees line, open-request badge; a paused node and its subtree render `opacity-60 grayscale`), `budget-bar.tsx` (bigint `barPercent`; a tick where an ancestor's budget binds), `agent-menu.tsx` (kebab: Pause, Raise cap, Add payee (treasury allowlist)), `request-dialog.tsx` (builds the `POST /api/exceptions` body; `toAtomic` for the new cap, must exceed the current cap; `AddressSchema` for the payee; shows exactly the service's answer: PENDING + request id, or "already requested" when `created: false`; never DONE), `agent-panel.tsx` (Sheet: payments with tx links, refusals with `decodedRevert` + reason text, requests with phase pill, approval link, tx hash when done). `lib/tree.ts` (pure: `buildNodeTree`, `barPercent`, `ancestorsOf`, `deriveStatus`, `remainingOf`, `expiryCountdown`, `nodeRequests`, `bindingNodeOf`, `refusalsFor`), `lib/controller-phase.ts` (one `phaseOf` for `/controller` and `/agents`), `useLastGood` in `lib/use-api.ts`. Typed client: `listTreasuryNodes`, `listNodePayments`, `raiseException`, `getControllerRequest`; `ActivityQuery.agentId`. shadcn base-nova `dropdown-menu`, `dialog`, `input` added through the local CLI.
+- **Mock mode (labelled).** `lib/mocks/treasury-sim.ts`: a browser-local SIMULATED treasury (root 100 USDC → finance 25 / research 25 → ledger clerk 10 / web scraper 10, the scraper restricted to one payee; two new grandchild agent fixtures). Every 3 s one scripted payment attempt runs the `_authorize` walk (Paused / Expired / PayeeNotAllowed / OverPerCall / OverBudget with the binding node id); a success charges the node and every ancestor and emits `treasury.paid`; a refusal emits `policy.blocked` with `decodedRevert`. `raise()` opens one exception per subject and a pending request; a SIMULATED owner approves 4 s later: only then does the node pause / cap change / allowlist grow, and only then is the request `done` (fake `0x51a0…` hash, `SimulatedBadge` on the row). Every event, payment, request and response carries `simulated: true`; the page shows the MOCK badge and a SIMULATED badge on the tree header.
+- **Fix found on the way.** `IndexerConfigSchema.escrowFactory` demanded an address while the deployments file has `escrowFactory: null`, so the service refused to boot against the current (retired) treasury with `expected 0x-prefixed 20-byte hex address`. Now nullable; the indexer watches the treasury and USDC only until a factory exists.
+- `apps/web` joined the vitest projects (`apps/web/vitest.config.mts`, node environment, pure logic only).
+
+### Verified (real output, 2026-10-25)
+| Check | Result |
+|---|---|
+| `pnpm -r typecheck` | exit 0 (11 workspaces) |
+| `pnpm lint` | exit 0 |
+| `pnpm test` | 77 files passed, 1 skipped; 642 tests passed, 1 skipped (23 new: `routes/treasury.test.ts` 7 incl. `?agentId=`, `lib/tree.test.ts` 9, `lib/mocks/treasury-sim.test.ts` 7) |
+| `NEXT_PUBLIC_USE_MOCKS=1 pnpm --filter @overflow/web build` | exit 0, 11 static routes incl. `/agents` |
+
+**Mocks, headless Chrome (CDP driver, `next dev -p 3100` with `NEXT_PUBLIC_USE_MOCKS=1`), console errors: none.**
+| Step | Observed |
+|---|---|
+| load `/agents` | h1 "Agents", MOCK badge ×2, SIMULATED badge on the tree header; header `treasury 0xd3a74…48291 block 49900000 · 5 nodes · allowlist 2` |
+| cards at t0 | node 1 7.5 % (7.50 / 100), node 2 12 %, node 5 20 %, node 3 18 %, node 4 25 %; node 3 shows "1 PENDING" (the fixture's pause(3) request) |
+| cards after 7 s | two ticks landed: node 4 2.50 → 3.00 and node 5 2.00 → 2.90, so node 3 4.50 → 5.00, node 2 3.00 → 3.90 and the root 7.50 → 8.90; bars 8.9 / 15.6 / 29 / 20 / 30 % |
+| kebab on node 2 | items `Pause`, `Raise cap`, `Add payee (treasury allowlist)`; dialog "Pause this node" with the PAUSE_REQUEST text |
+| submit | result row `PENDING Request created. Nothing has changed onchain. SIMULATED pause(2) … request cr-sim-7`; node 2 and 5 still `running` |
+| panel, node 2 | request `cr-sim-7` phase `pending`; ~4 s later phase `done` ("DONE Pause node 2 SIMULATED …") |
+| cards after the simulated NodePaused | node 2 `paused` (Paused pill), node 5 `paused` with `pausedBy` 2 (greyed with its parent); nodes 1, 3, 4 running |
+| refusals | `Paused(2) · This agent (or an ancestor) is paused · SIMULATED` for node 5's 2.00 USDC and node 2's 0.50 USDC attempts, "no transaction (refused before broadcast)" |
+
+**Live, local service against `deployments/base-sepolia.json` (retired treasury `0xd3a74fa991ca0b5627d30ef27dc699c134848291`), `next dev` with `NEXT_PUBLIC_USE_MOCKS=0`, console errors: none.**
+| Step | Observed |
+|---|---|
+| service boot | `SERVICE_URL=http://localhost:4000` passed on the command line (the local `.env` leaves it empty, which `z.url()` rejects); chain 84532, USDC domain verified, relayer 0 wei (no relay attempted); indexer from block 49849422 caught up to 49986053: 3 logs (`NodeCreated` node 1, `AllowSet` ×2), reconciliation ok |
+| `GET /api/treasury/nodes` | `blockNumber 49984269`, one node: `{id 1, key 0x390CF9aA0230728dB7E185782F2288E41892Ea89, cap 50000000, spent 0, maxPerCall 15000000, expiry 1793496518, paused false, remaining 50000000, status running, agent null, payees global}`; after catch-up `allowlist` = `0x918917ed990014659ab8C8B35075C9d53f05B41a`, `0x7dd254f347F0b50B50A2a6044466ba489ef83c7c`; `simulated: false` |
+| `GET /api/treasury/nodes/1/payments` | `payments: []` (no `Paid` log on this treasury) |
+| `/agents` in Chrome | no MOCK / SIMULATED badge, `data-simulated="false"`; header `block 49986176 · 1 node · allowlist 2`; card "Unlabeled node #1 · no agent record for this key · key 0x390CF9…92Ea89 · spent 0.00 · cap 50.00 · remaining() 50.00 · per call 15.00 · expires in 6d 16h · payees: treasury allowlist (2)", bar 0 % |
+| kebab → Raise cap 80 USDC | real `POST /api/exceptions` → 202: result row `PENDING Request created. Nothing has changed onchain. raiseCap(1, 80000000) … request 2fc4f276-0f03-41b8-9d1a-460bff1b8fa0`; panel lists it as `pending` with "Raise cap of node 1 · 80.00 USDC"; card shows "1 PENDING"; `GET /api/controller-requests?status=all` returns the same request, status `pending`; no DONE anywhere (no owner transaction exists) |
+
+### Not yet done
+- The live PENDING → DONE pause transition needs an owner `pause(id)` transaction: it is proven here with the labelled simulation and will be recorded live after controller Stage B/D (deploy with `OWNER_ADDRESS` = the Coinbase smart wallet, `createRoot` for the CDP key, Wallet MCP approval). The code path is the one already exercised by `completeControllerRequests` (owner-gated `NodePaused`) and the web's `phaseOf`.
+- The retired treasury has one node, so the live view shows one card; three levels appear once the mission runner's `/delegate` children exist on the new treasury.
+- The raise-cap request created above lives in the service's in-memory PGlite and is gone when the service stops; nothing was broadcast.
+

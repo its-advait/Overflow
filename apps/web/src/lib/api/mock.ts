@@ -2,6 +2,7 @@ import type { Hex, LedgerAccount } from "@overflow/schemas";
 import { ApiError, type OverflowApi } from "./client";
 import type { Balance, DepartmentBalance } from "./contracts";
 import * as fx from "../mocks/fixtures";
+import { getTreasurySim } from "../mocks/treasury-sim";
 
 // ---------------------------------------------------------------------------
 // MOCK client: serves the fixtures with a short delay so loading states show.
@@ -48,6 +49,8 @@ function sumBalances(entries: typeof fx.ledgerEntries): { balances: Balance[]; d
 }
 
 export function createMockApi(): OverflowApi {
+  // The SIMULATED treasury behind the agents page: bars, refusals and the controller lifecycle, all labelled.
+  const sim = getTreasurySim();
   return {
     source: "mock",
     status: () => delay(fx.serviceStatus),
@@ -139,10 +142,26 @@ export function createMockApi(): OverflowApi {
       });
     },
 
+    listTreasuryNodes: () => delay(sim.snapshot()),
+    listNodePayments: (nodeId) => delay(sim.paymentsOf(nodeId)),
+    raiseException: (body) => {
+      try {
+        return delay(sim.raise(body));
+      } catch (e) {
+        return Promise.reject(e);
+      }
+    },
+    getControllerRequest: (id) => {
+      const r = sim.request(id) ?? (id === fx.controllerRequest.id ? fx.controllerRequest : undefined);
+      return r ? delay(r) : Promise.reject(notFound("controller request", id));
+    },
+
     listActivity: (query = {}) => {
-      let events = [...fx.activity].reverse();
+      // Fixture history plus the SIMULATED treasury's live events, newest first.
+      let events = [...fx.activity, ...sim.events].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
       if (query.purchaseId) events = events.filter((e) => e.purchaseId === query.purchaseId);
       if (query.missionId) events = events.filter((e) => e.missionId === query.missionId);
+      if (query.agentId) events = events.filter((e) => e.agentId === query.agentId);
       return delay({ events: events.slice(0, query.limit ?? 100) });
     },
     listExceptions: (query = {}) => {
@@ -171,7 +190,7 @@ export function createMockApi(): OverflowApi {
     },
     listControllerRequests: (query = {}) => {
       const status = query.status ?? "pending";
-      const rows = [fx.controllerRequest].filter((r) => status === "all" || r.status === status);
+      const rows = [fx.controllerRequest, ...sim.requests].filter((r) => status === "all" || r.status === status);
       return delay({ requests: rows, treasury: fx.TREASURY_ADDRESS });
     },
 
@@ -190,9 +209,13 @@ export function createMockApi(): OverflowApi {
         timers.push(setTimeout(() => onMessage({ type: "activity", id: event.id, event }), 200 + i * 120));
       });
       const heartbeat = setInterval(() => onMessage({ type: "heartbeat" }), 15_000);
+      // Live SIMULATED treasury events (payments, refusals, controller lifecycle) stream like the service's /events.
+      const unsubscribeSim = sim.subscribe((event) => onMessage({ type: "activity", id: event.id, event }));
+      sim.start();
       return () => {
         timers.forEach(clearTimeout);
         clearInterval(heartbeat);
+        unsubscribeSim();
       };
     },
   };

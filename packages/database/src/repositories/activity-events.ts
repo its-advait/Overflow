@@ -65,6 +65,17 @@ export function activityEventsRepository(db: Executor) {
       return rows.map(toRecord);
     },
 
+    /** Newest first, one agent's events (the agent panel's refusals and requests). */
+    async listByAgent(agentId: string, limit = 100): Promise<ActivityEvent[]> {
+      const rows = await db
+        .select()
+        .from(activityEvents)
+        .where(eq(activityEvents.agentId, agentId))
+        .orderBy(desc(activityEvents.at), desc(activityEvents.id))
+        .limit(limit);
+      return rows.map(toRecord);
+    },
+
     /** Newest first. */
     async listRecent(limit = 100): Promise<ActivityEvent[]> {
       const rows = await db.select().from(activityEvents).orderBy(desc(activityEvents.at)).limit(limit);
