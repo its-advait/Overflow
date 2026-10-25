@@ -73,6 +73,13 @@ see a `PaymentStatus`. One authorization per purchase, ever; `reconcilePayment` 
 `authorizationState` before anything else. `pnpm demo:adapters` runs one purchase through each on Base Sepolia
 (`--probe-coinbase` only asks the Coinbase facilitator's `/verify` about a treasury-as-payer authorization).
 
+## MCP server for any agent (`@overflow/overflow-mcp`)
+
+`packages/overflow-mcp` is a stdio MCP server with `overflow_budget`, `overflow_quote` (402 + the facilitator's `/verify`
+simulation) and `overflow_pay` (one EIP-3009 authorization, `from = treasury`, settled only by `settle()`). Install:
+`pnpm mcp:build && claude mcp add --transport stdio overflow -- node "$(pwd)/packages/overflow-mcp/dist/server.js"`.
+The package README has the Claude Desktop config, a 5-minute walkthrough and the refusal table.
+
 ## Layout
 
 - `apps/web` Next.js App Router UI (Tailwind, shadcn/ui, lucide-react)

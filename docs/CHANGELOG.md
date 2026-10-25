@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- feat(mcp): `packages/overflow-mcp`, a stdio MCP server (`@modelcontextprotocol/server` v2) with `overflow_budget`, `overflow_quote` (402 + facilitator `/verify` simulation) and `overflow_pay` (one EIP-3009 authorization settled only through the treasury). `directApiOrder` moved into `@overflow/payment-client`. Live run on Base Sepolia pending the new treasury.
 - feat(coinbase): controller approvals through Wallet MCP. `ControllerRequest.submission` (Wallet MCP request id + approval URL; status unchanged), `POST /api/controller-requests/:id/submission`, `GET /:id`, `POST /api/exceptions`; owner-gated `NodePaused` completion; `/controller` page in `apps/web`; `.claude/skills/overflow-controller`; `docs/controller.md`. Live Wallet MCP run pending.
 - docs(deploy): read-only Base Sepolia deployment preflight (`docs/deploy-preflight.md`): manifest, blockers, rollback plan, operator commands. Fix: the datasets layout test's annual-row expectation.
 - fix(scripts): `pnpm contracts:export` finds the escrow implementation in the factory tx's nested creates (matched by init code) instead of exporting `null`.

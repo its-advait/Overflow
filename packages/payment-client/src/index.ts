@@ -16,5 +16,6 @@ export * from "./token-domain";
 export * from "./authorization";
 export * from "./header";
 export * from "./fetch";
+export * from "./direct-order";
 export * from "./golden";
 export * from "./typed-data";
