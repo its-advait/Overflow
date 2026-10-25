@@ -1,0 +1,20 @@
+{
+  "note": "SIMULATED golden vector from packages/payment-client/src/golden.ts. testOnlyPrivateKey = keccak256(\"overflow.golden.key\"): public, never fund it. Amounts are atomic units (6 decimals). from = the treasury, signed by a node key.",
+  "chainId": 84532,
+  "usdc": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+  "domainSeparator": "0x71f17a3b2ff373b803d70a5a07c046c1a2bc8e89c09ef722fcb047abe94c9818",
+  "typehash": "0x7c7c6cdb67a18743f49ec6fa9b35f50d52ed05cbed4cc592e13b44501c1a2267",
+  "testOnlyPrivateKey": "0x7821e83d3d34740e94104147499f90f473b3c525dffeb768d2cb03021ba69f1c",
+  "signer": "0x7c73D9A471FBEAb3d80a3114186E03498bE024b3",
+  "authorization": {
+    "from": "0x1111111111111111111111111111111111111111",
+    "to": "0x2222222222222222222222222222222222222222",
+    "value": "20000",
+    "validAfter": "1791700000",
+    "validBefore": "1791700120",
+    "nonce": "0xb471c123bd622ee001e7371d49c3f8c7719f3f53d3a3faeb4a854db616b56217"
+  },
+  "structHash": "0x913993d044ea08a7d6969b606ef8ffbfa9f1e392f2ec84376d8712848b0f4a10",
+  "digest": "0xb2d39a5bf926c7a6e8c9447445a9b38006b415db638e540792757a03b40e2dc8",
+  "signature": "0xa4e8985471162873543f7e18a4008db99672e90468aeb8aa7d43f9a61ef6f2c72a6038d774ded763ff7c842249fade967d3c576969a01665db2fb9fa2688ed5d1c"
+}

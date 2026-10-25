@@ -2,7 +2,7 @@
   "name": "@overflow/payment-client",
   "version": "0.0.0",
   "private": true,
-  "description": "x402 client: builds and signs USDC payment authorizations with viem",
+  "description": "x402 client: parses 402 quotes, checks them against the PurchaseOrder, and signs EIP-3009 authorizations (from = treasury) with an agent node key",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
@@ -11,10 +11,13 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "golden": "tsx scripts/gen-golden.ts",
+    "settle:live": "tsx scripts/settle-live.ts"
   },
   "devDependencies": {
-    "@types/node": "^26.6.5"
+    "@types/node": "^26.6.5",
+    "tsx": "^4.23.15"
   },
   "dependencies": {
     "@overflow/schemas": "workspace:*",

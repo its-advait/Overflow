@@ -1,8 +1,18 @@
 export const PACKAGE_NAME = "@overflow/payment-client" as const;
 
 /**
- * Scaffold placeholder. The x402 payment client (viem-based) lands in a later prompt.
- * Rule: this package only builds and signs authorizations. It never moves USDC;
- * only OverflowTreasury.settle()/reserve() and OverflowEscrow do.
+ * x402 payment client for Overflow.
+ *
+ * This package parses a seller's 402, checks it against our PurchaseOrder, and signs an
+ * EIP-3009 TransferWithAuthorization with from = the treasury using an agent node key.
+ * It never moves USDC. Only OverflowTreasury.settle()/reserve() and OverflowEscrow do, and
+ * USDC asks the treasury (ERC-1271) before any transfer.
  */
-export const PAYMENT_CLIENT_STATUS = "scaffold: not implemented" as const;
+export * from "./errors";
+export * from "./x402";
+export * from "./quote";
+export * from "./token-domain";
+export * from "./authorization";
+export * from "./header";
+export * from "./fetch";
+export * from "./golden";
