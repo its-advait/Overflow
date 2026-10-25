@@ -14,6 +14,19 @@ Overflow is proven with a LIVE test and a LIVE demo on Base Sepolia, with live t
 
 The sellers, datasets and attacker in the live run are SIMULATED. The only Overflow transactions on Base Sepolia so far are the deployment and two `setAllow` calls on the earlier, now retired treasury ([limitations.md](limitations.md)).
 
+## Measured on a local Anvil fork (not Base Sepolia)
+
+The three Recourse scenarios ran end to end against the real contracts, the real facilitator path and the real indexer on a local Anvil fork of Base Sepolia, with SIMULATED sellers and datasets and a rule-based SIMULATED sample judge. Every transaction stayed local; none of these numbers is a Base Sepolia result. Source: [PROGRESS, "recourse orders end to end on local Anvil"](PROGRESS.md).
+
+| Measure | Value |
+|---|---|
+| Orders that reached exactly one terminal state | 3 of 3: honest `status()` 3 (Settled), ghost 4 (Refunded, timeout), swap 4 (Refunded, mismatch) |
+| USDC left in the three escrows after the run | 0 in each (`cast call USDC balanceOf`) |
+| Honest order | `settle()` paid 12000000 (12 USDC) into the escrow; all 528 chunks decrypted to the committed leaves before `accept`; seller USDC balance 11020000 → 23020000 (atomic units, as `cast call` printed them) |
+| Ghost order | Timeout refund; seller USDC balance 13000000 → 12000000 (bond 1.0 lost) |
+| Swap order | `complainMismatch` on chunk 0; seller USDC balance 10010470 → 7410470 (bond 2.6 lost); `factory.provenCheats(swap seller) = 1` |
+| Warnings or errors in the run log | 0 |
+
 ## Gas per call (local EVM, real USDC bytecode)
 
 Measured by `pnpm contracts:gas` on 2026-10-25 in [`contracts/test/gas/GasReport.t.sol`](../contracts/test/gas/GasReport.t.sol) (`test_gasReport`). The test uses forge gas snapshots on a local EVM against Circle's real USDC v2.2 bytecode (forge 1.8.6, solc 0.8.28, cancun, optimizer 200 runs). Each number is the execution gas of one warm external call, with treasury depth 1 (the root node pays). A full transaction adds about 21,000 intrinsic gas plus calldata. These numbers were **not** measured on Base Sepolia. Source: [gas.md](gas.md).
@@ -49,5 +62,5 @@ These are not measured yet:
 
 - **Unauthorized payments rejected on Base Sepolia:** to be measured in the live run.
 - **Duplicate spend avoided by Fusion, in USDC:** to be measured in the live run. The only evidence is a unit test on SIMULATED fixture prices, and it moves no USDC. `packages/fusion/src/rules.test.ts` line 26 asserts the price evidence "one purchase 12.00 USDC vs 17.00 USDC separately (5.00 + 12.00)". That file passed 8 of 8 on 2026-10-25. It records a merge decision on fixture prices, not measured saved spend.
-- **Orders that ended in exactly one terminal state and reconciled:** to be measured in the live run. See [PROGRESS, "live P6.3 / P6.4 / P6.5 checks"](PROGRESS.md).
+- **Orders that ended in exactly one terminal state and reconciled:** to be measured in the live run (3 of 3 on a local Anvil fork, above; not a Base Sepolia result). See [PROGRESS, "live P6.3 / P6.4 / P6.5 checks"](PROGRESS.md).
 - **Gas on Base Sepolia for `settle()`, `reserve()` and the escrow lifecycle:** not measured.

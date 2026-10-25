@@ -18,9 +18,13 @@ Overflow keeps three financial events separate in the contracts, the ledger and 
 | LIVE test and LIVE demo on Base Sepolia (beats below) | **Not run yet** | Treasury 0 USDC, relayer 0 ETH (docs/PROGRESS.md, 2026-10-25 entries). Live tx: TODO (Basescan link after the live run) |
 | Claude agents (Oracle extraction, sample judgment, mission plan, sub-agents) | Real Anthropic SDK calls, model from `CLAUDE_MODEL` | Exercised in Vitest with fakes; no live mission has run (above) |
 | Scripted replay | Labeled fallback (`[SCRIPTED]` on every log line, badge in the top bar) | **No recording exists yet**: `data/scripted/` holds only its README |
+| `overflow_pay` MCP server for any agent (`packages/overflow-mcp`: `overflow_budget`, `overflow_quote`, `overflow_pay`) | Real code, unit and MCP round-trip tests; **live Base Sepolia payment pending** (needs the funded treasury) | docs/PROGRESS.md, "`packages/overflow-mcp`"; [packages/overflow-mcp/README.md](packages/overflow-mcp/README.md). Live tx: TODO (Basescan link after the live run) |
+| Controller approvals through Coinbase Wallet MCP | Real code (controller requests, submission record, `/controller` page, `overflow-controller` skill); tested against a SIMULATED fixture; **no live Wallet MCP call yet** | [docs/controller.md](docs/controller.md); docs/coinbase-feedback.md, "Wallet MCP controller". The owner txs recorded so far were signed by the deployer key with DEV ONLY scripts that SIMULATE the controller |
+| CDP-held agent keys (`NODE_SIGNER=cdp`, optional) | Real code; **live sign check passed**, nothing broadcast | CDP server account `0x646F2bb89286aD517E0cc5420589a65dDe30A415` signed USDC and delegation payloads that recover to it (docs/coinbase-feedback.md, "CDP server accounts as agent keys") |
+| Recourse orders end to end (honest, ghost, swap) | Real contracts, facilitator path and indexer on a **local Anvil fork** of Base Sepolia, SIMULATED sellers; nothing broadcast to Base Sepolia | docs/PROGRESS.md, "recourse orders end to end on local Anvil" (honest `Settled`, ghost `Refunded` timeout, swap `Refunded` mismatch with `provenCheats = 1`) |
 | Coinbase facilitator path (`reserve()` then CDP settles) | **BLOCKED, unproven** | CDP facilitator answered `invalid_payload: contract call failed … execution reverted` for a treasury-as-payer authorization; settlement with a live `reserve()` was not proven; the demo uses the Overflow facilitator (docs/coinbase-feedback.md) |
 | Sellers (`sim-seller-a`, `sim-seller-b`), their datasets and catalog (`data/catalog.json`, 6 listings) | **SIMULATED** (synthetic, redistributable) | `apps/service/src/sellers/`, `data/README.md` |
-| Cheating sellers (swap, ghost behaviors) | **SIMULATED** | `SELLER_BEHAVIORS`, `apps/service/src/sellers/recourse/behavior.ts` |
+| Cheating sellers (swap, ghost behaviors) | **SIMULATED** | `SELLER_BEHAVIORS`, `apps/service/src/sellers/recourse/behavior.ts` (the `flow:demo` sellers); `apps/service/src/recourse/seller-sim.ts` (the local Anvil runner) |
 | Attacker endpoint and address | **SIMULATED** (never allowlisted) | `ATTACKER_ADDRESS`, `/premium-intel` fixture |
 | The company, Larkspur Research Partners, its departments and books | **SIMULATED** | `COMPANY_NAME` seed (docs/PROGRESS.md, database entry) |
 
@@ -70,16 +74,44 @@ pnpm dev                          # web (Next.js) + service in parallel
 pnpm service                      # service only; boots after the USDC domain + deployments checks pass
 ```
 
-Signing keys are read from Foundry keystores (`RELAYER_ACCOUNT` + `RELAYER_PASSWORD_FILE`, `AGENT_ROOT_ACCOUNT`, `DEPLOYER_ACCOUNT`) or 64-hex dev fallbacks; no key is printed or written.
+Signing keys are read from Foundry keystores (`RELAYER_ACCOUNT` + `RELAYER_PASSWORD_FILE`, `AGENT_ROOT_ACCOUNT`, `DEPLOYER_ACCOUNT`) or 64-hex dev fallbacks; no key is printed or written. A node key can instead live in a Coinbase Developer Platform server account (`NODE_SIGNER=cdp`, `CDP_ACCOUNT_NAME`, optional `CDP_ACCOUNT_ADDRESS` pin); check it once with `pnpm --filter @overflow/payment-client cdp:sign-check -- --name overflow-node-root --json` (signs, verifies, broadcasts nothing).
+
+## Pay from any agent (`overflow_pay`)
+
+`packages/overflow-mcp` is a stdio MCP server that lets Claude Code, Claude Desktop or any MCP client pay x402 APIs under an Overflow node's policy. `overflow_budget()` reads the node's remaining USDC and per-call limit from the treasury; `overflow_quote(url)` fetches the 402 and asks the facilitator to simulate the payment (`POST /verify`, nothing broadcast); `overflow_pay(url, maxAmount)` signs one EIP-3009 authorization with `from` = the treasury, settled only by `OverflowTreasury.settle()`. Amounts are atomic USDC as decimal strings; floats are rejected. The server holds no owner key and never retries a payment.
+
+```sh
+pnpm mcp:build    # -> packages/overflow-mcp/dist/server.js
+claude mcp add --transport stdio overflow -- node "$(pwd)/packages/overflow-mcp/dist/server.js"
+```
+
+It reads `SERVICE_URL`, `BASE_SEPOLIA_RPC_URL` and the node key (`NODE_PRIVATE_KEY`, `NODE_ACCOUNT` + `NODE_PASSWORD_FILE`, or `NODE_SIGNER=cdp`) from the repo `.env`. Claude Desktop setup, the refusal table and a 5-minute walkthrough (`/api/search` pays, `/premium-intel` is refused with `PayeeNotAllowed(0)`): [packages/overflow-mcp/README.md](packages/overflow-mcp/README.md).
+
+## The controller (Coinbase Wallet MCP)
+
+The treasury owner is the controller's Coinbase smart wallet; the owner key is on no server. Exceptions that need an owner action (new payee, cap raise, pause) become controller requests with prepared calldata. A Claude Code session with Wallet MCP (`claude mcp add --transport http --scope user base-mcp https://wallet-mcp.coinbase.com`) runs the `overflow-controller` skill (`.claude/skills/overflow-controller/SKILL.md`): it lists `GET /api/controller-requests`, sends each call with `send_calls` on `base-sepolia`, records `{requestId, approvalUrl}` at `POST /api/controller-requests/:id/submission`, and the human approves in Coinbase Wallet. A request becomes done only when the indexer stores the treasury event (`AllowSet`, `CapRaised`, `NodePaused` by the owner). `/controller` shows each request's state; `/agents` opens requests from the delegation tree. Details: [docs/controller.md](docs/controller.md).
+
+## Local Anvil Recourse run (never Base Sepolia)
+
+The three Recourse scenarios run end to end against the real contracts, facilitator path and indexer on a local Anvil fork; the runner refuses any RPC that is not Anvil.
+
+```sh
+bash scripts/anvil-up.sh                           # anvil --fork-url $BASE_SEPOLIA_RPC_URL --chain-id 84532
+pnpm --filter @overflow/service anvil:provision    # deploys treasury + factory on the fork, createRoot, mints test USDC
+set -a; source apps/service/.anvil/service.env; set +a
+pnpm --filter @overflow/service dev                # boots, indexes, runs the three SIMULATED orders (RECOURSE_ANVIL_RUN=1)
+```
+
+Then `/escrow` lists the orders and `/escrow/[id]` shows the state diagram, terms, sample, evidence (both Merkle proofs re-verified in the browser) and the calls the contract would accept.
 
 ## 5-minute walkthrough
 
 What a reviewer can run today without funds:
 
 1. **Contracts (1 min).** `pnpm contracts:test`. Last recorded result: 20 suites, 196 passed, 0 failed, 1 skipped (docs/PROGRESS.md, "end-to-end purchase flow"). `pnpm contracts:fork` runs the USDC gate suite against live Base Sepolia USDC (7 passed, docs/PROGRESS.md "hardening pass").
-2. **Offchain tests (1 min).** `pnpm test`. Last recorded result: exit 0, 87 files, 736 tests (docs/PROGRESS.md, 2026-10-25 entries).
+2. **Offchain tests (1 min).** `pnpm test`. Last recorded results: exit 0, 87 files, 736 tests (docs/PROGRESS.md, 2026-10-25 entries); on the merged `main`, 91 files passed, 1 skipped, 747 tests passed, 1 skipped (docs/PROGRESS.md, "merge `origin/main` (web missions, web overview) into `main`").
 3. **Live state (30 s).** `pnpm status` reads the real treasury on Base Sepolia (owner, balance, nodes, `remaining()`).
-4. **UI (1.5 min).** `pnpm dev`, open http://localhost:3000. With `NEXT_PUBLIC_USE_MOCKS=1` the UI runs on labeled fixtures and shows a MOCK badge; with it unset the UI reads the service at `NEXT_PUBLIC_API_URL`. Every simulated party carries a SIMULATED label.
+4. **UI (1.5 min).** `pnpm dev`, open http://localhost:3000. With `NEXT_PUBLIC_USE_MOCKS=1` the UI runs on labeled fixtures and shows a MOCK badge; with it unset the UI reads the service at `NEXT_PUBLIC_API_URL`. Every simulated party carries a SIMULATED label. Pages: Overview, Missions, Purchases, Agents (delegation tree), Escrow (list and detail), Ledger, Controller, Settings (the live control panel).
 
 The live demo (needs funding; **not yet run**, see [docs/limitations.md](docs/limitations.md)):
 
@@ -107,7 +139,8 @@ Overflow is proven with a LIVE test and a LIVE demo on Base Sepolia, with live t
 | Sub-agent over its parent's cap | `settle()` refuses with `OverBudget` | Live tx: TODO (Basescan link after the live run) |
 | Paused orchestrator | child payment refused with `Paused` | Live tx: TODO (Basescan link after the live run) |
 | Direct-to-USDC bypass | USDC refuses with `FiatTokenV2: invalid signature`; nonce unused | Live tx: TODO (Basescan link after the live run) |
-| Controller actions | the controller signs the policy change onchain (caps, payees, pause) | Live tx: TODO (Basescan link after the live run) |
+| Controller actions | the controller approves the policy change in Coinbase Wallet through Wallet MCP (caps, payees, pause); `/controller` shows DONE on the indexed event | Live tx: TODO (Basescan link after the live run) |
+| An outside agent uses `overflow_pay` | `/api/search` settles through `treasury.settle()`; `/premium-intel` refused with `PayeeNotAllowed(0)` before signing | Live tx: TODO (Basescan link after the live run) |
 
 ## Built on Leash
 
@@ -123,14 +156,17 @@ Leash (our B@BHacks project, https://github.com/AnthonyOlakangil/leash) is prior
 - [docs/submission/](docs/submission/) (`docs/submission/*.md`, one per track)
 - [docs/SPEC.md](docs/SPEC.md): build spec
 - [docs/gas.md](docs/gas.md): gas per operation
-- [docs/coinbase-feedback.md](docs/coinbase-feedback.md): Coinbase facilitator findings
+- [docs/coinbase-feedback.md](docs/coinbase-feedback.md): Coinbase facilitator findings, the Wallet MCP controller and the CDP sign check
+- [docs/controller.md](docs/controller.md): controller approvals through Coinbase Wallet MCP
+- [packages/overflow-mcp/README.md](packages/overflow-mcp/README.md): the `overflow_pay` MCP server
 - [docs/PROGRESS.md](docs/PROGRESS.md): progress log with real command output
 
 ## Layout
 
 - `apps/web` Next.js App Router UI (Tailwind, shadcn/ui)
-- `apps/service` Node service: `api/`, `orchestration/` (Claude agents), `facilitator/` (settle core), `sellers/` (SIMULATED x402 sellers and attack fixtures), `chain/` (indexer), `ledger/`, `reconciliation/`
-- `packages/*`: `schemas`, `oracle`, `fusion`, `payment-client`, `recourse-crypto`, `database`, `datasets`
+- `apps/service` Node service: `api/`, `orchestration/` (Claude agents), `facilitator/` (settle core), `sellers/` (SIMULATED x402 sellers and attack fixtures), `recourse/` (local Anvil Recourse runner, SIMULATED), `exceptions/` (controller requests), `chain/` (indexer), `ledger/`, `reconciliation/`
+- `packages/*`: `schemas`, `oracle`, `fusion`, `payment-client` (including env, keystore and CDP signers), `recourse-crypto`, `database`, `datasets`, `overflow-mcp` (the `overflow_pay` MCP server)
+- `.claude/skills/overflow-controller`: the controller's Wallet MCP skill
 - `data`: SIMULATED datasets and seller catalog
 - `contracts`: Foundry project (solc 0.8.28, cancun, OpenZeppelin 5)
 - `scripts`: operator scripts

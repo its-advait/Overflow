@@ -2,7 +2,7 @@
 
 Repo: https://github.com/its-advait/Overflow · Spec: [docs/SPEC.md](../SPEC.md) · Progress log: [docs/PROGRESS.md](../PROGRESS.md)
 
-**Status as of 2026-10-25, read this first.** Contracts are deployed on Base Sepolia (links below) and the contract and unit test suites pass. **No live mission has run on Base Sepolia**: the treasury holds 0 USDC and the relayer holds 0 ETH (preflight in [docs/PROGRESS.md](../PROGRESS.md), "live P6.3 / P6.4 / P6.5 checks"). No scripted replay recording exists. Overflow will be proven with a **live test and a live demo on Base Sepolia, with live transactions**; section 2 lists each live beat with its evidence slot, and every slot is TODO until the funded run. **Settlement through Coinbase's CDP facilitator is unproven** ([docs/coinbase-feedback.md](../coinbase-feedback.md)).
+**Status as of 2026-10-25, read this first.** Contracts are deployed on Base Sepolia (links below) and the contract and unit test suites pass. **No live mission has run on Base Sepolia**: the treasury holds 0 USDC and the relayer holds 0 ETH (preflight in [docs/PROGRESS.md](../PROGRESS.md), "live P6.3 / P6.4 / P6.5 checks"). No scripted replay recording exists. Overflow will be proven with a **live test and a live demo on Base Sepolia, with live transactions**; section 2 lists each live beat with its evidence slot, and every slot is TODO until the funded run. **Settlement through Coinbase's CDP facilitator is unproven** ([docs/coinbase-feedback.md](../coinbase-feedback.md)). Built and tested, not yet run live on Base Sepolia: the `overflow_pay` MCP server for any agent and controller approvals through Coinbase Wallet MCP. Run live: the CDP server-account sign check (nothing broadcast).
 
 ## 1. Summary
 
@@ -10,26 +10,35 @@ Repo: https://github.com/its-advait/Overflow · Spec: [docs/SPEC.md](../SPEC.md)
 
 **What it does.** Overflow gives a team of agents one USDC budget on Base Sepolia. The agents find and buy resources over x402 and pay sellers through a per-order escrow that releases only on verifiable delivery. Every payment passes onchain policy checks before any USDC moves. Agents propose and sign; only the contracts (`OverflowTreasury`, `OverflowEscrowFactory`, `OverflowEscrow`) move money. The system keeps three events separate in the contracts, the ledger and the UI: authorization, escrow funding and final settlement.
 
-**Agent platform.** Claude through the Anthropic SDK (`@anthropic-ai/sdk` in `apps/service/package.json`). The model name comes from `CLAUDE_MODEL`. Call sites: `apps/service/src/orchestration/mission-runner.ts`, `agent-loop.ts`, `sample-judgment.ts`, and the Oracle port. Structured answers use `messages.parse` with Zod. The mission runner drives three agent roles: research, finance and verification.
+**Agent platform.** Claude through the Anthropic SDK (`@anthropic-ai/sdk` in `apps/service/package.json`). The model name comes from `CLAUDE_MODEL`. Call sites: `apps/service/src/orchestration/mission-runner.ts`, `agent-loop.ts`, `sample-judgment.ts`, and the Oracle port. Structured answers use `messages.parse` with Zod. The mission runner drives three agent roles: research, finance and verification. Any other agent that speaks MCP (Claude Code, Claude Desktop) can pay through the same treasury with the `overflow_pay` tool (`packages/overflow-mcp`).
 
 **Coinbase and x402 tools actually used in code**
 
 | Tool | Where | What it does here |
 |---|---|---|
 | x402 protocol v2 (`PAYMENT-REQUIRED` / `PAYMENT-SIGNATURE` / `PAYMENT-RESPONSE`, `exact` scheme on `eip155:84532`) | `packages/payment-client/src/x402.ts`, `header.ts`, `quote.ts`; seller paywall `apps/service/src/sellers/paywall.ts` | Our own client and paywall. The client checks the quote against the purchase order, then the agent's node key signs EIP-3009 with `from` = treasury. |
-| `@x402/hono`, `@x402/core`, `@x402/evm` 2.28.0 | `apps/service/src/sellers/spike/server.ts` (spike only) | Official seller middleware on one throwaway paid route, used to test the Coinbase facilitator |
+| `@x402/hono`, `@x402/core`, `@x402/evm` 2.28.0 | `apps/service/src/sellers/spike/server.ts` (the facilitator spike route) | Official seller middleware on one throwaway paid route, used to test the Coinbase facilitator |
 | `@coinbase/x402` 2.1.0 with a CDP API key (`CDP_API_KEY_ID`, `CDP_API_KEY_SECRET`) | `apps/service/src/sellers/spike/server.ts`, `scripts/coinbase-spike.ts` (`pnpm spike:coinbase`) | Authenticated calls to the CDP x402 facilitator `https://api.cdp.coinbase.com/platform/v2/x402`. Every call was a verify-stage rejection; no transaction was broadcast. |
 | `CoinbaseFacilitatorAdapter` (our code, targets Coinbase's facilitator) | `packages/payment-client/src/adapters/coinbase.ts`, tests in `adapters.test.ts` | Calls `treasury.reserve()`, then hands the standard x402 payload to the seller's facilitator. Calls `/release` after `validBefore`. **BLOCKED and labeled.** Passing unit tests do not prove live settlement through Coinbase. |
 | USDC on Base Sepolia (`0x036CbD53842c5426634e7929541eC2318f3dCF7e`) | everywhere | Payment token. `transferWithAuthorization` with a bytes signature, so the token checks the treasury through ERC-1271 |
-| Coinbase Wallet `send_calls` (prepared calldata only) | `apps/service/src/exceptions/calldata.ts`, `apps/web/src/components/ledger/exceptions-list.tsx` | The service **encodes** owner calls for the controller to approve in Coinbase Wallet. It never signs or sends them. Wallet MCP is **not** called from code. |
+| Coinbase Wallet MCP (`send_calls`, `get_request_status`) for controller approvals | `.claude/skills/overflow-controller/SKILL.md`, [docs/controller.md](../controller.md), `apps/service/src/api/routes/controller-requests.ts`, `apps/service/src/exceptions/`, `apps/web/src/app/controller/page.tsx` | The service encodes each owner call (`setAllow`, `raiseCap`, `pause`, …) as a `ControllerRequest`. The controller, a Claude Code session with Wallet MCP (`claude mcp add --transport http --scope user base-mcp https://wallet-mcp.coinbase.com`) running the `overflow-controller` skill, sends it with `send_calls`, records `{requestId, approvalUrl}` (`POST /api/controller-requests/:id/submission`), and the human approves in Coinbase Wallet. The service never holds the owner key; only the indexed treasury event marks a request done. Tested against a SIMULATED fixture; **no live Wallet MCP call has been made yet** (docs/coinbase-feedback.md, "Wallet MCP controller"). |
+| `@coinbase/cdp-sdk` 1.60.0, CDP EVM server accounts as node keys (optional, `NODE_SIGNER=cdp`) | `packages/payment-client/src/signers/` (`cdp.ts`, `resolve.ts`, `signature.ts`), `packages/payment-client/scripts/cdp-sign-check.ts`, `packages/overflow-mcp/src/config.ts` | The agent's node key lives in Coinbase's TEE. Signatures are normalized to `v` 27/28, high `s` is rejected, and each must recover to the account before use. **Live sign check passed** on 2026-10-25: account `overflow-node-root` `0x646F2bb89286aD517E0cc5420589a65dDe30A415` signed USDC `TransferWithAuthorization` and Overflow delegation payloads as raw 65-byte ECDSA signatures; nothing was broadcast. A live `settle()` signed by it waits for the key's registration on the current treasury (docs/coinbase-feedback.md, "CDP server accounts as agent keys"). |
+| `overflow_pay` MCP server (`@modelcontextprotocol/server` 2.4.0) | `packages/overflow-mcp` | Lets any MCP agent pay x402 APIs under an Overflow node's policy: `overflow_budget`, `overflow_quote` (facilitator `POST /verify` simulation, nothing broadcast), `overflow_pay` (one EIP-3009 authorization `from` = treasury, settled only by `treasury.settle()`). |
 
-Not used, although the spec mentions them: Coinbase Wallet MCP as a live integration, CDP server wallets, Bazaar discovery, and the Coinbase MCP.
+Not used, although the spec mentions them: Bazaar discovery and the Coinbase MCP.
 
 ## 2. Working example
 
 - **Video:** TODO until uploaded.
 - **Repo:** https://github.com/its-advait/Overflow
-- **`overflow_pay` MCP tool:** **does not exist yet.** The name appears only in [docs/SPEC.md](../SPEC.md) (Track map). No MCP server exists in the repo, so there are no install steps.
+- **`overflow_pay` MCP tool:** `packages/overflow-mcp` ([README](../../packages/overflow-mcp/README.md)). Install for Claude Code, after `pnpm install` and a filled `.env` (`SERVICE_URL`, `BASE_SEPOLIA_RPC_URL`, and a node key: `NODE_PRIVATE_KEY`, or `NODE_ACCOUNT` + `NODE_PASSWORD_FILE`, or `NODE_SIGNER=cdp` with `CDP_ACCOUNT_NAME`):
+
+  ```sh
+  pnpm --filter @overflow/overflow-mcp build    # -> packages/overflow-mcp/dist/server.js
+  claude mcp add --transport stdio overflow -- node "$(pwd)/packages/overflow-mcp/dist/server.js"
+  ```
+
+  `/mcp` then lists `overflow` with `overflow_budget`, `overflow_quote` and `overflow_pay(url, maxAmount)` (atomic USDC as a decimal string; floats are rejected). Claude Desktop takes the same script with absolute paths in `claude_desktop_config.json` and no secrets. Prerequisites: a running Overflow service, a node key the treasury knows, the seller's payee allowlisted by the controller, and USDC in the treasury. Walkthrough: `/api/search` pays; `/premium-intel` is refused with `PayeeNotAllowed(0)` before anything is signed. Live run on Base Sepolia: TODO (needs the funded treasury; docs/PROGRESS.md, "packages/overflow-mcp").
 
 **Setup (from [README.md](../../README.md))**
 
@@ -53,6 +62,7 @@ pnpm demo:reset          # fresh PGlite DB (service stopped) or set SIMULATED se
 pnpm dev                 # web UI + service; service alone: pnpm --filter @overflow/service dev (API 4000, SIMULATED sellers 4100)
 pnpm --filter @overflow/service flow:demo --beat all    # honest -> SETTLED, ghost -> timeout refund, swap -> refund by proof
 pnpm spike:coinbase      # Coinbase facilitator spike; rewrites docs/coinbase-feedback.md
+pnpm --filter @overflow/payment-client cdp:sign-check -- --name overflow-node-root --json   # CDP-held node key: signs, verifies, broadcasts nothing
 ```
 
 Before `flow:demo` can run live, the treasury needs USDC (`pnpm dev:fund <amount>`, DEV ONLY), the relayer and seller keys need gas (`pnpm --filter @overflow/scripts dev-fund-gas`), and the seller keys need bond USDC (`pnpm dev:fund <amount> --to <seller>`). The full procedure is in the last "live run" entry of [docs/PROGRESS.md](../PROGRESS.md). **This flow has not run on Base Sepolia yet** (TODO: paste Basescan links after the funded run).
@@ -71,7 +81,8 @@ No live run has happened yet, so every evidence slot below is empty. Nothing in 
 | Sub-agent over its parent's cap | `settle()` reverts `OverBudget` | Live tx: TODO (Basescan link after the live run) |
 | Paused orchestrator, child pays | `settle()` reverts `Paused` | Live tx: TODO (Basescan link after the live run) |
 | Same signature sent straight to USDC | USDC reverts `FiatTokenV2: invalid signature` | Live tx: TODO (Basescan link after the live run) |
-| Controller actions (agent caps and a new payee from the Settings control panel; pause) | Owner-only treasury txs signed by the controller | Live tx: TODO (Basescan link after the live run) |
+| Controller actions (agent caps and a new payee from the Settings control panel; pause) | Owner-only treasury txs the controller approves in Coinbase Wallet through Wallet MCP; `/controller` shows DONE only on the indexed event | Live tx: TODO (Basescan link after the live run) |
+| An outside agent uses `overflow_pay` | `/api/search` settles through `treasury.settle()`; `/premium-intel` refused with `PayeeNotAllowed(0)` | Live tx: TODO (Basescan link after the live run) |
 
 **Deployed contracts (Base Sepolia, chain 84532; [packages/schemas/deployments/base-sepolia.json](../../packages/schemas/deployments/base-sepolia.json))**
 
@@ -83,11 +94,11 @@ No live run has happened yet, so every evidence slot below is empty. Nothing in 
 | `setEscrowFactory` | | https://sepolia.basescan.org/tx/0x292d0e3cdce7cde3715afee886fcbdeab95fac62668f2a6c7733daba92b5e948 |
 | `createRoot` (orchestrator node) | | https://sepolia.basescan.org/tx/0x4aea260876dc3cfa33bdedbebd4791a7550d39f3349229656693a870abf9f7b2 |
 
-No payment, escrow funding or settlement transaction exists on Base Sepolia yet.
+No payment, escrow funding or settlement transaction exists on Base Sepolia yet. The three Recourse scenarios did run end to end (real contracts, facilitator path and indexer, SIMULATED sellers) on a **local Anvil fork** of Base Sepolia: honest `Settled`, ghost `Refunded` (timeout), swap `Refunded` (mismatch proof, `provenCheats = 1`). Those transactions stayed local and have no Basescan links (docs/PROGRESS.md, "recourse orders end to end on local Anvil").
 
 ## 3. Architecture
 
-Components and diagram: [docs/architecture.md](../architecture.md) (TODO: confirm the file has landed; the spec's Architecture section, [docs/SPEC.md](../SPEC.md#architecture), is the source). In short, Claude agents and the Overflow service propose and sign. The treasury authorizes each payment against the agent tree. USDC asks the treasury (ERC-1271) before it moves anything. Each order gets its own escrow, which pays the seller after a key reveal or refunds the treasury on proof or timeout.
+Components and diagram: [docs/architecture.md](../architecture.md) (from the spec's Architecture section, [docs/SPEC.md](../SPEC.md#architecture)). In short, Claude agents and the Overflow service propose and sign. The treasury authorizes each payment against the agent tree. USDC asks the treasury (ERC-1271) before it moves anything. Each order gets its own escrow, which pays the seller after a key reveal or refunds the treasury on proof or timeout.
 
 **Controls and evidence**
 
@@ -101,12 +112,12 @@ Components and diagram: [docs/architecture.md](../architecture.md) (TODO: confir
 
 **SIMULATED and labeled:** the seller catalog and datasets, the Recourse sellers (`sim-seller-a`, `sim-seller-b`, with honest, swap and ghost behaviors), the attacker address and the company books.
 
-**Known limits:** [docs/limitations.md](../limitations.md) (TODO: confirm the file has landed). In brief:
+**Known limits:** [docs/limitations.md](../limitations.md). In brief:
 - No live mission on Base Sepolia yet, because the treasury, relayer and seller keys are unfunded.
 - The live test and live demo beats (section 2) have no Basescan links yet; the run is blocked on relayer gas and treasury USDC.
 - Coinbase facilitator settlement is unproven, and the `CoinbaseFacilitatorAdapter` stays BLOCKED.
-- No `overflow_pay` MCP tool.
-- Coinbase Wallet owner actions are prepared calldata only.
+- `overflow_pay` and the Wallet MCP controller flow are built and tested but have not run live; the owner transactions recorded so far were signed by the deployer key through DEV ONLY scripts that SIMULATE the controller.
+- The CDP-held node key passed its live sign check but has not signed a broadcast `settle()` yet.
 - The public RPC caps `eth_getLogs` at a 200-block range, so the sweep reconciler needs chunking.
 - The Recourse order store is in memory.
 
@@ -137,4 +148,5 @@ Differential probes against CDP `/verify` showed that a wrong EOA signature fail
 - [ ] Fund the treasury, relayer and seller keys, run the live test and live demo beats on Base Sepolia (including `flow:demo --beat all`), and paste the Basescan tx links into section 2.
 - [ ] Confirm `docs/architecture.md` and `docs/limitations.md` exist (both are linked above).
 - [ ] Rerun `pnpm spike:coinbase` against the redeployed treasury once it holds USDC, and update section 4 if case (a) settles.
-- [ ] Build the `overflow_pay` MCP tool, or drop it from the spec's Ease-of-reuse row.
+- [ ] Run `overflow_pay` from a fresh Claude Code session against the funded treasury and paste the settle tx link.
+- [ ] Run one live Wallet MCP controller approval and record it in docs/coinbase-feedback.md, "Wallet MCP controller".
