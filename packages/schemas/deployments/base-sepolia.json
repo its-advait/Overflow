@@ -2,15 +2,18 @@
   "chainId": 84532,
   "token": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
   "usdc": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-  "treasury": "0xd3a74fa991ca0b5627d30ef27dc699c134848291",
-  "escrowFactory": null,
-  "escrowImplementation": null,
+  "treasury": "0x03805bde8bd8266ad525a9eb13a0eda7facadca2",
+  "escrowFactory": "0x933bc257a24d94786d0021745470d343d3391808",
+  "escrowImplementation": "0x16fb922f0b3aa2c09d0e5e56640f7b0fd3e14f20",
   "owner": "0xB6F4162192F753C9998B63893CBb48FA046906C3",
   "deployer": "0xb6f4162192f753c9998b63893cbb48fa046906c3",
-  "deployBlock": "49849422",
-  "deployedAt": "2026-10-25T01:29:28.225Z",
+  "deployBlock": "50014188",
+  "deployedAt": "2026-10-25T10:38:52.920Z",
   "txs": {
-    "treasury": "0x5a78240fc7d6bdb5135332dbbf37dd9d17f8aaaca8335c3627d45a48678ad845",
-    "createRoot": "0x97b3b51bdda633d98966ed6dcf2809ad26dfeb5ae2fcd9355853a8490bc7143f"
+    "treasury": "0xbb9fd87f128ef5783b4765d4741001287acc4d495ee996fb9e8979db6c5b301c",
+    "escrowFactory": "0x17570db986b411cd99fd0f336627d23f8bb2298750537234d37d1955bb11d20f",
+    "escrowImplementation": "0x17570db986b411cd99fd0f336627d23f8bb2298750537234d37d1955bb11d20f",
+    "setEscrowFactory": "0x292d0e3cdce7cde3715afee886fcbdeab95fac62668f2a6c7733daba92b5e948",
+    "createRoot": "0x4aea260876dc3cfa33bdedbebd4791a7550d39f3349229656693a870abf9f7b2"
   }
 }
