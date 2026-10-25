@@ -18,6 +18,7 @@ import type { ActivityBus } from "../chain/bus.js";
 import { directApiOrder } from "../sellers/direct-order.js";
 import { htmlToMarkdown } from "../sellers/listing.js";
 import { FORCE_BROADCAST_HEADER } from "../sellers/prices.js";
+import { defaultCatalogPath } from "../sellers/recourse/datasets.js";
 
 // ---------------------------------------------------------------------------------------------------
 // The six agent tools. None sends funds: propose_purchase writes a resource request for Oracle + Fusion;
@@ -246,7 +247,8 @@ export async function executeTool(name: string, rawInput: unknown, ctx: ToolCont
       const catalog = await loadCatalog(ctx.catalogPath);
       const entry = catalog.listings.find((l) => l.id === resourceId);
       if (!entry) return { content: `No listing ${resourceId} in the catalog`, isError: true };
-      const dataDir = ctx.catalogPath ? dirname(ctx.catalogPath) : resolve(process.cwd(), "data");
+      // Same default as loadCatalog: <repo>/data, not the service's working directory.
+      const dataDir = dirname(ctx.catalogPath ?? defaultCatalogPath());
       const csv = await readFile(resolve(dataDir, entry.dataset.rowsCsv), "utf8");
       const lines = csv.split(/\r?\n/).filter(Boolean);
       return { content: clip({ simulated: true, resourceId, rowCount: entry.dataset.rowCount, header: lines[0], sample: lines.slice(1, 1 + rows) }), isError: false };
