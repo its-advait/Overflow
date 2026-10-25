@@ -8,7 +8,7 @@ import {
   type Log,
   type TransactionReceipt,
 } from "viem";
-import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
+import type { PrivateKeyAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
 
 /**
@@ -28,10 +28,6 @@ export interface ChainClient {
   sendTransaction(args: { to: Address; data: Hex; nonce: number; gas?: bigint }): Promise<Hex>;
   waitForTransactionReceipt(args: { hash: Hex; timeoutMs: number }): Promise<TransactionReceipt>;
   getLogs(args: { address: Address; fromBlock: bigint; toBlock: bigint }): Promise<Log[]>;
-}
-
-export function relayerAccount(key: Hex): PrivateKeyAccount {
-  return privateKeyToAccount(key);
 }
 
 export function viemChainClient(rpcUrl: string, account: PrivateKeyAccount): ChainClient {

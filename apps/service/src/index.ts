@@ -2,7 +2,8 @@ import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { CHAIN_ID, loadDeployments, PACKAGE_NAME as SCHEMAS } from "@overflow/schemas";
 import { verifyBoot } from "./chain/boot";
-import { relayerAccount, viemChainClient } from "./chain/client";
+import { resolveSigner } from "@overflow/payment-client/keystore";
+import { viemChainClient } from "./chain/client";
 import { loadEnv, readConfig } from "./config";
 import { createFacilitatorApp } from "./facilitator/app";
 import { createBus, createLogPoller } from "./facilitator/events";
@@ -18,7 +19,9 @@ async function main(): Promise<void> {
   loadEnv();
   const config = readConfig();
   const deployments = await loadDeployments(config.deploymentsPath);
-  const account = relayerAccount(config.relayerKey);
+  // Signer: a Foundry keystore decrypted in memory (RELAYER_ACCOUNT + RELAYER_PASSWORD_FILE) or a dev key. Never logged.
+  const signer = resolveSigner({ ...config.relayer, label: "RELAYER" });
+  const account = signer.account;
   const client = viemChainClient(config.rpcUrl, account);
 
   // Fail loudly before serving anything.
@@ -26,7 +29,7 @@ async function main(): Promise<void> {
   log(`[boot] chain ${boot.chainId}, USDC ${boot.token.address} "${boot.token.name}" v${boot.token.version} separator ${boot.token.domainSeparator}`);
   log(`[boot] treasury ${boot.treasury}, escrowFactory ${boot.escrowFactory ?? "none"}, head block ${boot.blockNumber}`);
   const ethWei = await client.getBalance(account.address);
-  log(`[boot] relayer ${account.address} holds ${ethWei} wei for gas (relayer never holds USDC)`);
+  log(`[boot] relayer ${account.address} (${signer.source}) holds ${ethWei} wei for gas (relayer never holds USDC)`);
   if (ethWei === 0n) log("[boot] WARNING: relayer has no ETH; every relay will fail");
   if (config.demoMode) log("[boot] DEMO_MODE=true: /demo/bypass and forceBroadcast enabled (x-demo-token required); SIMULATED flows are labeled");
 

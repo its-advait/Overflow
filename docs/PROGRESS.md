@@ -376,3 +376,24 @@ The Base Sepolia treasury at `0xd3A74fA991CA0B5627d30EF27dC699C134848291` was ch
 - Idempotency store is in-memory (lost on restart); the Postgres `reservations` table is the DB task's job.
 - The facilitator does not yet call `release()` automatically after `validBefore`; the orchestration layer or a cron must.
 - Coinbase facilitator path (reserve then hand off) is wired on the treasury side but untested against Coinbase's service.
+
+## 2026-10-24: keystore signing for the relayer and the agent root key
+
+### Built
+- `@overflow/payment-client/keystore` (Node-only subpath, not exported from the package root): `decryptKeystore` (Web3 Secret Storage v3 as Foundry writes it: scrypt KDF with any `n/r/p`, aes-128-ctr, keccak MAC checked with `timingSafeEqual` before decrypting; derived key and plaintext buffers zeroed), `resolveKeystorePath` (`$FOUNDRY_KEYSTORES_DIR` or `~/.foundry/keystores/<name>`, absolute paths allowed, no `..`), `readPasswordFile` (refuses group/other-readable, empty or missing files; strips trailing newlines like `forge --password-file`), `resolveSigner({keyOrAddress, account, passwordFile, label})`: a 64-hex key in the env slot wins; otherwise the keystore is decrypted and, when the slot holds an address, the decrypted address must match it. The key exists only inside the returned viem account; no log, error or return value carries it.
+- Service config: `RELAYER_PRIVATE_KEY` may be a 64-hex key or the relayer's address; `RELAYER_ACCOUNT` + `RELAYER_PASSWORD_FILE` select the keystore. `readConfig` refuses an address without a keystore. Boot logs `relayer <address> (keystore <name>)`. `createRelayer`, the nonce queue and `viemChainClient.sendTransaction` are unchanged: the account is still a viem `PrivateKeyAccount`.
+- `scripts/facilitator-demo.ts` signs with `AGENT_ROOT_ACCOUNT` + `AGENT_ROOT_PASSWORD_FILE` (or a 64-hex `AGENT_ROOT_KEY`). `.env.example` documents both roles; README updated.
+- Test fixture `packages/payment-client/test-fixtures/throwaway-a11ce`: a cast-generated keystore of the public `…a11ce` test key (README beside it).
+
+### Verified (real output, 2026-10-24)
+| Check | Result |
+|---|---|
+| `pnpm test` | 15 files / 228 tests (keystore: decrypt, wrong password MAC, unsupported format, 0600 check, newline strip, path rules, signer precedence, address mismatch, missing pieces; config: signer source matrix) |
+| `pnpm typecheck` / `pnpm lint` | exit 0 / exit 0 |
+| Service boot on Base Sepolia with the fixture keystore (`RELAYER_ACCOUNT=<fixture path>`, empty address slot) | booted; `/health` reports relayer `0xe05f…cfF7`, head block 49883826, boot log names the keystore and never a key |
+| Wrong password / address slot ≠ keystore / password file 0644 | each exits 1: `keystore MAC mismatch`, `keystore … holds 0xe05f…, but the env slot says 0x1111…`, `password file … is readable by group/others; chmod 600 it` |
+| The user's `overflow-relayer` / `overflow-agent-root` keystores | not opened: no password file exists yet (`DEPLOYER_PASSWORD_FILE` style). To use them: write the password to a chmod-600 file, set `RELAYER_PASSWORD_FILE` (and `AGENT_ROOT_PASSWORD_FILE`), keep the addresses in `RELAYER_PRIVATE_KEY` / `AGENT_ROOT_KEY` so boot checks them. |
+
+### Notes
+- Only scrypt keystores are accepted (what `cast wallet import` produces); pbkdf2 files fail loudly as unsupported rather than silently.
+- Alternative considered and rejected: shelling out to `cast wallet sign` per transaction. `cast` cannot sign a raw transaction without broadcasting it, which would bypass the relayer's nonce queue and receipt tracking.

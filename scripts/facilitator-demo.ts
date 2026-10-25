@@ -6,24 +6,26 @@
  *   3. the attacker payment sent straight to USDC via POST /demo/bypass    -> rejected by USDC, tx hash
  *   4. step 1 replayed                                                      -> 409 with the original result
  * Writes docs/demo-facilitator.md from the real responses. Needs the service running with DEMO_MODE=true.
- * Reads AGENT_ROOT_KEY (a 64-hex key; the agent's node key), ATTACKER_ADDRESS, DEMO_PAYEE_ADDRESS, DEMO_TOKEN,
- * SERVICE_URL from .env. Never prints a key.
+ * Signs as the agent's root node key: AGENT_ROOT_ACCOUNT + AGENT_ROOT_PASSWORD_FILE (Foundry keystore, decrypted in
+ * memory) or a 64-hex AGENT_ROOT_KEY. Also reads ATTACKER_ADDRESS, DEMO_PAYEE_ADDRESS, DEMO_TOKEN, SERVICE_URL from
+ * .env. Never prints a key.
  */
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { privateKeyToAccount } from "viem/accounts";
 import { explorerUrl } from "@overflow/schemas/chain";
 import { randomNonce, signAuthorization, type Authorization } from "@overflow/payment-client";
+import { resolveSigner } from "@overflow/payment-client/keystore";
 import { loadEnv, repoRoot, requireEnv } from "./lib/env";
 
 loadEnv();
 const base = (process.env["SERVICE_URL"] ?? "http://localhost:4000").replace(/\/$/, "");
-const rootKey = requireEnv("AGENT_ROOT_KEY");
-if (!/^0x[0-9a-fA-F]{64}$/.test(rootKey)) {
-  console.error("AGENT_ROOT_KEY must hold the agent's 64-hex private key for this script (it only holds an address)");
-  process.exit(2);
-}
-const agent = privateKeyToAccount(rootKey as `0x${string}`);
+const agentSigner = resolveSigner({
+  keyOrAddress: process.env["AGENT_ROOT_KEY"],
+  account: process.env["AGENT_ROOT_ACCOUNT"],
+  passwordFile: process.env["AGENT_ROOT_PASSWORD_FILE"],
+  label: "AGENT_ROOT",
+});
+const agent = agentSigner.account;
 const attacker = requireEnv("ATTACKER_ADDRESS") as `0x${string}`;
 const payee = requireEnv("DEMO_PAYEE_ADDRESS") as `0x${string}`;
 const demoToken = requireEnv("DEMO_TOKEN");
@@ -39,7 +41,7 @@ const health = (await (await fetch(`${base}/health`)).json()) as Json;
 if (!health["ok"]) throw new Error(`service not healthy: ${JSON.stringify(health)}`);
 if (!health["demoMode"]) throw new Error("service is not in DEMO_MODE=true; steps 2 and 3 need it");
 const treasury = health["treasury"] as `0x${string}`;
-console.log(`facilitator ${base}, treasury ${treasury}, relayer ${health["relayer"]}, agent ${agent.address}`);
+console.log(`facilitator ${base}, treasury ${treasury}, relayer ${health["relayer"]}, agent ${agent.address} (${agentSigner.source})`);
 
 async function authorize(to: `0x${string}`): Promise<{ authorization: Authorization; signature: `0x${string}` }> {
   const now = Math.floor(Date.now() / 1000);

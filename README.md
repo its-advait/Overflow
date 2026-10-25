@@ -47,9 +47,13 @@ curl localhost:4000/health        # relayer address, ETH balance, queue; GET /su
 pnpm demo:facilitator             # Base Sepolia proof: settle, PayeeNotAllowed landed onchain, bypass rejected by USDC, 409 replay -> docs/demo-facilitator.md
 ```
 
-`.env` needs `RELAYER_PRIVATE_KEY` as a 64-hex key (gas ETH only, never USDC), `BASE_SEPOLIA_RPC_URL`, and for the demo
-`DEMO_MODE=true`, `DEMO_TOKEN`, `DEMO_PAYEE_ADDRESS`, `ATTACKER_ADDRESS`, `AGENT_ROOT_KEY` (the agent's key). There are no
-`/admin` routes: owner actions go through the controller.
+Signing: the service decrypts a Foundry keystore in memory at boot (`RELAYER_ACCOUNT=overflow-relayer` plus
+`RELAYER_PASSWORD_FILE`, a chmod-600 file); `RELAYER_PRIVATE_KEY` may hold just the relayer's address, which the
+decrypted key must match. A 64-hex `RELAYER_PRIVATE_KEY` is the dev fallback. The relayer holds gas ETH only, never
+USDC. The demo script signs the same way with `AGENT_ROOT_ACCOUNT=overflow-agent-root` + `AGENT_ROOT_PASSWORD_FILE`
+(or a 64-hex `AGENT_ROOT_KEY`), and also needs `DEMO_MODE=true`, `DEMO_TOKEN`, `DEMO_PAYEE_ADDRESS`,
+`ATTACKER_ADDRESS`. No key is ever printed, exported or written. There are no `/admin` routes: owner actions go
+through the controller.
 
 ## Layout
 
