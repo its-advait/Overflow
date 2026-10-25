@@ -254,6 +254,9 @@ importers:
       '@overflow/fusion':
         specifier: workspace:*
         version: link:../../packages/fusion
+      '@overflow/recourse-crypto':
+        specifier: workspace:*
+        version: link:../../packages/recourse-crypto
       '@overflow/schemas':
         specifier: workspace:*
         version: link:../../packages/schemas

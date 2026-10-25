@@ -1,6 +1,5 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import type { ControllerRequest, NodeStatus, TreasuryNodeView } from "@overflow/schemas";
 import { Address } from "@/components/shared/address";
 import { Money } from "@/components/shared/money";
@@ -8,6 +7,7 @@ import { Pill, type Tone } from "@/components/shared/status-pill";
 import { Card, CardContent } from "@/components/ui/card";
 import { PHASE_STYLE, phaseOf } from "@/lib/controller-phase";
 import { expiryCountdown, nodeRequests } from "@/lib/tree";
+import { useNowSeconds } from "@/lib/use-now";
 import { cn } from "@/lib/utils";
 import { AgentMenu, type RequestMode } from "./agent-menu";
 import { BudgetBar } from "./budget-bar";
@@ -17,16 +17,6 @@ const STATUS: Record<NodeStatus, { label: string; tone: Tone }> = {
   paused: { label: "Paused", tone: "muted" },
   expired: { label: "Expired", tone: "warning" },
 };
-
-/** Client clock for the expiry countdown; the card only exists after data arrived, so there is no SSR mismatch. */
-function useNowSeconds(): number {
-  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
-  useEffect(() => {
-    const t = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1_000);
-    return () => clearInterval(t);
-  }, []);
-  return now;
-}
 
 /**
  * One treasury node. Every number is a view-call result from GET /api/treasury/nodes (or the

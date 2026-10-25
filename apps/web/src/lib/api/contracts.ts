@@ -194,12 +194,11 @@ export const PurchaseResponseSchema = z.object({
 });
 export type PurchaseResponse = z.infer<typeof PurchaseResponseSchema>;
 
-// Escrow
-export const EscrowResponseSchema = z.object({
-  escrow: EscrowOrderSchema,
-  chainTransactions: z.array(ChainTransactionSchema),
-});
-export type EscrowResponse = z.infer<typeof EscrowResponseSchema>;
+// Escrow (apps/service/src/api/routes/escrow.ts): the list and the detail read model from @overflow/schemas.
+// `chain` and `actions` are null when the service has no chain reader; the page then renders the stored evidence
+// and judges the gates locally, saying so.
+export { EscrowDetailResponseSchema as EscrowResponseSchema, EscrowListResponseSchema } from "@overflow/schemas";
+export type { ActionGate, EscrowAction, EscrowActions, EscrowChainState, EscrowDetailResponse as EscrowResponse, EscrowListResponse, EscrowSummary } from "@overflow/schemas";
 
 // Agents
 export type AgentTreeNode = AgentRecord & { node: null; children: AgentTreeNode[] };

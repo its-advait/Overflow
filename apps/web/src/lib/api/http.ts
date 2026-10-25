@@ -6,6 +6,7 @@ import {
   AuthorizeResponseSchema,
   ControllerRequestsResponseSchema,
   DecideExceptionResponseSchema,
+  EscrowListResponseSchema,
   EscrowResponseSchema,
   ExceptionsResponseSchema,
   IndexerStatusSchema,
@@ -107,6 +108,7 @@ export function createHttpApi(base: string = API_BASE): OverflowApi {
         headers: { [IDEMPOTENCY_HEADER]: idempotencyKey },
       }),
     getPurchase: (id) => request(base, PurchaseResponseSchema, `/api/purchases/${enc(id)}`),
+    listEscrows: () => request(base, EscrowListResponseSchema, "/api/escrow"),
     getEscrow: (id) => request(base, EscrowResponseSchema, `/api/escrow/${enc(id)}`),
 
     listAgents: () => request(base, AgentsResponseSchema, "/api/agents"),

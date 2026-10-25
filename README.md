@@ -82,6 +82,8 @@ pnpm --filter @overflow/service dev                # boots, indexes, then runs t
 
 Then `GET /api/escrow` lists the orders and `GET /api/escrow/:id` shows each one's terms, live chain state, chain events, the pre-funding sample with its rule-based judgment, the complaint with both proofs, and which escrow calls the contract would accept right now. The run refuses any RPC that does not answer `anvil_nodeInfo`, so `RECOURSE_ANVIL_RUN=1` against Base Sepolia only logs a refusal. Keys in `service.env` are Anvil's public dev accounts; the file is gitignored.
 
+In the web app, `/escrow` lists the orders and `/escrow/<purchase id or address>` is the judge's page: state diagram, terms with live countdowns, the sample, the evidence (both Merkle proofs re-verified in the browser) and the calls the contract would accept. Point it at the service with `NEXT_PUBLIC_API_URL=http://localhost:4000` (or `NEXT_PUBLIC_USE_MOCKS=1` for the golden-vector fixtures).
+
 ## Payment adapters (`@overflow/payment-client`)
 
 `OverflowFacilitatorAdapter` and `CoinbaseFacilitatorAdapter` implement the spec's `PaymentAdapter`

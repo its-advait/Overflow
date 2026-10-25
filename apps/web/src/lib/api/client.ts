@@ -10,6 +10,7 @@ import type {
   CreateMissionBody,
   DecideExceptionBody,
   DecideExceptionResponse,
+  EscrowListResponse,
   EscrowResponse,
   ExceptionsQuery,
   ExceptionsResponse,
@@ -78,7 +79,9 @@ export interface OverflowApi {
   /** Requires an Idempotency-Key; replaying the same key returns the stored result. */
   authorizePurchase(id: string, idempotencyKey: string, body?: AuthorizeBody): Promise<AuthorizeResponse>;
   getPurchase(id: string): Promise<PurchaseResponse>;
-  /** `id` is a purchase id or an escrow address. */
+  /** Every escrow order with its purchase status and resource label (GET /api/escrow). */
+  listEscrows(): Promise<EscrowListResponse>;
+  /** `id` is a purchase id or an escrow address. Terms, live chain state, chain events, sample, complaint and action gates. */
   getEscrow(id: string): Promise<EscrowResponse>;
 
   listAgents(): Promise<AgentsResponse>;

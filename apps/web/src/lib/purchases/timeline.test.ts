@@ -27,7 +27,8 @@ describe("deriveTimeline", () => {
     const funded = steps.find((s) => s.status === "ESCROW_FUNDED")!;
     expect(funded).toMatchObject({ source: "chain", txHash: fx.chainTransactions.find((t) => t.id === "ctx-merged-funded")!.txHash, blockNumber: "49850120" });
     expect(steps.find((s) => s.status === "SETTLED")!.source).toBe("chain");
-    expect(steps.find((s) => s.status === "DELIVERY_PENDING")!.txHash).toBeUndefined();
+    // The honest seller's KeyRevealed log is indexed, so the reveal step links to it.
+    expect(steps.find((s) => s.status === "DELIVERY_PENDING")!).toMatchObject({ source: "chain", txHash: fx.chainTransactions.find((t) => t.id === "ctx-merged-revealed")!.txHash });
   });
 
   it("refunded purchase ends in REFUNDED with the Refunded tx and the escrow's reason; no SETTLED row", () => {
@@ -36,7 +37,7 @@ describe("deriveTimeline", () => {
     expect(steps.some((s) => s.status === "SETTLED")).toBe(false);
     const refunded = steps.at(-1)!;
     expect(refunded.txHash).toBe(fx.chainTransactions.find((t) => t.id === "ctx-freight-refunded")!.txHash);
-    expect(refunded.note).toContain("reveal deadline passed");
+    expect(refunded.note).toContain("timeout"); // the escrow's refundReason is the contract's Refunded(reason) string
   });
 
   it("rejected retry: REJECTED is current with the decoded revert, later steps skipped, nothing funded", () => {

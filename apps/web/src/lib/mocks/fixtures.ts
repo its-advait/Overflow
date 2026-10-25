@@ -3,6 +3,7 @@ import {
   AgentRecordSchema,
   BASE_SEPOLIA_DEPLOYMENT,
   ChainTransactionSchema,
+  ComplaintRecordSchema,
   ControllerRequestSchema,
   EscrowOrderSchema,
   ExceptionRecordSchema,
@@ -14,13 +15,17 @@ import {
   ReconciliationRunSchema,
   ResourceRecordSchema,
   ResourceRequestRecordSchema,
+  SampleRecordSchema,
   USDC,
   type ActivityEvent,
   type Address,
   type AgentRecord,
   type ChainTransaction,
+  type ComplaintRecord,
   type ControllerRequest,
+  type EscrowChainState,
   type EscrowOrder,
+  type EscrowSummary,
   type ExceptionRecord,
   type FinancialEntry,
   type Hex,
@@ -30,7 +35,10 @@ import {
   type ReconciliationRun,
   type ResourceRecord,
   type ResourceRequestRecord,
+  type SampleRecord,
 } from "@overflow/schemas";
+import { buildTreeFromChunks, getProof, GoldenVectorsSchema, pickSampleIndices, simulatedBytes32 } from "@overflow/recourse-crypto";
+import vectorsJson from "@overflow/recourse-crypto/vectors.json";
 import { z } from "zod";
 import {
   FusionOutcomeSchema,
@@ -48,7 +56,17 @@ import {
 // the USDC token and the Base Sepolia treasury address from the deployment
 // file; every other address, hash and id is an obviously padded placeholder.
 // The company, sellers and datasets are SIMULATED, as in the demo catalog.
+// The recourse evidence (roots, sample rows, the swap seller's complaint) is
+// taken from @overflow/recourse-crypto's SIMULATED golden vectors, so every
+// Merkle proof here re-verifies in the browser exactly as the contract would.
 // ---------------------------------------------------------------------------
+
+/** SIMULATED golden vectors: 7 chunks, sample [3, 0, 4], chunk 3 swapped after sampling. */
+const VECTORS = GoldenVectorsSchema.parse(vectorsJson);
+const ZERO32 = `0x${"0".repeat(64)}` as Hex;
+/** Module-load clock (unix seconds): open orders' deadlines sit a few hours ahead so countdowns tick in the mock. */
+const NOW = Math.floor(Date.now() / 1000);
+const inSeconds = (s: number): string => String(NOW + s);
 
 export const MOCK_LABEL = "MOCK" as const;
 
@@ -221,6 +239,8 @@ const SELLERS = {
   cascade: { id: "sim-seller-cascade", address: addr("5e11e003") },
   freightwise: { id: "sim-seller-freightwise", address: addr("5e11e004") },
   skyfield: { id: "sim-seller-skyfield", address: addr("5e11e005") },
+  /** The SIMULATED swap seller: honest sample, one chunk swapped after it. */
+  voltara: { id: "sim-seller-voltara", address: addr("5e11e006") },
 } as const;
 
 export const resources: ResourceRecord[] = parseAll(ResourceRecordSchema, [
@@ -324,6 +344,26 @@ export const resources: ResourceRecord[] = parseAll(ResourceRecordSchema, [
     simulated: true,
     createdAt: T0,
   },
+  {
+    id: "res-ev-registrations",
+    title: "EV registrations by state, monthly",
+    sellerId: SELLERS.voltara.id,
+    productId: "ev-registrations-monthly",
+    coverage: {
+      regions: ["US", "US-CA", "US-TX", "US-WA"],
+      dateRange: { start: "2025-01-01", end: "2025-07-31" },
+      granularity: "monthly",
+      fields: ["month", "country", "state", "powertrain", "registrations", "source"],
+      format: "csv",
+      asOf: "2025-08-01",
+    },
+    license: "company-use",
+    priceAtomic: "6500000",
+    manifestHash: b32("ab1e5c0d06"),
+    seats: 3,
+    simulated: true,
+    createdAt: T0,
+  },
 ]);
 
 const listing = (id: string): ResourceRecord => {
@@ -346,13 +386,23 @@ export const purchaseGroup: PurchaseGroup = PurchaseGroupSchema.parse({
 });
 
 const TX = {
+  createMerged: b32("7a0011"),
+  createWeather: b32("7a0012"),
+  createOregon: b32("7a0013"),
+  createCalifornia: b32("7a0014"),
+  createFreight: b32("7a0015"),
+  createSwap: b32("7a0016"),
   fundMerged: b32("7a0001"),
+  revealMerged: b32("7a0008"),
   payoutMerged: b32("7a0002"),
   fundWeather: b32("7a0003"),
   fundOregon: b32("7a0004"),
   revealOregon: b32("7a0005"),
   fundFreight: b32("7a0006"),
   refundFreight: b32("7a0007"),
+  fundSwap: b32("7a0009"),
+  revealSwap: b32("7a000a"),
+  complainSwap: b32("7a000b"),
   ownerFunding: b32("7a0000"),
 } as const;
 
@@ -363,6 +413,7 @@ const ESCROWS = {
   california: addr("e5c0004"),
   freight: addr("e5c0005"),
   rejected: addr("e5c0006"),
+  swap: addr("e5c0007"),
 } as const;
 
 function purchase(
@@ -457,6 +508,18 @@ export const purchases: PurchaseRecord[] = parseAll(PurchaseRecordSchema, [
     txHashes: [TX.fundFreight, TX.refundFreight],
     updatedAt: T5,
   }),
+  // The SIMULATED swap seller's order: sample passed, a swapped chunk was proven onchain after the reveal.
+  purchase({
+    id: "pur-ev-swap",
+    resourceId: "res-ev-registrations",
+    escrowAddress: ESCROWS.swap,
+    status: "REFUNDED",
+    participatingAgentIds: ["agent-research"],
+    allocations: [{ agentId: "agent-research", department: "research", amountAtomic: "6500000" }],
+    authorizationDigest: b32("d16e570007"),
+    txHashes: [TX.fundSwap, TX.complainSwap],
+    updatedAt: T5,
+  }),
   purchase({
     id: "pur-freight-retry",
     resourceId: "res-freight-index",
@@ -495,22 +558,53 @@ function escrow(
     challengeWindow: "3600",
     sourceKey: p.sellerAddress,
     minTimestamp: "1792000000",
+    chunkCount: 7,
     createdAt: T2,
     updatedAt: T2,
     ...e,
   };
 }
 
+/** The golden vectors' commitment: the honest, ghost and swap orders share the same SIMULATED 7-chunk dataset. */
+const VECTOR_TERMS = {
+  rootPlain: VECTORS.rootPlain,
+  rootCipher: VECTORS.rootCipher,
+  keyCommitment: VECTORS.keyCommitment,
+  sourceKey: VECTORS.sourceSigner.address,
+  minTimestamp: "1735689600",
+  chunkCount: VECTORS.chunkCount,
+} as const;
+/** challengeEnd for the honest and swap orders: they revealed at T4 (17:41 UTC = 1792863660) + the 3600 s window. */
+const CHALLENGE_END = "1792867260";
+
 export const escrows: EscrowOrder[] = parseAll(EscrowOrderSchema, [
-  escrow({ id: "esc-california", purchaseId: "pur-california-weekly", status: "Created" }),
-  escrow({ id: "esc-weather", purchaseId: "pur-weather-daily", status: "Funded", updatedAt: T3 }),
-  escrow({ id: "esc-oregon", purchaseId: "pur-oregon-monthly", status: "Revealed", revealedKey: b32("4e1ea1ed03"), updatedAt: T4 }),
-  escrow({ id: "esc-national", purchaseId: "pur-merged-national", status: "Settled", revealedKey: b32("4e1ea1ed01"), updatedAt: T5 }),
+  // Open orders: deadlines a few hours ahead of module load, so the detail page's countdowns tick.
+  escrow({ id: "esc-california", purchaseId: "pur-california-weekly", status: "Created", revealDeadline: inSeconds(6 * 3600) }),
+  escrow({ id: "esc-weather", purchaseId: "pur-weather-daily", status: "Funded", revealDeadline: inSeconds(2 * 3600), updatedAt: T3 }),
   escrow({
-    id: "esc-freight",
-    purchaseId: "pur-freight-weekly",
+    id: "esc-oregon",
+    purchaseId: "pur-oregon-monthly",
+    status: "Revealed",
+    revealedKey: b32("4e1ea1ed03"),
+    revealDeadline: inSeconds(3600),
+    challengeEnd: inSeconds(40 * 60),
+    updatedAt: T4,
+  }),
+  // Honest seller (golden vectors): revealed the committed key, buyer accepted, PaidOut.
+  escrow({ id: "esc-national", purchaseId: "pur-merged-national", status: "Settled", ...VECTOR_TERMS, revealedKey: VECTORS.perBuyerKey, revealDeadline: "1792868400", challengeEnd: CHALLENGE_END, updatedAt: T5 }),
+  // Ghost seller: same commitment, never revealed; claimTimeoutRefund after the deadline.
+  escrow({ id: "esc-freight", purchaseId: "pur-freight-weekly", status: "Refunded", ...VECTOR_TERMS, revealDeadline: "1792860000", refundReason: "timeout", updatedAt: T5 }),
+  // Swap seller: rootCipher is the swapped dataset's; chunk 3 was proven a mismatch after the reveal.
+  escrow({
+    id: "esc-ev-swap",
+    purchaseId: "pur-ev-swap",
     status: "Refunded",
-    refundReason: "reveal deadline passed without a key (SIMULATED ghost seller)",
+    ...VECTOR_TERMS,
+    rootCipher: VECTORS.swappedChunk.rootCipher,
+    revealedKey: VECTORS.perBuyerKey,
+    revealDeadline: "1792868400",
+    challengeEnd: CHALLENGE_END,
+    refundReason: "mismatch",
     updatedAt: T5,
   }),
 ]);
@@ -520,6 +614,8 @@ export const escrowByAddress = (address: string): EscrowOrder | undefined =>
   escrows.find((e) => e.escrowAddress.toLowerCase() === address.toLowerCase());
 
 // Chain transactions (decoded logs) ----------------------------------------
+// Args carry the real event shapes of the built contracts (escrow events have no orderId: the emitting
+// address is the order; OrderFunded reports the balance, price + bond; Refunded carries only its reason).
 
 function tx(
   t: Pick<z.input<typeof ChainTransactionSchema>, "id" | "purchaseId" | "txHash" | "eventName" | "blockNumber" | "observedAt"> &
@@ -529,11 +625,34 @@ function tx(
   return {
     logIndex: 0,
     contractAddress: p?.escrowAddress ?? TREASURY_ADDRESS,
-    args: p ? { orderId: p.orderIdBytes32, amount: p.amountAtomic } : {},
+    args: {},
     confirmed: true,
     ...t,
   };
 }
+
+const FACTORY_ADDRESS: Address = addr("fac70e7");
+const NODE_KEY: Address = addr("a9e0001");
+
+/** OrderCreated as the factory emits it, for one fixture purchase. */
+function created(purchaseId: string, txHash: Hex, blockNumber: string, observedAt: string): z.input<typeof ChainTransactionSchema> {
+  const p = purchaseById(purchaseId)!;
+  const e = escrows.find((x) => x.purchaseId === purchaseId);
+  return tx({
+    id: `ctx-${purchaseId}-created`,
+    purchaseId,
+    txHash,
+    eventName: "OrderCreated",
+    blockNumber,
+    observedAt,
+    contractAddress: FACTORY_ADDRESS,
+    args: { escrow: p.escrowAddress, orderId: p.orderIdBytes32, buyer: TREASURY_ADDRESS, seller: p.sellerAddress, amount: p.amountAtomic, termsHash: e?.termsHash ?? p.termsHash },
+  });
+}
+const balanceOf = (purchaseId: string): string => {
+  const e = escrows.find((x) => x.purchaseId === purchaseId)!;
+  return (BigInt(e.amountAtomic) + BigInt(e.bondAtomic)).toString();
+};
 
 export const chainTransactions: ChainTransaction[] = parseAll(ChainTransactionSchema, [
   tx({
@@ -545,13 +664,28 @@ export const chainTransactions: ChainTransaction[] = parseAll(ChainTransactionSc
     contractAddress: USDC_ADDRESS,
     args: { from: BASE_SEPOLIA_DEPLOYMENT.owner, to: TREASURY_ADDRESS, value: "250000000" },
   }),
-  tx({ id: "ctx-merged-funded", purchaseId: "pur-merged-national", txHash: TX.fundMerged, eventName: "OrderFunded", blockNumber: "49850120", observedAt: T3 }),
-  tx({ id: "ctx-merged-paidout", purchaseId: "pur-merged-national", txHash: TX.payoutMerged, eventName: "PaidOut", blockNumber: "49850410", observedAt: T5 }),
-  tx({ id: "ctx-weather-funded", purchaseId: "pur-weather-daily", txHash: TX.fundWeather, eventName: "OrderFunded", blockNumber: "49850131", observedAt: T3 }),
-  tx({ id: "ctx-oregon-funded", purchaseId: "pur-oregon-monthly", txHash: TX.fundOregon, eventName: "OrderFunded", blockNumber: "49850140", observedAt: T3 }),
-  tx({ id: "ctx-oregon-revealed", purchaseId: "pur-oregon-monthly", txHash: TX.revealOregon, eventName: "KeyRevealed", blockNumber: "49850300", observedAt: T4 }),
-  tx({ id: "ctx-freight-funded", purchaseId: "pur-freight-weekly", txHash: TX.fundFreight, eventName: "OrderFunded", blockNumber: "49850150", observedAt: T3 }),
-  tx({ id: "ctx-freight-refunded", purchaseId: "pur-freight-weekly", txHash: TX.refundFreight, eventName: "Refunded", blockNumber: "49850420", observedAt: T5 }),
+  created("pur-merged-national", TX.createMerged, "49850110", T2),
+  created("pur-weather-daily", TX.createWeather, "49850111", T2),
+  created("pur-oregon-monthly", TX.createOregon, "49850112", T2),
+  created("pur-california-weekly", TX.createCalifornia, "49850113", T2),
+  created("pur-freight-weekly", TX.createFreight, "49850114", T2),
+  created("pur-ev-swap", TX.createSwap, "49850115", T2),
+  // Honest order: funded, key revealed (challengeEnd = reveal + 3600), accepted by a node key, paid out (one tx, two logs).
+  tx({ id: "ctx-merged-funded", purchaseId: "pur-merged-national", txHash: TX.fundMerged, eventName: "OrderFunded", blockNumber: "49850120", observedAt: T3, args: { balance: balanceOf("pur-merged-national") } }),
+  tx({ id: "ctx-merged-revealed", purchaseId: "pur-merged-national", txHash: TX.revealMerged, eventName: "KeyRevealed", blockNumber: "49850300", observedAt: T4, args: { key: VECTORS.perBuyerKey, challengeEnd: CHALLENGE_END } }),
+  tx({ id: "ctx-merged-accepted", purchaseId: "pur-merged-national", txHash: TX.payoutMerged, eventName: "Accepted", blockNumber: "49850410", observedAt: T5, logIndex: 0, args: { signer: NODE_KEY, nodeId: "1" } }),
+  tx({ id: "ctx-merged-paidout", purchaseId: "pur-merged-national", txHash: TX.payoutMerged, eventName: "PaidOut", blockNumber: "49850410", observedAt: T5, logIndex: 1, args: { seller: SELLERS.northstar.address, amount: "12000000", bond: "1000000" } }),
+  tx({ id: "ctx-weather-funded", purchaseId: "pur-weather-daily", txHash: TX.fundWeather, eventName: "OrderFunded", blockNumber: "49850131", observedAt: T3, args: { balance: balanceOf("pur-weather-daily") } }),
+  tx({ id: "ctx-oregon-funded", purchaseId: "pur-oregon-monthly", txHash: TX.fundOregon, eventName: "OrderFunded", blockNumber: "49850140", observedAt: T3, args: { balance: balanceOf("pur-oregon-monthly") } }),
+  tx({ id: "ctx-oregon-revealed", purchaseId: "pur-oregon-monthly", txHash: TX.revealOregon, eventName: "KeyRevealed", blockNumber: "49850300", observedAt: T4, args: { key: b32("4e1ea1ed03"), challengeEnd: inSeconds(40 * 60) } }),
+  // Ghost order: funded, never revealed, refunded on timeout.
+  tx({ id: "ctx-freight-funded", purchaseId: "pur-freight-weekly", txHash: TX.fundFreight, eventName: "OrderFunded", blockNumber: "49850150", observedAt: T3, args: { balance: balanceOf("pur-freight-weekly") } }),
+  tx({ id: "ctx-freight-refunded", purchaseId: "pur-freight-weekly", txHash: TX.refundFreight, eventName: "Refunded", blockNumber: "49850420", observedAt: T5, args: { reason: "timeout" } }),
+  // Swap order: funded, revealed, then complainMismatch(3, ...) proves the cheat and refunds in one tx (two logs).
+  tx({ id: "ctx-swap-funded", purchaseId: "pur-ev-swap", txHash: TX.fundSwap, eventName: "OrderFunded", blockNumber: "49850151", observedAt: T3, args: { balance: balanceOf("pur-ev-swap") } }),
+  tx({ id: "ctx-swap-revealed", purchaseId: "pur-ev-swap", txHash: TX.revealSwap, eventName: "KeyRevealed", blockNumber: "49850301", observedAt: T4, args: { key: VECTORS.perBuyerKey, challengeEnd: CHALLENGE_END } }),
+  tx({ id: "ctx-swap-cheat", purchaseId: "pur-ev-swap", txHash: TX.complainSwap, eventName: "CheatProven", blockNumber: "49850415", observedAt: T5, logIndex: 0, args: { seller: SELLERS.voltara.address, index: String(VECTORS.swappedChunk.index) } }),
+  tx({ id: "ctx-swap-refunded", purchaseId: "pur-ev-swap", txHash: TX.complainSwap, eventName: "Refunded", blockNumber: "49850415", observedAt: T5, logIndex: 1, args: { reason: "mismatch" } }),
 ]);
 
 // Ledger: double-entry rows that book the chain events above -----------------
@@ -589,8 +723,8 @@ export const ledgerEntries: FinancialEntry[] = parseAll(FinancialEntrySchema, [
     creditAccount: "escrow-deposit",
     amountAtomic: "8181818",
     memo: "Settled: finance share of the merged purchase",
-    eventKey: key(TX.payoutMerged),
-    sourceEventId: `${key(TX.payoutMerged)}#finance`,
+    eventKey: key(TX.payoutMerged, 1),
+    sourceEventId: `${key(TX.payoutMerged, 1)}#finance`,
     department: "finance",
     txHash: TX.payoutMerged,
     postedAt: T5,
@@ -602,8 +736,8 @@ export const ledgerEntries: FinancialEntry[] = parseAll(FinancialEntrySchema, [
     creditAccount: "escrow-deposit",
     amountAtomic: "3818182",
     memo: "Settled: research share of the merged purchase",
-    eventKey: key(TX.payoutMerged),
-    sourceEventId: `${key(TX.payoutMerged)}#research`,
+    eventKey: key(TX.payoutMerged, 1),
+    sourceEventId: `${key(TX.payoutMerged, 1)}#research`,
     department: "research",
     txHash: TX.payoutMerged,
     postedAt: T5,
@@ -656,6 +790,42 @@ export const ledgerEntries: FinancialEntry[] = parseAll(FinancialEntrySchema, [
     txHash: TX.refundFreight,
     postedAt: T5,
   },
+  {
+    id: "fe-swap-funded",
+    purchaseId: "pur-ev-swap",
+    debitAccount: "escrow-deposit",
+    creditAccount: "usdc-treasury",
+    amountAtomic: "6500000",
+    memo: "Escrow funded: EV registrations by state",
+    eventKey: key(TX.fundSwap),
+    sourceEventId: key(TX.fundSwap),
+    txHash: TX.fundSwap,
+    postedAt: T3,
+  },
+  {
+    id: "fe-swap-refunded",
+    purchaseId: "pur-ev-swap",
+    debitAccount: "usdc-treasury",
+    creditAccount: "escrow-deposit",
+    amountAtomic: "6500000",
+    memo: "Refunded: mismatch proven onchain (chunk 3); price back in the treasury",
+    eventKey: key(TX.complainSwap, 1),
+    sourceEventId: key(TX.complainSwap, 1),
+    txHash: TX.complainSwap,
+    postedAt: T5,
+  },
+  {
+    id: "fe-swap-bond",
+    purchaseId: "pur-ev-swap",
+    debitAccount: "usdc-treasury",
+    creditAccount: "other-income-seller-forfeiture",
+    amountAtomic: "1000000",
+    memo: "Refunded: the swap seller's bond, forfeited to the treasury",
+    eventKey: key(TX.complainSwap, 1),
+    sourceEventId: `${key(TX.complainSwap, 1)}#bond`,
+    txHash: TX.complainSwap,
+    postedAt: T5,
+  },
 ]);
 
 // Activity -------------------------------------------------------------------
@@ -695,6 +865,7 @@ export const activity: ActivityEvent[] = parseAll(ActivityEventSchema, [
     simulated: true,
   },
   { id: "ev-06", at: T2, kind: "purchase.proposed", message: "Proposed 12.00 USDC to Northstar Data (SIMULATED) for 2 agents.", missionId: mission.id, purchaseId: "pur-merged-national", simulated: true },
+  { id: "ev-06b", at: T2, kind: "sample.judged", message: "Sample [3, 0, 4] of 7 chunks: buy. rule:recourse-sample-v1 (SIMULATED, no model).", missionId: mission.id, purchaseId: "pur-merged-national", simulated: true },
   { id: "ev-07", at: T3, kind: "payment.authorized", message: "Finance signed the authorization; treasury reserved 12.00 USDC on node 1.", missionId: mission.id, purchaseId: "pur-merged-national", agentId: "agent-finance" },
   { id: "ev-08", at: T3, kind: "escrow.funded", message: "OrderFunded confirmed for 12.00 USDC.", missionId: mission.id, purchaseId: "pur-merged-national", txHash: TX.fundMerged },
   { id: "ev-09", at: T3, kind: "escrow.funded", message: "OrderFunded confirmed for 4.50 USDC (weather).", missionId: mission.id, purchaseId: "pur-weather-daily", txHash: TX.fundWeather },
@@ -713,9 +884,133 @@ export const activity: ActivityEvent[] = parseAll(ActivityEventSchema, [
   { id: "ev-13", at: T4, kind: "controller.requested", message: "Prepared pause(3) for the owner to approve in Coinbase Wallet. Nothing is paused yet.", missionId: mission.id },
   { id: "ev-14", at: T5, kind: "escrow.settled", message: "PaidOut confirmed: 12.00 USDC to Northstar Data (SIMULATED).", missionId: mission.id, purchaseId: "pur-merged-national", txHash: TX.payoutMerged, simulated: true },
   { id: "ev-15", at: T5, kind: "escrow.refunded", message: "Refunded 15.00 USDC: freight seller missed the reveal deadline.", missionId: mission.id, purchaseId: "pur-freight-weekly", txHash: TX.refundFreight, simulated: true },
-  { id: "ev-16", at: T5, kind: "seller.flagged", message: "Freightwise (SIMULATED ghost seller) flagged after a late reveal.", missionId: mission.id, simulated: true },
-  { id: "ev-17", at: T5, kind: "reconciliation.ok", message: "Reconciliation at block 49850420: chain and ledger agree (225.50 USDC).", missionId: mission.id },
+  { id: "ev-16", at: T4, kind: "escrow.revealed", message: "Voltara (SIMULATED swap seller) revealed the key for the EV registrations order.", missionId: mission.id, purchaseId: "pur-ev-swap", txHash: TX.revealSwap, simulated: true },
+  {
+    id: "ev-16b",
+    at: T4,
+    kind: "complaint.built",
+    message: "Buyer decrypted all 7 chunks: chunk 3 does not hash to its committed plain leaf. complainMismatch built, both Merkle proofs verified.",
+    missionId: mission.id,
+    purchaseId: "pur-ev-swap",
+    simulated: true,
+  },
+  { id: "ev-16c", at: T5, kind: "seller.flagged", message: "CheatProven(seller, 3) confirmed: Voltara (SIMULATED swap seller) flagged on the escrow factory.", missionId: mission.id, purchaseId: "pur-ev-swap", txHash: TX.complainSwap, simulated: true },
+  { id: "ev-16d", at: T5, kind: "escrow.refunded", message: "Refunded 6.50 USDC + 1.00 USDC bond to the treasury: mismatch proven onchain.", missionId: mission.id, purchaseId: "pur-ev-swap", txHash: TX.complainSwap, simulated: true },
+  { id: "ev-17", at: T5, kind: "reconciliation.ok", message: "Reconciliation at block 49850420: chain and ledger agree (226.50 USDC).", missionId: mission.id },
 ]);
+
+// Recourse evidence (golden vectors) ------------------------------------------
+
+const RULE_JUDGE = "rule:recourse-sample-v1 (SIMULATED, no model)";
+/** The swap seller's ciphertext tree: chunk 3 replaced after the sample; its root is the escrow's rootCipher. */
+const swappedCipherTree = buildTreeFromChunks(VECTORS.chunks.map((c, i) => (i === VECTORS.swappedChunk.index ? VECTORS.swappedChunk.cipher : c.cipher)));
+/** The swap order's sample randomness (labelled SIMULATED bytes); its draw [5, 2, 6] misses the swapped chunk. */
+const SWAP_SAMPLE_RANDOMNESS = simulatedBytes32("mock-swap-sample");
+
+function sampleRows(indices: readonly number[], cipherProofFor: (i: number) => Hex[]): z.input<typeof SampleRecordSchema>["rows"] {
+  return indices.map((i) => {
+    const c = VECTORS.chunks[i]!;
+    return {
+      index: i,
+      timestamp: c.timestamp,
+      row: c.row,
+      cipherChunk: c.cipher,
+      chunkKey: c.chunkKey,
+      plainLeaf: c.plainLeaf,
+      plainChunk: c.plain,
+      cipherProof: cipherProofFor(i),
+      plainProof: c.plainProof,
+      verified: "ok" as const,
+    };
+  });
+}
+const buyReason = (n: number): string =>
+  `${n} sampled chunks verified (both Merkle proofs, decrypt to the committed leaf), parse as 6-column records and carry ${VECTORS.sourceSigner.address} signatures with timestamps >= 1735689600`;
+
+export const samples: SampleRecord[] = parseAll(SampleRecordSchema, [
+  { id: "smp-national", purchaseId: "pur-merged-national", indices: VECTORS.sample.indices, randomness: VECTORS.sample.randomBytes, verdict: "buy", reason: buyReason(3), judge: RULE_JUDGE, rows: sampleRows(VECTORS.sample.indices, (i) => VECTORS.chunks[i]!.cipherProof), simulated: true, createdAt: T2 },
+  { id: "smp-freight", purchaseId: "pur-freight-weekly", indices: VECTORS.sample.indices, randomness: VECTORS.sample.randomBytes, verdict: "buy", reason: buyReason(3), judge: RULE_JUDGE, rows: sampleRows(VECTORS.sample.indices, (i) => VECTORS.chunks[i]!.cipherProof), simulated: true, createdAt: T2 },
+  {
+    id: "smp-ev-swap",
+    purchaseId: "pur-ev-swap",
+    indices: pickSampleIndices(VECTORS.chunkCount, 3, SWAP_SAMPLE_RANDOMNESS),
+    randomness: SWAP_SAMPLE_RANDOMNESS,
+    verdict: "buy",
+    reason: buyReason(3),
+    judge: RULE_JUDGE,
+    rows: sampleRows(pickSampleIndices(VECTORS.chunkCount, 3, SWAP_SAMPLE_RANDOMNESS), (i) => getProof(swappedCipherTree, i)),
+    simulated: true,
+    createdAt: T2,
+  },
+]);
+export const sampleByPurchase = (purchaseId: string): SampleRecord | undefined => samples.find((s) => s.purchaseId === purchaseId);
+
+export const complaints: ComplaintRecord[] = parseAll(ComplaintRecordSchema, [
+  {
+    id: "cmp-ev-swap",
+    purchaseId: "pur-ev-swap",
+    escrowAddress: ESCROWS.swap,
+    kind: "mismatch",
+    chunkIndex: VECTORS.swappedChunk.index,
+    chunk: VECTORS.swappedChunk.complainMismatch.cipherChunk,
+    cipherProof: VECTORS.swappedChunk.complainMismatch.cipherProof,
+    plainLeaf: VECTORS.swappedChunk.complainMismatch.plainLeaf,
+    plainProof: VECTORS.swappedChunk.complainMismatch.plainProof,
+    derivedLeaf: VECTORS.swappedChunk.derivedPlainLeaf,
+    revealedKey: VECTORS.perBuyerKey,
+    decryptedRow: VECTORS.swappedChunk.row,
+    cipherProofVerified: true,
+    plainProofVerified: true,
+    cheatVerified: true,
+    detail: `chunk 3: ciphertext proves under rootCipher (3 siblings), committed plain leaf ${VECTORS.swappedChunk.complainMismatch.plainLeaf} proves under rootPlain (3 siblings), but decrypt(chunk, k_3) hashes to ${VECTORS.swappedChunk.derivedPlainLeaf}`,
+    status: "proven",
+    txHash: TX.complainSwap,
+    simulated: true,
+    createdAt: T4,
+    updatedAt: T5,
+  },
+]);
+export const complaintByPurchase = (purchaseId: string): ComplaintRecord | undefined => complaints.find((c) => c.purchaseId === purchaseId);
+
+/** MOCK chain snapshot for one escrow: what an eth_call at the fixture block would return, judged at `nowSeconds`. */
+export function escrowChain(e: EscrowOrder, nowSeconds: number): EscrowChainState {
+  const funded = e.status === "Funded" || e.status === "Revealed";
+  return {
+    status: e.status,
+    challengeEnd: e.challengeEnd ?? "0",
+    revealedKey: e.revealedKey ?? ZERO32,
+    balanceAtomic: funded ? (BigInt(e.amountAtomic) + BigInt(e.bondAtomic)).toString() : "0",
+    blockNumber: "49850420",
+    blockTimestamp: String(nowSeconds),
+  };
+}
+
+export function escrowResource(purchaseId: string): { id: string; title: string; sellerId: string; simulated: boolean } | null {
+  const p = purchaseById(purchaseId);
+  const r = p ? resources.find((x) => x.id === p.resourceId) : undefined;
+  return r ? { id: r.id, title: r.title, sellerId: r.sellerId, simulated: r.simulated } : null;
+}
+
+export function escrowSummary(e: EscrowOrder): EscrowSummary {
+  const p = purchaseById(e.purchaseId)!;
+  const complaint = complaintByPurchase(e.purchaseId);
+  return {
+    id: e.id,
+    purchaseId: e.purchaseId,
+    escrowAddress: e.escrowAddress,
+    sellerAddress: e.sellerAddress,
+    amountAtomic: e.amountAtomic,
+    bondAtomic: e.bondAtomic,
+    status: e.status,
+    ...(e.refundReason ? { refundReason: e.refundReason } : {}),
+    purchaseStatus: p.status,
+    resource: escrowResource(e.purchaseId),
+    ...(complaint ? { complaint: complaint.status } : {}),
+    simulated: true,
+    createdAt: e.createdAt,
+    updatedAt: e.updatedAt,
+  };
+}
 
 // Exceptions and controller requests -----------------------------------------
 
@@ -772,6 +1067,7 @@ const escrowChecks = [
   escrowCheck("pur-oregon-monthly", "8000000"),
   escrowCheck("pur-merged-national", "0"),
   escrowCheck("pur-freight-weekly", "0"),
+  escrowCheck("pur-ev-swap", "0"),
 ];
 
 export const reconciliationRun: ReconciliationRun = ReconciliationRunSchema.parse({
@@ -779,11 +1075,11 @@ export const reconciliationRun: ReconciliationRun = ReconciliationRunSchema.pars
   ranAt: T5,
   trigger: "indexer",
   blockNumber: "49850420",
-  treasuryChainAtomic: "225500000",
-  treasuryLedgerAtomic: "225500000",
+  treasuryChainAtomic: "226500000",
+  treasuryLedgerAtomic: "226500000",
   treasuryDifferenceAtomic: "0",
-  escrowsChecked: 5,
-  eventsChecked: 8,
+  escrowsChecked: 6,
+  eventsChecked: 10,
   escrows: escrowChecks,
   materialityAtomic: "10000",
   differences: [],
@@ -793,7 +1089,7 @@ export const reconciliationRun: ReconciliationRun = ReconciliationRunSchema.pars
 
 // MOCK planted difference (SPEC test 20: "the ledger is off by a planted 0.50 USDC"). The mock's
 // "Run reconciliation" returns this run and opens the exception below; nothing on any chain changed.
-const PLANTED_REASON = "treasury USDC: chain 226000000 vs ledger 225500000 at block 49850420 (difference 500000)";
+const PLANTED_REASON = "treasury USDC: chain 227000000 vs ledger 226500000 at block 49850420 (difference 500000)";
 
 export const plantedException: ExceptionRecord = ExceptionRecordSchema.parse({
   id: "exc-recon-treasury",
@@ -804,7 +1100,7 @@ export const plantedException: ExceptionRecord = ExceptionRecordSchema.parse({
   openedAt: T6,
   subject: "treasury",
   requestedBy: "system:reconciliation",
-  details: { kind: "treasury", chainAtomic: "226000000", ledgerAtomic: "225500000", differenceAtomic: "500000" },
+  details: { kind: "treasury", chainAtomic: "227000000", ledgerAtomic: "226500000", differenceAtomic: "500000" },
 });
 
 export const reconciliationRunPlanted: ReconciliationRun = ReconciliationRunSchema.parse({
@@ -812,11 +1108,11 @@ export const reconciliationRunPlanted: ReconciliationRun = ReconciliationRunSche
   ranAt: T6,
   trigger: "api",
   blockNumber: "49850420",
-  treasuryChainAtomic: "226000000",
-  treasuryLedgerAtomic: "225500000",
+  treasuryChainAtomic: "227000000",
+  treasuryLedgerAtomic: "226500000",
   treasuryDifferenceAtomic: "500000",
-  escrowsChecked: 5,
-  eventsChecked: 8,
+  escrowsChecked: 6,
+  eventsChecked: 10,
   escrows: escrowChecks,
   materialityAtomic: "10000",
   differences: [
@@ -824,8 +1120,8 @@ export const reconciliationRunPlanted: ReconciliationRun = ReconciliationRunSche
       kind: "treasury",
       subject: "treasury",
       reason: PLANTED_REASON,
-      chainAtomic: "226000000",
-      ledgerAtomic: "225500000",
+      chainAtomic: "227000000",
+      ledgerAtomic: "226500000",
       differenceAtomic: "500000",
       material: true,
     },

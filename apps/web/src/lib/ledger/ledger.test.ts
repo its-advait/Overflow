@@ -34,7 +34,7 @@ describe("accounts", () => {
     const owner = balances.find((b) => b.account === "owner-contribution")!;
     expect(BigInt(owner.netAtomic) < 0n).toBe(true);
     expect(normalBalance(owner)).toBe(250_000_000n);
-    expect(normalBalance(balances.find((b) => b.account === "usdc-treasury")!)).toBe(225_500_000n);
+    expect(normalBalance(balances.find((b) => b.account === "usdc-treasury")!)).toBe(226_500_000n); // 250 funded − 12 expensed − 6.5 + 6.5 swap round trip − 15 + 15 ghost round trip − 4.5 − 8 open + 1 forfeited bond
   });
   it("labels the spec's journal rows and keeps funding, settlement and refund apart", () => {
     expect(entryKind({ debitAccount: "escrow-deposit", creditAccount: "usdc-treasury" })).toMatchObject({ phase: "escrow-funding", tone: "cyan" });
@@ -48,7 +48,7 @@ describe("accounts", () => {
 
 describe("journal", () => {
   it("filters by account (either side) and department like the service", () => {
-    expect(filterEntries(fx.ledgerEntries, { account: "escrow-deposit" })).toHaveLength(7);
+    expect(filterEntries(fx.ledgerEntries, { account: "escrow-deposit" })).toHaveLength(9);
     expect(filterEntries(fx.ledgerEntries, { department: "finance" }).map((e) => e.id)).toEqual(["fe-merged-expense-finance"]);
     expect(filterEntries(fx.ledgerEntries, { account: "data-expense", department: "research" }).map((e) => e.id)).toEqual(["fe-merged-expense-research"]);
     expect(filterEntries(fx.ledgerEntries, { purchaseId: "pur-freight-weekly" })).toHaveLength(2);
@@ -108,7 +108,7 @@ describe("reconciliation", () => {
     const rows = reconciliationRows(fx.reconciliationRunPlanted);
     const material = materialRows(rows);
     expect(material).toHaveLength(1);
-    expect(material[0]).toMatchObject({ kind: "treasury", chainAtomic: 226_000_000n, ledgerAtomic: 225_500_000n, differenceAtomic: 500_000n });
+    expect(material[0]).toMatchObject({ kind: "treasury", chainAtomic: 227_000_000n, ledgerAtomic: 226_500_000n, differenceAtomic: 500_000n });
     expect(exceptionFor(material[0]!, [fx.exception, fx.plantedException])?.id).toBe(fx.plantedException.id);
     expect(exceptionFor(material[0]!, [{ ...fx.plantedException, status: "resolved" }])).toBeUndefined();
   });

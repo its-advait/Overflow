@@ -4,6 +4,7 @@ import * as fx from "../mocks/fixtures";
 import { ApiError, type OverflowApi } from "./client";
 import type { AllocationBreakdown, Balance, DepartmentBalance } from "./contracts";
 import { getTreasurySim } from "../mocks/treasury-sim";
+import { gateActions } from "../escrow/state";
 
 // ---------------------------------------------------------------------------
 // MOCK client: serves the fixtures with a short delay so loading states show.
@@ -184,10 +185,37 @@ export function createMockApi(): OverflowApi {
         activity: fx.activity.filter((e) => e.purchaseId === id),
       });
     },
+    listEscrows: () => delay({ escrows: fx.escrows.map(fx.escrowSummary) }),
+    // MOCK detail: stored fixtures plus a labelled chain snapshot judged at the client's clock. The gates come from
+    // the same contract mirror the service uses; nothing here is a success a chain confirmed.
     getEscrow: (id) => {
       const e = fx.escrowByPurchase(id) ?? fx.escrowByAddress(id);
       if (!e) return Promise.reject(notFound("escrow", id));
-      return delay({ escrow: e, chainTransactions: fx.chainTransactions.filter((t) => t.purchaseId === e.purchaseId) });
+      const purchase = storedPurchase(e.purchaseId);
+      if (!purchase) return Promise.reject(notFound("purchase", e.purchaseId));
+      const now = Math.floor(Date.now() / 1000);
+      const chain = fx.escrowChain(e, now);
+      const complaint = fx.complaintByPurchase(e.purchaseId) ?? null;
+      const actions = gateActions({
+        status: chain.status,
+        revealDeadline: BigInt(e.revealDeadline),
+        challengeEnd: BigInt(chain.challengeEnd),
+        balance: BigInt(chain.balanceAtomic),
+        now: BigInt(now),
+        complaintReady: Boolean(complaint && complaint.cipherProofVerified && complaint.plainProofVerified && complaint.cheatVerified),
+      });
+      return delay({
+        escrow: e,
+        purchase,
+        resource: fx.escrowResource(e.purchaseId),
+        chain,
+        chainTransactions: fx.chainTransactions.filter((t) => t.purchaseId === e.purchaseId),
+        sample: fx.sampleByPurchase(e.purchaseId) ?? null,
+        complaint,
+        actions,
+        activity: fx.activity.filter((ev) => ev.purchaseId === e.purchaseId),
+        simulated: true,
+      });
     },
 
     listAgents: () => {
