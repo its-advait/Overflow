@@ -21,13 +21,16 @@ import { createReconciliation, type Reconciliation } from "./ledger/index.js";
 import { createDeliveryWatcher } from "./orchestration/delivery-watcher.js";
 import {
   AGENT_KEYS_LIMITATION,
+  ORCHESTRATOR_AGENT_ID,
   createMissionRunner,
   createPurchaseService,
   createSampleJudge,
   createScriptedModel,
   createSellerOrderTerms,
+  ensureAgentRows,
   notWiredSampleJudge,
   orchestrationStatus,
+  readNodeOfKey,
   relayViaApp,
   resolveAgentKeys,
   resolveRolePolicies,
@@ -346,6 +349,21 @@ async function main(): Promise<void> {
     runnerStatus = `live${oracle.scripted ? ` [${oracle.scripted.mode.toUpperCase()} model answers]` : ""}: orchestrator ${agentKeys.keys.root.address} (${agentKeys.keys.rootSource}); sub-agents research ${agentKeys.keys.children.research.address}, finance ${agentKeys.keys.children.finance.address}, verification ${agentKeys.keys.children.verification.address}; ${AGENT_KEYS_LIMITATION}`;
   }
   log(`[orchestration] mission runner ${runnerStatus}`);
+
+  // The seed's agent rows hold SIMULATED placeholder keys. Swap in the real ones before the indexer backfills so
+  // NodeCreated can link each node to its agent, and link the root directly: it usually predates this boot, and
+  // POST /api/missions answers 409 no_root_node until the orchestrator row carries its node id.
+  if (agentKeys.ok) {
+    const root = agentKeys.keys.root.address;
+    await ensureAgentRows(database.db, seeded.organization.id, root, agentKeys.keys.children);
+    try {
+      const rootNodeId = await readNodeOfKey(client, boot.treasury, root);
+      if (rootNodeId !== 0n) await createRepositories(database.db).agents.setNodeId(ORCHESTRATOR_AGENT_ID, Number(rootNodeId));
+      log(`[agents] orchestrator ${root}: ${rootNodeId === 0n ? "no treasury node for this key yet (createRoot first)" : `root node ${rootNodeId}`}`);
+    } catch (e) {
+      log(`[agents] could not read nodeOfKey(${root}): ${e instanceof Error ? e.message.split("\n")[0] : String(e)}`);
+    }
+  }
 
   const { app } = createApp({
     db: database.db,
