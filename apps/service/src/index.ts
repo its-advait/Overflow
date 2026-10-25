@@ -2,10 +2,10 @@ import { serve } from "@hono/node-server";
 import { createDatabase, seed } from "@overflow/database";
 import { createApp } from "./api/index.js";
 import { createActivityBus, createIndexer, createLogSource, resolveIndexerConfig, type Indexer } from "./chain/index.js";
-import { FACILITATOR_STATUS } from "./facilitator/index.js";
+import { assertFacilitatorChain, facilitatorStatus, resolveFacilitatorConfig, type Facilitator } from "./facilitator/index.js";
 import { createReconciliation, LEDGER_STATUS, type Reconciliation } from "./ledger/index.js";
 import { ORCHESTRATION_STATUS } from "./orchestration/index.js";
-import { SELLERS_STATUS } from "./sellers/index.js";
+import { createSellerApp, resolveSellerConfig, sellersStatus } from "./sellers/index.js";
 
 const port = Number(new URL(process.env["SERVICE_URL"] ?? "http://localhost:4000").port || 4000);
 
@@ -60,6 +60,25 @@ if (indexerConfig.ok) {
   console.warn(`[chain] indexer idle: ${indexerConfig.reason}`);
 }
 
+// Facilitator: the settle() core. Runs only with BASE_SEPOLIA_RPC_URL, RELAYER_PRIVATE_KEY and a
+// deployments file; otherwise the sellers serve 402s but every paid retry answers 503.
+const facilitatorConfig = await resolveFacilitatorConfig();
+let facilitator: Facilitator | null = null;
+if (facilitatorConfig.ok) {
+  await assertFacilitatorChain(facilitatorConfig.rpcUrl);
+  facilitator = facilitatorConfig.create();
+} else {
+  console.warn(`[facilitator] idle: ${facilitatorConfig.reason}`);
+}
+
+// SIMULATED sellers on their own port (SELLER_URL). The attacker payee is never allowlisted.
+const sellerConfig = resolveSellerConfig();
+const sellerApp = createSellerApp({
+  config: sellerConfig,
+  facilitator,
+  facilitatorUnavailableReason: facilitatorConfig.ok ? undefined : facilitatorConfig.reason,
+});
+
 const { app } = createApp({
   db: database.db,
   bus,
@@ -71,8 +90,8 @@ const { app } = createApp({
     modules: {
       api: "ready",
       orchestration: ORCHESTRATION_STATUS,
-      facilitator: FACILITATOR_STATUS,
-      sellers: SELLERS_STATUS,
+      facilitator: facilitatorStatus(facilitatorConfig),
+      sellers: sellersStatus(sellerConfig, facilitatorConfig.ok),
       chain: chainStatus,
       ledger: ledgerStatus,
       exceptions: indexerConfig.ok
@@ -85,9 +104,13 @@ const { app } = createApp({
 const server = serve({ fetch: app.fetch, port }, (info) => {
   console.log(`[api] @overflow/service listening on http://localhost:${info.port}`);
 });
+const sellerServer = serve({ fetch: sellerApp.fetch, port: sellerConfig.port }, (info) => {
+  console.log(`[sellers] SIMULATED sellers listening on http://localhost:${info.port} (${sellerConfig.sellerUrl})`);
+});
 await indexer?.start();
 
 const shutdown = (): void => {
+  sellerServer.close();
   server.close(() => {
     void (indexer ? indexer.stop() : Promise.resolve())
       .then(() => database.close())
