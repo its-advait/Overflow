@@ -8,6 +8,7 @@ import { Money } from "@/components/shared/money";
 import { formatWhen } from "@/components/shared/panel";
 import { Pill } from "@/components/shared/status-pill";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { formatMemo } from "@/lib/format-memo";
 import { ACCOUNT_STYLE, ACCOUNTS, entryKind } from "@/lib/ledger/accounts";
 import { isSplitLine, type JournalFilter } from "@/lib/ledger/journal";
 
@@ -72,17 +73,17 @@ export function JournalTable({
         <EmptyState title="No journal entries" description="Entries are posted only from confirmed chain events. Nothing matches this filter yet." />
       ) : (
         <div className="overflow-x-auto rounded-xl border border-border bg-surface">
-          <Table>
+          <Table className="min-w-[1080px] table-fixed">
             <TableHeader>
               <TableRow>
-                <TableHead>Date</TableHead>
-                <TableHead>Event</TableHead>
+                <TableHead className="w-[140px]">Date</TableHead>
+                <TableHead className="w-[136px]">Event</TableHead>
                 <TableHead>Memo</TableHead>
-                <TableHead>Debit</TableHead>
-                <TableHead>Credit</TableHead>
-                <TableHead className="text-right">Amount</TableHead>
-                <TableHead>Purchase</TableHead>
-                <TableHead>Tx</TableHead>
+                <TableHead className="w-[120px]">Debit</TableHead>
+                <TableHead className="w-[144px]">Credit</TableHead>
+                <TableHead className="w-[112px] text-right">Amount</TableHead>
+                <TableHead className="w-[104px]">Purchase</TableHead>
+                <TableHead className="w-[132px]">Tx</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -103,22 +104,24 @@ export function JournalTable({
                         {e.correctsEntryId ? <Pill tone="violet" title={`Corrects entry ${e.correctsEntryId}`}>correction</Pill> : null}
                       </span>
                     </TableCell>
-                    <TableCell className="max-w-md text-sm text-text">{e.memo}</TableCell>
-                    <TableCell className="whitespace-nowrap text-sm">{ACCOUNT_STYLE[e.debitAccount].label}</TableCell>
-                    <TableCell className="whitespace-nowrap text-sm text-text-muted">{ACCOUNT_STYLE[e.creditAccount].label}</TableCell>
-                    <TableCell className="text-right">
+                    <TableCell className="truncate text-sm text-text" title={e.memo}>
+                      {formatMemo(e.memo)}
+                    </TableCell>
+                    <TableCell className="truncate text-sm" title={ACCOUNT_STYLE[e.debitAccount].label}>{ACCOUNT_STYLE[e.debitAccount].label}</TableCell>
+                    <TableCell className="truncate text-sm text-text-muted" title={ACCOUNT_STYLE[e.creditAccount].label}>{ACCOUNT_STYLE[e.creditAccount].label}</TableCell>
+                    <TableCell className="tnum text-right">
                       <Money atomic={e.amountAtomic} size="sm" />
                     </TableCell>
-                    <TableCell className="text-sm">
+                    <TableCell className="truncate text-sm">
                       {e.purchaseId ? (
-                        <Link href={`/purchases/${encodeURIComponent(e.purchaseId)}`} className="font-mono text-xs text-blue hover:underline">
+                        <Link href={`/purchases/${encodeURIComponent(e.purchaseId)}`} title={e.purchaseId} className="font-mono text-xs text-blue hover:underline">
                           {e.purchaseId}
                         </Link>
                       ) : (
                         <span className="text-text-muted">—</span>
                       )}
                     </TableCell>
-                    <TableCell>{e.txHash ? <TxHash value={e.txHash} /> : <span className="text-xs text-text-muted">no tx</span>}</TableCell>
+                    <TableCell className="overflow-hidden">{e.txHash ? <TxHash value={e.txHash} chars={4} /> : <span className="text-xs text-text-muted">no tx</span>}</TableCell>
                   </TableRow>
                 );
               })}

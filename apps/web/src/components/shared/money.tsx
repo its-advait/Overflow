@@ -35,7 +35,7 @@ export function Money({
   const negative = value < 0n;
   const magnitude = negative ? -value : value;
   const sign = negative ? "−" : signed && value > 0n ? "+" : "";
-  const text = withGroups(formatUsdc(magnitude));
+  const text = formatAtomic(magnitude);
   const s = SIZES[size];
   return (
     <span
@@ -53,6 +53,11 @@ export function Money({
       {unit ? <span className={cn("font-medium uppercase tracking-wider text-text-muted", s.unit)}>{unit}</span> : null}
     </span>
   );
+}
+
+/** Atomic USDC as a grouped decimal string, the text Money renders. */
+export function formatAtomic(atomic: bigint): string {
+  return withGroups(formatUsdc(atomic));
 }
 
 /** Thousands separators on the integer part only; string work, never Number(). */
