@@ -81,3 +81,39 @@
 ### Open issues
 - `pnpm --filter @overflow/schemas test` fails at startup because Vitest in a package directory picks up the root `projects` config and resolves `apps/service` relative to the package. Run `pnpm test` from the root (or add a per-package `vitest.config`) until the scaffold is adjusted.
 - Engineer B must copy the `termsHash` and `orderId` field orders above into `OverflowEscrowFactory`/`OverflowEscrow` and add a golden-vector test against `computeOrderId`.
+
+## 2026-10-24: `@overflow/recourse-crypto` chunking, keys, Merkle proofs, golden vectors
+
+### Built
+- `packages/recourse-crypto/README.md` documents the record format as a contract: chunk = 160 bytes = payload (95) + signature (65, `r||s||v`, v in {27,28}); payload = `0x01` + uint64 big-endian timestamp + 86 bytes of one UTF-8 CSV row right-padded with `0x00`; signature = raw ECDSA over `keccak256(payload)` with no EIP-191 prefix (viem `sign({ hash })`, RFC 6979 deterministic).
+- `src/record.ts`: `encodePayload` (rejects rows over 86 bytes and rows containing NUL), `decodePayload`, `payloadHash`, `signPayload`, `buildRecordChunk`, `splitChunk`/`parseChunk`, `recoverRecordSigner`, `verifyRecordPromise` (wrong-source / stale-timestamp / malformed), `splitDataset`/`joinChunks`.
+- `src/keys.ts`: `perBuyerKey = keccak256(encodePacked(bytes32 secret, bytes32 orderId, address buyer))`, `chunkKey(k, uint256 i)`, `keystreamBlock(k_i, uint256 j)`, 160-byte keystream = blocks 0..4, XOR encrypt/decrypt, `keyCommitment = keccak256(k)`, dataset helpers.
+- `src/merkle.ts`: leaf = `keccak256(chunk)`, parent = `keccak256(left || right)`, odd last node carried up unchanged, proofs skip carried levels. `verifyProof` works with or without the leaf count (see design choice below); `expectedProofLength`, `computeRootFromProof`.
+- `src/commit.ts`: `commitDataset` -> `rootPlain`, `rootCipher`, `keyCommitment`, `leafCount`, `k`, both chunk/leaf arrays and trees; `verifyCiphertext`, `verifyPlainLeaves` for the buyer before funding.
+- `src/sample.ts`: `pickSampleIndices(n, count, randomBytes)` (keccak256(random || uint256 j) mod n, unique, draw order), `revealChunkKeys`, `verifySample` (cipher proof, plain proof, decrypt-and-hash).
+- `src/complaint.ts`: `buildMismatchComplaint` -> `{ i, cipherChunk, cipherProof, plainLeaf, plainProof }`, `buildPromiseComplaint` -> `{ i, plainChunk, plainProof }` (+ verdict). Both throw `ComplaintNotWarrantedError` when the contract would revert. `checkMismatch` exposes the contract's derivation.
+- `src/vectors.ts` + `scripts/gen-vectors.ts` (`pnpm --filter @overflow/recourse-crypto vectors`): SIMULATED 7-chunk dataset, label-derived throwaway keys, every intermediate value, one swapped chunk (index 3) with ready `complainMismatch` args, one wrong-source record (index 5) with ready `complainPromise` args. Written to `packages/recourse-crypto/test/vectors.json` and copied to `contracts/test/fixtures/recourse-vectors.json`.
+- `src/cli.ts` (`pnpm --filter @overflow/recourse-crypto cli -- <cmd>`): `records`, `commit`, `encrypt`, `sample`, `decrypt`, `prove`. Added `tsx` as a devDependency for the script and CLI.
+
+### Design choices
+- **Proof shape without the leaf count.** Because the odd node is carried up unchanged, proof lengths vary by index. `verifyProof(root, leaf, index, proof)` still works without `n`: depth = `max(bitLength(index), proof.length)` and the missing levels are the topmost even-position levels of the path (a node that is last at one level is last at every level above). Algorithm is written out in the README for the Solidity mirror.
+- **Second-preimage caveat.** Without `n`, a bare 32-byte leaf that is really an internal node verifies with a shorter proof. Chunk-backed leaves (`cipherChunk`, `plainChunk`) are immune; the bare `plainLeaf` in `complainMismatch` is not. The contract must pin the shape: store `chunkCount` and check the proof length, or require `cipherProof.length == plainProof.length`. TS callers should pass `leafCount` (from the manifest) whenever known; `verifySample` and the vectors tests do.
+- Complaint builders validate locally and refuse to build a complaint the contract would reject, so the UI never shows a "refund pending" for an allegation the chain will revert.
+- `leafCount` is part of the manifest, not the roots; `commitDataset` returns it.
+
+### Stubbed or simulated
+- All vector key material and the dataset are labeled SIMULATED; no real source signer exists yet.
+- Not wired to the seller endpoints, the escrow contract, or the UI yet.
+
+### Verified (real output, 2026-10-24)
+| Check | Result |
+|---|---|
+| `pnpm install --offline` | exit 0 (tsx linked from the store) |
+| `pnpm typecheck` | exit 0, all workspaces Done |
+| `pnpm test` | exit 0, 11 files / 138 tests passed (35 new: record round trips and rejections, key derivation vs raw keccak, proofs for every index for 1..20 leaves incl. the odd-level case, sample verification and failure reasons, detected swapped chunk, detected wrong-source and stale records, vector regeneration byte-identical and fixture copy identical) |
+| `pnpm --filter @overflow/recourse-crypto vectors` twice | identical files, `git status` clean for both JSON files |
+| CLI smoke (records -> commit -> encrypt -> sample -> decrypt -> prove) | plaintext round trip `cmp` identical; single-chunk decrypt with a revealed `k_i` matches |
+
+### Open issues
+- Engineer B: `OverflowEscrow` must either store `chunkCount` or enforce `cipherProof.length == plainProof.length` in `complainMismatch` (see caveat above), and should add a Foundry test that replays `contracts/test/fixtures/recourse-vectors.json`.
+- Plain leaves of short CSV rows are low-entropy; a published leaf list is brute-forceable. Acceptable for synthetic demo data; note in limitations.
