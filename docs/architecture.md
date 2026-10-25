@@ -91,7 +91,7 @@ From docs/SPEC.md, "Trust boundaries":
 | Controller | Set policy and approve exceptions | Approve every routine payment |
 
 Boundary rules enforced in code:
-- A valid agent signature is never enough: `settle()` / `reserve()` run the policy checks, and the treasury's `isValidSignature` answers yes only for the digest it is currently settling or a stored reservation (docs/SPEC.md, "The stateful ERC-1271 gate"). A signature sent straight to USDC is refused (`test_direct_to_token_bypass_reverts`, `test_fork_directBypassReverts`; planted error 2 on the fork, docs/proof/results.md).
+- A valid agent signature is never enough: `settle()` / `reserve()` run the policy checks, and the treasury's `isValidSignature` answers yes only for the digest it is currently settling or a stored reservation (docs/SPEC.md, "The stateful ERC-1271 gate"). A signature sent straight to USDC is refused (`test_direct_to_token_bypass_reverts`, `test_fork_directBypassReverts`; the live demo replays this bypass on Base Sepolia. Live tx: TODO (Basescan link after the live run)).
 - The buyer never trusts the seller's order terms: `orchestration/seller-order-terms.ts` recomputes `termsHash` and `orderId` from the wire fields and checks `factory.predict(...)` equals the returned escrow (docs/PROGRESS.md, "SIMULATED Recourse sellers").
 - Owner actions use `msg.sender == owner`; there are no `/admin` routes on the service.
 

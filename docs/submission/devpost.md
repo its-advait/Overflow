@@ -26,8 +26,8 @@ Three events stay separate in contracts, ledger and UI: authorization, escrow fu
 
 - **Contracts (Solidity, Foundry, OpenZeppelin 5):** `OverflowTreasury` (`settle()`, `reserve()` / `release()` for third-party facilitators, ERC-1271 gate), `OverflowEscrowFactory` and `OverflowEscrow` (tier 1 payout and timeout refund, tier 2 chunk mismatch proofs, tier 3 signed-record promises, bonds and cheater flags, `sweep()`).
 - **Offchain (TypeScript, pnpm monorepo):** `@overflow/payment-client` (x402 quote checks, EIP-3009 signing, typed-data golden vectors pinned against the contract), `@overflow/recourse-crypto` (chunking, per-buyer keys, domain-separated Merkle proofs), `@overflow/oracle`, `@overflow/fusion`, `@overflow/database` (Drizzle on Postgres or PGlite), and `apps/service` (Hono API, relayer and in-process facilitator, chain indexer and SSE stream, ledger posting and reconciliation, purchase state machine with idempotency keys, mission runner, delivery watcher, SIMULATED Recourse sellers).
-- **Web (Next.js, Tailwind, shadcn):** Overview (money cards, mission progress, latest events with the Blocked lane and decoded revert reasons), Missions, Purchases (Oracle comparison, Fusion proposal, authorization preview, payment timeline with escrow state) and Ledger with reconciliation. The Agents, Escrow, Activity and Settings pages are still placeholders in this commit.
-- **Proof harness:** `pnpm proof --fork` forks Base Sepolia with anvil, uses the deployed treasury and real USDC bytecode, and runs the SPEC's planted-error answer key (`scripts/proof/`, results in `docs/proof/results.md`).
+- **Web (Next.js, Tailwind, shadcn):** Overview (money cards, mission progress, latest events with the Blocked lane and decoded revert reasons), Missions, Purchases (Oracle comparison, Fusion proposal, authorization preview, payment timeline with escrow state), Ledger with reconciliation, and Settings, the live control panel for a judge's own scenario (docs/SPEC.md "A judge's own scenario"): seller behavior (honest, swap, ghost), price, agent caps, a new payee and a license flag, each working live with no code change. Agent caps and a new payee are treasury policy changes the controller signs onchain; seller behavior, price and the license flag change what the SIMULATED seller does, quotes and licenses on the next order (Live tx / result: TODO). The Agents, Escrow and Activity pages are still placeholders in this commit.
+- **Live test and demo:** the purchase beats run on Base Sepolia with real transactions (`pnpm --filter @overflow/service flow:demo -- --beat honest|ghost|swap`, which also requires reconciliation to show no open exception), and the refusal and controller beats run against the deployed treasury and real USDC. Every result is cited by its Basescan link once the live run happens.
 - **Labeled fallback:** a scripted replay mode (`DEMO_SCRIPTED=record|replay`) replaces only the model's answers; everything after the model still runs on chain. Replay shows a SCRIPTED badge and prefixes every log line with `[SCRIPTED]` (`data/scripted/README.md`).
 
 ## Challenges we ran into
@@ -44,10 +44,19 @@ Three events stay separate in contracts, ledger and UI: authorization, escrow fu
   - Escrow factory `0x933Bc257a24D94786D0021745470D343d3391808` (and escrow implementation `0x16fb922f0b3aa2c09d0e5e56640f7b0fd3e14f20`), deploy tx https://sepolia.basescan.org/tx/0x17570db986b411cd99fd0f336627d23f8bb2298750537234d37d1955bb11d20f
   - `setEscrowFactory` tx https://sepolia.basescan.org/tx/0x292d0e3cdce7cde3715afee886fcbdeab95fac62668f2a6c7733daba92b5e948
   - `createRoot` tx https://sepolia.basescan.org/tx/0x4aea260876dc3cfa33bdedbebd4791a7550d39f3349229656693a870abf9f7b2
-- **Planted errors 1 to 7 caught on an anvil fork of Base Sepolia** against the deployed treasury and real USDC (`docs/proof/results.md`, fork run 2026-10-25T12:57Z): `PayeeNotAllowed(0)` for an injected attacker payee, `FiatTokenV2: invalid signature` when the same signature goes straight to USDC, `PayeeNotAllowed(5)`, `OverPerCall(7)`, `OverBudget(9)`, `Expired(13)`, `Paused(14)`. Fork transaction hashes exist only on the local anvil fork, not on Basescan. Cases 8 to 20 have no harness yet and report FAIL (7/20 overall).
+- **Live test on Base Sepolia (not run yet).** The team proves Overflow with a live test and a live demo against the deployed contracts and testnet USDC. No live run has happened, so every slot below is TODO; no hash or number goes here until the transaction exists.
+  - Honest SIMULATED seller paid: escrow funded, key revealed, order accepted, `PaidOut`. Live tx: TODO (Basescan link after the live run)
+  - Ghost SIMULATED seller never reveals: timeout refund to the treasury. Live tx: TODO (Basescan link after the live run)
+  - Swap SIMULATED seller: chunk mismatch proof, refund plus the seller's bond, seller flagged. Live tx: TODO (Basescan link after the live run)
+  - The flagged seller opens a new order: `PayeeFlagged`. Live tx: TODO (Basescan link after the live run)
+  - A prompt-injected agent signs a payment to the SIMULATED attacker: `PayeeNotAllowed`. Live tx: TODO (Basescan link after the live run)
+  - The same signature sent straight to USDC: `FiatTokenV2: invalid signature`. Live tx: TODO (Basescan link after the live run)
+  - A sub-agent over its parent's cap: `OverBudget`. Live tx: TODO (Basescan link after the live run)
+  - A paused orchestrator: `Paused`. Live tx: TODO (Basescan link after the live run)
+  - Controller actions: agent caps and a new payee from Settings, plus pause, each signed onchain by the controller. Live tx: TODO (Basescan link after the live run)
 - **Contract tests:** `pnpm contracts:test` 20 suites, 196 passed, 0 failed, 1 skipped (fork suite off-fork), per docs/PROGRESS.md "end-to-end purchase flow". Includes `contracts/test/unit/Reservations.t.sol` (16 tests: a reserved payment settles through a direct USDC call; without `reserve` the same call fails `FiatTokenV2: invalid signature`).
-- **Offchain tests:** `pnpm test` exit 0, 87 files, 736 tests (docs/PROGRESS.md, "`pnpm proof` planted-error runner"). Covers quote-versus-order checks, Recourse crypto golden vectors, the indexer against the real-ABI fixture, ledger posting, and reconciliation (a planted +0.50 USDC difference opens one exception in `ledger/reconciliation.test.ts`).
-- **Honest labels everywhere:** the proof runner never fakes a case (unimplemented cases FAIL, unfunded live cases are BLOCKED and send nothing), and the SCRIPTED badge appears only when the service itself reports replay mode.
+- **Offchain tests:** `pnpm test` exit 0, 87 files, 736 tests (docs/PROGRESS.md, 2026-10-25 "Verified (real output)" table). Covers quote-versus-order checks, Recourse crypto golden vectors, the indexer against the real-ABI fixture, ledger posting, and reconciliation (an injected +0.50 USDC difference opens one exception in `ledger/reconciliation.test.ts`).
+- **Honest labels everywhere:** simulated sellers, datasets, the attacker and the company are labeled SIMULATED in code, UI and docs, and the SCRIPTED badge appears only when the service itself reports replay mode.
 
 ## What we learned
 
@@ -58,8 +67,7 @@ Three events stay separate in contracts, ledger and UI: authorization, escrow fu
 
 ## What's next
 
-- Fund the testnet treasury, relayer and SIMULATED seller keys, then run the honest, ghost and swap missions live on Base Sepolia and record the scripted replay (procedure in docs/PROGRESS.md "To unblock" and `data/scripted/README.md`).
-- Implement planted-error harnesses 8 to 20 and funded live execution in `pnpm proof --live`.
+- Fund the testnet treasury, relayer and SIMULATED seller keys, then run the live test and live demo on Base Sepolia (honest, ghost and swap missions, the flagged seller, the attacker payee, the over-cap sub-agent, the paused orchestrator, the direct-to-USDC bypass and the Settings controller actions) and record the scripted replay (procedure in docs/PROGRESS.md "To unblock" and `data/scripted/README.md`).
 - Prove settlement through Coinbase's facilitator with a live `reserve()` (rerun `pnpm spike:coinbase`).
 - Path to production (from docs/SPEC.md, Risks and Known limitations): an audit, agent keys in CDP server wallets instead of server secrets, mainnet USDC, private policies (policies and budgets are public onchain today), persisted Recourse order store, RPC log chunking.
 
@@ -72,14 +80,13 @@ Solidity, Foundry (forge, anvil), OpenZeppelin Contracts 5, forge-std, TypeScrip
 - **Coinbase: Best Use of x402, Payment Agents.** x402 answered how an agent pays; Overflow answers how a business lets a team of agents spend, with an onchain policy tree, an ERC-1271 gate on USDC and a per-order escrow as the x402 `payTo` (Coinbase facilitator path built with `reserve()` but BLOCKED live; see `docs/coinbase-feedback.md`).
 - **Hyphenate: Autonomous Systems for Finance.** Procurement analyst and accounts-payable clerk for a company's AI-agent data spend.
 - **Microsoft: Built for the Real World.** A finance agent for teams running agent fleets: idempotent payments that are reconciled, never retried with a new nonce, books that follow chain events, and a stated path to production.
-- **Armadin: Best Security Hack.** A tricked agent can't move money: the treasury rejects the injected payee, USDC rejects the same signature sent around the treasury (both shown on a Base Sepolia fork), and the escrow refunds by proof when a seller cheats (Foundry-tested; live run TODO).
+- **Armadin: Best Security Hack.** A tricked agent can't move money: the treasury rejects the injected payee, USDC rejects the same signature sent around the treasury and the escrow refunds by proof when a seller cheats (Foundry-tested; each beat runs live on Base Sepolia in the demo, Live tx: TODO).
 
 ## Links
 
 - Repo: https://github.com/its-advait/Overflow
 - Architecture: [docs/architecture.md](../architecture.md)
 - Metrics: [docs/metrics.md](../metrics.md)
-- Proof results: [docs/proof/results.md](../proof/results.md)
 - Coinbase builder feedback: [docs/coinbase-feedback.md](../coinbase-feedback.md)
 - Submission docs: [docs/submission/](./) (this file and the other `*.md` files in this folder)
 - Demo runbook: [docs/DEMO.md](../DEMO.md)
@@ -88,7 +95,6 @@ Solidity, Foundry (forge, anvil), OpenZeppelin Contracts 5, forge-std, TypeScrip
 ## TODO before submitting
 
 - Video link.
-- Live Base Sepolia transactions for the honest payout, ghost timeout refund and swap mismatch refund (none exist yet; do not add numbers until they do).
-- Planted errors 8 to 20 (currently FAIL, not implemented).
+- Live Base Sepolia transactions for every live beat: honest payout, ghost timeout refund, swap mismatch refund, `PayeeFlagged`, `PayeeNotAllowed`, the direct-to-USDC `FiatTokenV2: invalid signature`, `OverBudget`, `Paused` and the Settings controller actions (none exist yet; do not add numbers until they do).
 - docs/architecture.md and docs/metrics.md were being written in parallel with this draft (untracked at the time); check they are committed.
 - Check Armadin's criteria and prize on the live site (SPEC says the sponsor sheet listed them as "coming soon").

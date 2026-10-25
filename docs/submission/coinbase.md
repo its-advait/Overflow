@@ -2,7 +2,7 @@
 
 Repo: https://github.com/its-advait/Overflow · Spec: [docs/SPEC.md](../SPEC.md) · Progress log: [docs/PROGRESS.md](../PROGRESS.md)
 
-**Status as of 2026-10-25, read this first.** Contracts are deployed on Base Sepolia (links below) and the contract and unit test suites pass. **No live mission has run on Base Sepolia**: the treasury holds 0 USDC and the relayer holds 0 ETH (preflight in [docs/PROGRESS.md](../PROGRESS.md), "live P6.3 / P6.4 / P6.5 checks"). No scripted replay recording exists. The planted-error proof passes **7 of 20** cases on an anvil fork of Base Sepolia. Cases 8 to 20 are not implemented, and the live run is blocked on relayer gas ([docs/proof/results.md](../proof/results.md)). **Settlement through Coinbase's CDP facilitator is unproven** ([docs/coinbase-feedback.md](../coinbase-feedback.md)).
+**Status as of 2026-10-25, read this first.** Contracts are deployed on Base Sepolia (links below) and the contract and unit test suites pass. **No live mission has run on Base Sepolia**: the treasury holds 0 USDC and the relayer holds 0 ETH (preflight in [docs/PROGRESS.md](../PROGRESS.md), "live P6.3 / P6.4 / P6.5 checks"). No scripted replay recording exists. Overflow will be proven with a **live test and a live demo on Base Sepolia, with live transactions**; section 2 lists each live beat with its evidence slot, and every slot is TODO until the funded run. **Settlement through Coinbase's CDP facilitator is unproven** ([docs/coinbase-feedback.md](../coinbase-feedback.md)).
 
 ## 1. Summary
 
@@ -29,7 +29,7 @@ Not used, although the spec mentions them: Coinbase Wallet MCP as a live integra
 
 - **Video:** TODO until uploaded.
 - **Repo:** https://github.com/its-advait/Overflow
-- **`overflow_pay` MCP tool:** **not built.** The name appears only in [docs/SPEC.md](../SPEC.md) (Track map). No MCP server exists in the repo, so there are no install steps.
+- **`overflow_pay` MCP tool:** **does not exist yet.** The name appears only in [docs/SPEC.md](../SPEC.md) (Track map). No MCP server exists in the repo, so there are no install steps.
 
 **Setup (from [README.md](../../README.md))**
 
@@ -52,11 +52,26 @@ pnpm demo:preflight      # green/red: chain + funding (preflight.ts), service, s
 pnpm demo:reset          # fresh PGlite DB (service stopped) or set SIMULATED seller behaviors (service running)
 pnpm dev                 # web UI + service; service alone: pnpm --filter @overflow/service dev (API 4000, SIMULATED sellers 4100)
 pnpm --filter @overflow/service flow:demo --beat all    # honest -> SETTLED, ghost -> timeout refund, swap -> refund by proof
-pnpm proof --fork        # planted-error runner on an anvil fork (7/20 pass today)
 pnpm spike:coinbase      # Coinbase facilitator spike; rewrites docs/coinbase-feedback.md
 ```
 
 Before `flow:demo` can run live, the treasury needs USDC (`pnpm dev:fund <amount>`, DEV ONLY), the relayer and seller keys need gas (`pnpm --filter @overflow/scripts dev-fund-gas`), and the seller keys need bond USDC (`pnpm dev:fund <amount> --to <seller>`). The full procedure is in the last "live run" entry of [docs/PROGRESS.md](../PROGRESS.md). **This flow has not run on Base Sepolia yet** (TODO: paste Basescan links after the funded run).
+
+**Live test and live demo beats (Base Sepolia)**
+
+No live run has happened yet, so every evidence slot below is empty. Nothing in this table is a result.
+
+| Live beat | Expected onchain outcome | Evidence |
+|---|---|---|
+| Honest seller paid | Escrow funded, key revealed, buyer accepts, `PaidOut` | Live tx: TODO (Basescan link after the live run) |
+| Ghost seller (SIMULATED) | No key reveal; timeout refund to the treasury | Live tx: TODO (Basescan link after the live run) |
+| Swap seller (SIMULATED) | Mismatch proof; refund plus bond to the treasury; seller flagged | Live tx: TODO (Basescan link after the live run) |
+| Flagged seller opens a new order | Rejected with `PayeeFlagged` | Live tx: TODO (Basescan link after the live run) |
+| Prompt-injected agent pays the attacker (SIMULATED) | `settle()` reverts `PayeeNotAllowed` | Live tx: TODO (Basescan link after the live run) |
+| Sub-agent over its parent's cap | `settle()` reverts `OverBudget` | Live tx: TODO (Basescan link after the live run) |
+| Paused orchestrator, child pays | `settle()` reverts `Paused` | Live tx: TODO (Basescan link after the live run) |
+| Same signature sent straight to USDC | USDC reverts `FiatTokenV2: invalid signature` | Live tx: TODO (Basescan link after the live run) |
+| Controller actions (agent caps and a new payee from the Settings control panel; pause) | Owner-only treasury txs signed by the controller | Live tx: TODO (Basescan link after the live run) |
 
 **Deployed contracts (Base Sepolia, chain 84532; [packages/schemas/deployments/base-sepolia.json](../../packages/schemas/deployments/base-sepolia.json))**
 
@@ -78,17 +93,17 @@ Components and diagram: [docs/architecture.md](../architecture.md) (TODO: confir
 
 | Control | What it enforces | Evidence |
 |---|---|---|
-| Policy tree (`OverflowTreasury.settle()`) | Before any token call, the payment walks from the signing node to the root and checks `UnknownAgent`, `PayeeNotAllowed`, `Paused`, `Expired`, `OverPerCall`, `OverBudget` and `BelowFloor`. Delegation to sub-agents is gasless and signed (`createChild`). | `contracts/test/unit/OverflowTreasury.t.sol`, `contracts/test/adversarial/Adversarial.t.sol`, `contracts/test/invariant/TreasuryInvariant.t.sol`. Fork proof cases 1 and 3 to 7 PASS with decoded reverts `PayeeNotAllowed(0)`, `PayeeNotAllowed(5)`, `OverPerCall(7)`, `OverBudget(9)`, `Expired(13)`, `Paused(14)` ([docs/proof/results.md](../proof/results.md); tx hashes are anvil-local, not on Basescan). |
-| ERC-1271 gate (`isValidSignature`) | Returns valid only when `msg.sender == USDC` and a transient flag for that exact digest is set inside a running `settle()`. A prompt-injected agent's signature sent straight to USDC fails. | `contracts/test/usdc/UsdcReal.t.sol` (against Circle's compiled FiatTokenV2_2). `contracts/test/fork/UsdcGate.t.sol` against live Base Sepolia USDC (`test_fork_directBypassReverts`, `test_fork_gateClosedOutsideSettle`, `test_fork_replayRevertsWithoutDoubleCharge`); `pnpm contracts:fork` reported 7 passed ([docs/PROGRESS.md](../PROGRESS.md)). Fork proof case 2: `Error("FiatTokenV2: invalid signature")`, nonce unused. |
+| Policy tree (`OverflowTreasury.settle()`) | Before any token call, the payment walks from the signing node to the root and checks `UnknownAgent`, `PayeeNotAllowed`, `Paused`, `Expired`, `OverPerCall`, `OverBudget` and `BelowFloor`. Delegation to sub-agents is gasless and signed (`createChild`). | `contracts/test/unit/OverflowTreasury.t.sol`, `contracts/test/adversarial/Adversarial.t.sol`, `contracts/test/invariant/TreasuryInvariant.t.sol`. Live beats (section 2): attacker payee (`PayeeNotAllowed`), sub-agent over its parent's cap (`OverBudget`), paused orchestrator (`Paused`). Live tx: TODO (Basescan link after the live run). |
+| ERC-1271 gate (`isValidSignature`) | Returns valid only when `msg.sender == USDC` and a transient flag for that exact digest is set inside a running `settle()`. A prompt-injected agent's signature sent straight to USDC fails. | `contracts/test/usdc/UsdcReal.t.sol` (against Circle's compiled FiatTokenV2_2). `contracts/test/fork/UsdcGate.t.sol` against live Base Sepolia USDC (`test_fork_directBypassReverts`, `test_fork_gateClosedOutsideSettle`, `test_fork_replayRevertsWithoutDoubleCharge`); `pnpm contracts:fork` reported 7 passed ([docs/PROGRESS.md](../PROGRESS.md)). Live beat (section 2): direct-to-USDC bypass, `FiatTokenV2: invalid signature`. Live tx: TODO (Basescan link after the live run). |
 | Reservations (`reserve()` / `release()` / `releaseClosed()`) | Lets a third-party facilitator call USDC later, for one digest only. Budgets are charged up front, `reservedTotal` counts toward the floor, the window is capped, and the gate turns INVALID once the reservation's escrow has closed. | `contracts/test/unit/Reservations.t.sol`, `contracts/test/unit/ReservationGate.t.sol`; fork tests `test_fork_reservationLetsThirdPartySettle`, `test_fork_closedEscrow_usdcRejectsReservedAuthorization`. **Not proven through Coinbase's facilitator** (section 4). |
-| Per-order escrow (`OverflowEscrowFactory` / `OverflowEscrow`) | The escrow address is the order, so the agent's signed `to` binds it. The seller posts a bond. `accept()` pays out. A timeout, a chunk-mismatch proof or a broken-promise proof refunds the treasury; proven cheaters are flagged (`PayeeFlagged`). | `contracts/test/escrow/` (`OverflowEscrow.t.sol`, `EscrowMismatch.t.sol`, `EscrowPromise.t.sol`, `MerkleLib.t.sol`), `contracts/test/invariant/EscrowInvariant.t.sol`. `pnpm contracts:test`: 20 suites, 196 passed, 0 failed, 1 skipped (fork suite off-fork) ([docs/PROGRESS.md](../PROGRESS.md)). Proof cases 8 to 11 and 18 (escrow beats) are **not implemented**, and the escrow has not run live. |
+| Per-order escrow (`OverflowEscrowFactory` / `OverflowEscrow`) | The escrow address is the order, so the agent's signed `to` binds it. The seller posts a bond. `accept()` pays out. A timeout, a chunk-mismatch proof or a broken-promise proof refunds the treasury; proven cheaters are flagged (`PayeeFlagged`). | `contracts/test/escrow/` (`OverflowEscrow.t.sol`, `EscrowMismatch.t.sol`, `EscrowPromise.t.sol`, `MerkleLib.t.sol`), `contracts/test/invariant/EscrowInvariant.t.sol`. `pnpm contracts:test`: 20 suites, 196 passed, 0 failed, 1 skipped (fork suite off-fork) ([docs/PROGRESS.md](../PROGRESS.md)). The escrow has not run live yet; the honest, ghost, swap and flagged-seller live beats in section 2 exercise it. Live tx: TODO (Basescan link after the live run). |
 | Quote check and single nonce (offchain) | Before signing, the payment client rejects a quote whose `payTo`, amount, asset or network differs from the order. An uncertain payment is reconciled through USDC `authorizationState`, never retried with a new nonce. | `packages/payment-client/src/quote.ts` + `quote.test.ts`; `apps/service/src/payment/overflow-adapter.ts`. `pnpm test`: 87 files, 736 tests passed ([docs/PROGRESS.md](../PROGRESS.md)). |
 
 **SIMULATED and labeled:** the seller catalog and datasets, the Recourse sellers (`sim-seller-a`, `sim-seller-b`, with honest, swap and ghost behaviors), the attacker address and the company books.
 
 **Known limits:** [docs/limitations.md](../limitations.md) (TODO: confirm the file has landed). In brief:
 - No live mission on Base Sepolia yet, because the treasury, relayer and seller keys are unfunded.
-- Planted-error proof: 7 of 20 on the fork; the live run is blocked on relayer gas.
+- The live test and live demo beats (section 2) have no Basescan links yet; the run is blocked on relayer gas and treasury USDC.
 - Coinbase facilitator settlement is unproven, and the `CoinbaseFacilitatorAdapter` stays BLOCKED.
 - No `overflow_pay` MCP tool.
 - Coinbase Wallet owner actions are prepared calldata only.
@@ -119,7 +134,7 @@ Differential probes against CDP `/verify` showed that a wrong EOA signature fail
 ## TODO before submitting
 
 - [ ] Upload the demo video and replace "TODO until uploaded".
-- [ ] Fund the treasury, relayer and seller keys, run `flow:demo --beat all` on Base Sepolia, and paste the Basescan tx links into section 2.
+- [ ] Fund the treasury, relayer and seller keys, run the live test and live demo beats on Base Sepolia (including `flow:demo --beat all`), and paste the Basescan tx links into section 2.
 - [ ] Confirm `docs/architecture.md` and `docs/limitations.md` exist (both are linked above).
 - [ ] Rerun `pnpm spike:coinbase` against the redeployed treasury once it holds USDC, and update section 4 if case (a) settles.
 - [ ] Build the `overflow_pay` MCP tool, or drop it from the spec's Ease-of-reuse row.

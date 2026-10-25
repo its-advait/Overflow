@@ -14,8 +14,8 @@ Overflow keeps three financial events separate in the contracts, the ledger and 
 |---|---|---|
 | `OverflowTreasury`, `OverflowEscrowFactory`, escrow implementation on Base Sepolia | **Real, deployed** | treasury `0x03805bdE8BD8266Ad525A9eb13A0eDa7fAcaDca2`, deploy tx [0xbb9fd87f…301c](https://sepolia.basescan.org/tx/0xbb9fd87f128ef5783b4765d4741001287acc4d495ee996fb9e8979db6c5b301c); factory + implementation tx [0x17570db9…1d20f](https://sepolia.basescan.org/tx/0x17570db986b411cd99fd0f336627d23f8bb2298750537234d37d1955bb11d20f); `setEscrowFactory` [0x292d0e3c…e948](https://sepolia.basescan.org/tx/0x292d0e3cdce7cde3715afee886fcbdeab95fac62668f2a6c7733daba92b5e948); `createRoot` [0x4aea2608…f7b2](https://sepolia.basescan.org/tx/0x4aea260876dc3cfa33bdedbebd4791a7550d39f3349229656693a870abf9f7b2) (`packages/schemas/deployments/base-sepolia.json`) |
 | Testnet USDC | Real (Circle's Base Sepolia USDC `0x036CbD53842c5426634e7929541eC2318f3dCF7e`) | The deployed treasury holds **0 USDC** today (docs/PROGRESS.md, 2026-10-25 "live P6.3 / P6.4 / P6.5 checks") |
-| Policy refusals (planted errors 1-7) | Real contract code against real USDC v2.2 bytecode, **on a local anvil fork of Base Sepolia only** | `pnpm proof --fork`: 7/20 PASS, 8-20 NOT IMPLEMENTED (docs/proof/results.md). Fork tx hashes are local to anvil, not on Basescan |
-| Live Base Sepolia missions (honest / ghost / swap seller beats) | **Not run** | Treasury 0 USDC, relayer 0 ETH (docs/PROGRESS.md, 2026-10-25 entries). `pnpm proof --live`: BLOCKED on relayer gas, nothing sent |
+| Policy refusals and the USDC gate | Real contract code, covered by Foundry tests against real USDC v2.2 bytecode; **live run on Base Sepolia pending** | Test names per attack in [docs/threat-model.md](docs/threat-model.md). Live tx: TODO (Basescan link after the live run) |
+| LIVE test and LIVE demo on Base Sepolia (beats below) | **Not run yet** | Treasury 0 USDC, relayer 0 ETH (docs/PROGRESS.md, 2026-10-25 entries). Live tx: TODO (Basescan link after the live run) |
 | Claude agents (Oracle extraction, sample judgment, mission plan, sub-agents) | Real Anthropic SDK calls, model from `CLAUDE_MODEL` | Exercised in Vitest with fakes; no live mission has run (above) |
 | Scripted replay | Labeled fallback (`[SCRIPTED]` on every log line, badge in the top bar) | **No recording exists yet**: `data/scripted/` holds only its README |
 | Coinbase facilitator path (`reserve()` then CDP settles) | **BLOCKED, unproven** | CDP facilitator answered `invalid_payload: contract call failed … execution reverted` for a treasury-as-payer authorization; settlement with a live `reserve()` was not proven; the demo uses the Overflow facilitator (docs/coinbase-feedback.md) |
@@ -27,7 +27,7 @@ Overflow keeps three financial events separate in the contracts, the ledger and 
 ## Prerequisites
 
 - Node and pnpm (pnpm workspace; see `package.json`)
-- Foundry (`forge`, `anvil`, `cast`); `pnpm proof --fork` uses anvil
+- Foundry (`forge`, `anvil`, `cast`)
 - A Base Sepolia RPC URL (`BASE_SEPOLIA_RPC_URL`)
 - For live runs only: Base Sepolia ETH (deployer, relayer, seller keys) and test USDC from https://faucet.circle.com, plus `ANTHROPIC_API_KEY` and `CLAUDE_MODEL`
 - Postgres is optional: without `DATABASE_URL` the service uses PGlite (`PGLITE_DATA_DIR`)
@@ -77,10 +77,9 @@ Signing keys are read from Foundry keystores (`RELAYER_ACCOUNT` + `RELAYER_PASSW
 What a reviewer can run today without funds:
 
 1. **Contracts (1 min).** `pnpm contracts:test`. Last recorded result: 20 suites, 196 passed, 0 failed, 1 skipped (docs/PROGRESS.md, "end-to-end purchase flow"). `pnpm contracts:fork` runs the USDC gate suite against live Base Sepolia USDC (7 passed, docs/PROGRESS.md "hardening pass").
-2. **Planted errors (1 min).** `pnpm proof --fork`. Forks Base Sepolia into anvil, uses the deployed treasury and factory, impersonates the owner, mints fork-only USDC, then sends each planted error as a real transaction and decodes the mined revert. Last run: 7/20 PASS (cases 1-7), cases 8-20 NOT IMPLEMENTED (docs/proof/results.md).
-3. **Offchain tests (1 min).** `pnpm test`. Last recorded result: exit 0, 87 files, 736 tests (docs/PROGRESS.md, "`pnpm proof` planted-error runner").
-4. **Live state (30 s).** `pnpm status` reads the real treasury on Base Sepolia (owner, balance, nodes, `remaining()`).
-5. **UI (1.5 min).** `pnpm dev`, open http://localhost:3000. With `NEXT_PUBLIC_USE_MOCKS=1` the UI runs on labeled fixtures and shows a MOCK badge; with it unset the UI reads the service at `NEXT_PUBLIC_API_URL`. Every simulated party carries a SIMULATED label.
+2. **Offchain tests (1 min).** `pnpm test`. Last recorded result: exit 0, 87 files, 736 tests (docs/PROGRESS.md, 2026-10-25 entries).
+3. **Live state (30 s).** `pnpm status` reads the real treasury on Base Sepolia (owner, balance, nodes, `remaining()`).
+4. **UI (1.5 min).** `pnpm dev`, open http://localhost:3000. With `NEXT_PUBLIC_USE_MOCKS=1` the UI runs on labeled fixtures and shows a MOCK badge; with it unset the UI reads the service at `NEXT_PUBLIC_API_URL`. Every simulated party carries a SIMULATED label.
 
 The live demo (needs funding; **not yet run**, see [docs/limitations.md](docs/limitations.md)):
 
@@ -94,15 +93,21 @@ pnpm --filter @overflow/service mission:run -- --budget 5
 
 Scripted replay (labeled fallback; no recording exists yet): see [data/scripted/README.md](data/scripted/README.md).
 
-## Proof runner
+## Live test and live demo
 
-```sh
-pnpm proof --fork            # anvil fork of Base Sepolia; writes docs/proof/results.{md,json}
-pnpm proof --live            # Base Sepolia; per-case gas/USDC preflight, a BLOCKED case sends nothing
-pnpm proof --fork --only 1,2 # subset while developing; a partial run never writes docs/proof
-```
+Overflow is proven with a LIVE test and a LIVE demo on Base Sepolia, with live transactions. Neither has run yet ([docs/limitations.md](docs/limitations.md)); each beat's evidence slot is filled with its Basescan link after the run.
 
-Exit code is 1 on any FAIL or BLOCKED. The expected column is the SPEC's answer key verbatim. Current results: fork 7/20 PASS; live 0/20 (cases 1-5 and 7 BLOCKED on relayer gas, 6 NOT RUN as fork-only, 8-20 NOT IMPLEMENTED). Full table: [docs/proof/results.md](docs/proof/results.md).
+| Beat | Expected onchain result | Evidence |
+|---|---|---|
+| Honest seller paid | escrow funded, key revealed, `accept()`, escrow `PaidOut` | Live tx: TODO (Basescan link after the live run) |
+| Ghost seller (SIMULATED) | no key revealed; timeout refund restores treasury USDC, bond to the buyer | Live tx: TODO (Basescan link after the live run) |
+| Swap seller (SIMULATED) | mismatch proof (`complainMismatch`): refund plus bond, seller flagged | Live tx: TODO (Basescan link after the live run) |
+| Flagged seller opens a new order | refused with `PayeeFlagged` | Live tx: TODO (Basescan link after the live run) |
+| Prompt-injected attacker payee (SIMULATED) | `settle()` refuses with `PayeeNotAllowed` | Live tx: TODO (Basescan link after the live run) |
+| Sub-agent over its parent's cap | `settle()` refuses with `OverBudget` | Live tx: TODO (Basescan link after the live run) |
+| Paused orchestrator | child payment refused with `Paused` | Live tx: TODO (Basescan link after the live run) |
+| Direct-to-USDC bypass | USDC refuses with `FiatTokenV2: invalid signature`; nonce unused | Live tx: TODO (Basescan link after the live run) |
+| Controller actions | the controller signs the policy change onchain (caps, payees, pause) | Live tx: TODO (Basescan link after the live run) |
 
 ## Built on Leash
 
@@ -112,11 +117,10 @@ Leash (our B@BHacks project, https://github.com/AnthonyOlakangil/leash) is prior
 
 - [docs/architecture.md](docs/architecture.md): components, trust boundaries, the 10-step purchase flow, the three financial events
 - [docs/limitations.md](docs/limitations.md): what is not done or not proven
-- [docs/threat-model.md](docs/threat-model.md): attacks, defenses, proof
+- [docs/threat-model.md](docs/threat-model.md): attacks, defenses, tests and live evidence slots
 - [docs/metrics.md](docs/metrics.md)
 - [docs/DEMO.md](docs/DEMO.md)
 - [docs/submission/](docs/submission/) (`docs/submission/*.md`, one per track)
-- [docs/proof/results.md](docs/proof/results.md): planted-error results
 - [docs/SPEC.md](docs/SPEC.md): build spec
 - [docs/gas.md](docs/gas.md): gas per operation
 - [docs/coinbase-feedback.md](docs/coinbase-feedback.md): Coinbase facilitator findings
@@ -129,4 +133,4 @@ Leash (our B@BHacks project, https://github.com/AnthonyOlakangil/leash) is prior
 - `packages/*`: `schemas`, `oracle`, `fusion`, `payment-client`, `recourse-crypto`, `database`, `datasets`
 - `data`: SIMULATED datasets and seller catalog
 - `contracts`: Foundry project (solc 0.8.28, cancun, OpenZeppelin 5)
-- `scripts`: operator scripts and the proof runner (`scripts/proof/`)
+- `scripts`: operator scripts
