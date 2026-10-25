@@ -4,7 +4,6 @@ import {
   BookOpenText,
   Bot,
   LayoutDashboard,
-  Lock,
   Settings,
   ShoppingBag,
   Target,
@@ -43,12 +42,6 @@ export const NAV: readonly NavItem[] = [
     label: "Purchases",
     description: "Oracle recommendations, Fusion merges and the authorization each agent signed.",
     icon: ShoppingBag,
-  },
-  {
-    href: "/escrow",
-    label: "Escrow",
-    description: "Per-order escrows: funding, reveal, settlement or refund, each from a chain event.",
-    icon: Lock,
   },
   {
     href: "/activity",

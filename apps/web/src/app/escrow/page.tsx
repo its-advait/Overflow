@@ -1,5 +1,6 @@
-import { PlaceholderPage } from "@/components/shell/placeholder-page";
+import { redirect } from "next/navigation";
 
+/** Escrow has no page of its own yet: each order's funding, reveal and settlement show on its purchase page. */
 export default function Page() {
-  return <PlaceholderPage href="/escrow" />;
+  redirect("/purchases");
 }
