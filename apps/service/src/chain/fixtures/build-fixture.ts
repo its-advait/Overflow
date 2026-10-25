@@ -53,7 +53,7 @@ const b32 = (n: number): Hex => `0x${n.toString(16).padStart(64, "0")}` as Hex;
 const txh = (n: number): Hex => `0x${"f".repeat(60)}${n.toString(16).padStart(4, "0")}` as Hex;
 
 function encodeLog(
-  abi: Abi,
+  abi: readonly unknown[],
   address: Address,
   eventName: string,
   args: Record<string, unknown>,
@@ -61,7 +61,7 @@ function encodeLog(
   logIndex: number,
   txNo: number,
 ): RawLog {
-  const event = abi.find((i) => i.type === "event" && i.name === eventName) as AbiEvent | undefined;
+  const event = abi.find((i) => (i as AbiEvent).type === "event" && (i as AbiEvent).name === eventName) as AbiEvent | undefined;
   if (!event) throw new Error(`no event ${eventName}`);
   const topics = encodeEventTopics({ abi: [event], eventName, args } as never) as Hex[];
   const nonIndexed = event.inputs.filter((i) => !i.indexed);

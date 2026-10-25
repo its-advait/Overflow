@@ -19,6 +19,13 @@ export const TREASURY_REVERT_REASONS: Readonly<Record<string, string>> = {
   PayeeFlagged: "Seller has a proven cheat on record",
   ReservationTooLong: "Reservation validity exceeds the treasury's window",
   ReservationActive: "That digest is already reserved",
+  NoReservation: "No reservation exists for that digest",
+  ReservationLive: "The reservation has not expired yet",
+  EscrowAmountMismatch: "Payment does not match the escrow's price plus bond",
+  EscrowClosed: "That escrow already settled or refunded; paying it would strand USDC",
+  NotEscrowReservation: "The reservation pays a direct payee, not a factory escrow",
+  EscrowStillOpen: "The escrow has not settled or refunded yet",
+  AuthorizationUsed: "USDC already executed that authorization",
 };
 
 /** "OverBudget(3)" -> { name: "OverBudget", args: ["3"], reason }. Unknown shapes keep the raw text as the name. */

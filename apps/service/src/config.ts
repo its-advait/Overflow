@@ -19,6 +19,9 @@ export function loadEnv(): void {
 
 const KeyOrAddress = z.string().regex(/^(0x[0-9a-fA-F]{64}|0x[0-9a-fA-F]{40})?$/, "RELAYER_PRIVATE_KEY must be a 0x 64-hex key, or the relayer's address when the key lives in a Foundry keystore");
 
+/** `.env.example` ships `NAME=` lines; an empty value means "use the default", not 0. */
+const blankAsUnset = <S extends z.ZodType>(schema: S) => z.preprocess((v) => (v === "" ? undefined : v), schema);
+
 export const ConfigSchema = z
   .object({
     BASE_SEPOLIA_RPC_URL: z.url(),
@@ -33,6 +36,14 @@ export const ConfigSchema = z
     DEMO_TOKEN: z.string().min(16, "DEMO_TOKEN must be at least 16 characters").optional(),
     EVENTS_POLL_MS: z.coerce.number().int().min(500).default(4000),
     OVERFLOW_DEPLOYMENTS_PATH: z.string().optional(),
+    /** Step 4: a "buy" verdict below this confidence opens a LOW_CONFIDENCE_SAMPLE exception instead of signing. */
+    SAMPLE_CONFIDENCE_MIN: blankAsUnset(z.coerce.number().min(0).max(1).default(0.7)),
+    /** Step 4: chunk keys requested per pre-funding sample (the seller caps it at 64). */
+    SAMPLE_SIZE: blankAsUnset(z.coerce.number().int().min(1).max(64).default(20)),
+    /** SCRIPTED mode: `record` saves every model answer to DEMO_SCRIPTED_FILE; `replay` answers from it and never calls the API. */
+    DEMO_SCRIPTED: blankAsUnset(z.enum(["record", "replay"]).optional()),
+    /** Recording path, relative to the repo root (default data/scripted/honest-seller.json). */
+    DEMO_SCRIPTED_FILE: blankAsUnset(z.string().min(1).default("data/scripted/honest-seller.json")),
   })
   .transform((e) => ({
     rpcUrl: e.BASE_SEPOLIA_RPC_URL,
@@ -42,6 +53,9 @@ export const ConfigSchema = z
     demoToken: e.DEMO_TOKEN,
     eventsPollMs: e.EVENTS_POLL_MS,
     deploymentsPath: e.OVERFLOW_DEPLOYMENTS_PATH,
+    sampleConfidenceMin: e.SAMPLE_CONFIDENCE_MIN,
+    sampleSize: e.SAMPLE_SIZE,
+    scripted: { mode: e.DEMO_SCRIPTED ?? ("off" as const), file: resolve(repoRoot(), e.DEMO_SCRIPTED_FILE) },
   }))
   .refine((c) => !c.demoMode || !!c.demoToken, { message: "DEMO_TOKEN is required when DEMO_MODE=true" })
   .refine((c) => /^0x[0-9a-fA-F]{64}$/.test(c.relayer.keyOrAddress ?? "") || (!!c.relayer.account && !!c.relayer.passwordFile), {

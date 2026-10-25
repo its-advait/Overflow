@@ -3,9 +3,13 @@ pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {OverflowTreasury} from "../../src/OverflowTreasury.sol";
+import {OverflowEscrow} from "../../src/OverflowEscrow.sol";
+import {IOverflowEscrow} from "../../src/IOverflowEscrow.sol";
+import {EscrowBaseTest} from "../escrow/EscrowBase.t.sol";
 
 /// Golden vectors shared with packages/payment-client/src/typed-data.test.ts: the TS digests must equal what USDC
-/// (TransferWithAuthorization, live Base Sepolia domain) and OverflowTreasury (CreateChild / PauseChild) compute.
+/// (TransferWithAuthorization, live Base Sepolia domain), OverflowTreasury (CreateChild / PauseChild) and
+/// OverflowEscrow (Accept) compute.
 contract TypedDataVectorsTest is Test {
     bytes32 constant EIP712_DOMAIN_TYPEHASH =
         keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
@@ -14,6 +18,7 @@ contract TypedDataVectorsTest is Test {
         "CreateChild(uint256 parentId,address key,uint256 cap,uint256 maxPerCall,uint256 expiry,bool restricted,bytes32 payeesHash,uint256 nonce,uint256 deadline)"
     );
     bytes32 constant PAUSE_CHILD_TYPEHASH = keccak256("PauseChild(uint256 target,uint256 nonce,uint256 deadline)");
+    bytes32 constant ACCEPT_TYPEHASH = keccak256("Accept(bytes32 orderId)");
     address constant USDC = 0x036CbD53842c5426634e7929541eC2318f3dCF7e;
     address constant TREASURY = 0xd3A74fA991CA0B5627d30EF27dC699C134848291;
     uint256 constant BASE_SEPOLIA = 84532;
@@ -24,6 +29,10 @@ contract TypedDataVectorsTest is Test {
     bytes32 constant CHILD_DIGEST = 0x85e21bc13253f2d4774b66478096c12606d1375c8c82532ad6f7629942872867;
     bytes32 constant PAUSE_DIGEST = 0x199b55db57c8e334a5d2ce35f8197bea0c4528e9b3297d3ccf583bef6aa6d0fe;
     bytes32 constant DELEG_SEP = 0x70a93dac43b2061c8fc826a973d59b1a987c11fb52c32c9cb24a3d9629e5f364;
+    address constant ESCROW = 0x5555555555555555555555555555555555555555;
+    bytes32 constant ACCEPT_ORDER_ID = hex"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";
+    bytes32 constant ACCEPT_SEP = 0x493f6a83af3748630f445cd61f61ed1583454bf5be101236428855356ad8abe1;
+    bytes32 constant ACCEPT_DIGEST = 0x57fdf9a6950dfd8c79161f2a2d9dd236bfdb6cf65a11fd10e8ac513a5e501370;
 
     function _sep(string memory name, string memory version, uint256 chainId, address c)
         internal
@@ -84,5 +93,34 @@ contract TypedDataVectorsTest is Test {
         vm.chainId(BASE_SEPOLIA);
         OverflowTreasury t = new OverflowTreasury(USDC, address(this));
         assertEq(t.DELEGATION_DOMAIN_SEPARATOR(), _sep("Overflow", "1", BASE_SEPOLIA, address(t)));
+    }
+
+    /// Accept vector: {"OverflowEscrow","1",84532,escrow} and keccak256(abi.encode(ACCEPT_TYPEHASH, orderId)).
+    function test_acceptDigest() public pure {
+        assertEq(_sep("OverflowEscrow", "1", BASE_SEPOLIA, ESCROW), ACCEPT_SEP);
+        bytes32 sh = keccak256(abi.encode(ACCEPT_TYPEHASH, ACCEPT_ORDER_ID));
+        assertEq(keccak256(abi.encodePacked("\x19\x01", ACCEPT_SEP, sh)), ACCEPT_DIGEST);
+    }
+}
+
+/// A real clone's acceptDigest() follows the same formula with its own address and the current chain id, so the
+/// TS mirror tracks whatever escrow the factory creates.
+contract TypedDataVectorsEscrowTest is EscrowBaseTest {
+    bytes32 constant EIP712_DOMAIN_TYPEHASH =
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+    uint256 constant BASE_SEPOLIA = 84532;
+
+    function test_escrowAcceptDigestMatchesFormula() public {
+        vm.chainId(BASE_SEPOLIA);
+        IOverflowEscrow.OrderTerms memory t = _terms(AMOUNT, BOND, 4);
+        OverflowEscrow e = _create(t);
+        bytes32 sep = keccak256(
+            abi.encode(EIP712_DOMAIN_TYPEHASH, keccak256("OverflowEscrow"), keccak256("1"), BASE_SEPOLIA, address(e))
+        );
+        assertEq(e.DOMAIN_SEPARATOR(), sep);
+        assertEq(e.ACCEPT_TYPEHASH(), keccak256("Accept(bytes32 orderId)"));
+        bytes32 expected =
+            keccak256(abi.encodePacked("\x19\x01", sep, keccak256(abi.encode(e.ACCEPT_TYPEHASH(), t.orderId))));
+        assertEq(e.acceptDigest(), expected);
     }
 }

@@ -630,8 +630,8 @@ Amounts are integer atomic units. `idempotencyKey` is unique.
 | `PUT /api/missions/:id/requests/:requestId`, `POST /api/missions/:id/confirm` | The owner edits one extracted requirement (only while `planning` and `open`); confirms the set (`planning` → `confirmed`). Propose and run answer 409 `requirements_unconfirmed` while a mission is `planning` |
 | `GET /api/missions`, `GET /api/missions/:id` | List missions; a mission with its requests, purchases and Fusion groups |
 | `GET /api/resources` | Candidates with coverage |
-| `POST /api/purchases/propose` | Oracle plus Fusion proposal |
-| `POST /api/purchases/:id/authorize` | Agent signs; the adapter submits |
+| `POST /api/purchases/propose` | Oracle plus Fusion proposal; with a Recourse seller wired, the seller's `POST /orders` answer is verified (hashes recomputed, treasury/USDC/price/manifest checked, escrow = `factory.predict`) and mirrored as an `escrow_orders` row in the same transaction; a failed check answers 502 `seller_terms_rejected` and writes nothing |
+| `POST /api/purchases/:id/authorize` | Steps 4 to 7 for one PROPOSED purchase (`Idempotency-Key` required). The sample judgment runs first: code fetches the cipher and manifest and verifies them against the escrow row (a mismatch ends the purchase `FAILED_BEFORE_FUNDING`, 409 `sample_mismatch`), then a random sample is decrypted and the model judges it against the mission's confirmed requirements (`skip` → `FAILED_BEFORE_FUNDING`, 409 `sample_skipped`). Only then the seller's 402 quote is checked against the order, the agent signs and the adapter submits. 202 with `submission.outcome` `submitted` (tx hash) / `rejected` (decoded treasury revert) / `unknown` (`PAYMENT_UNKNOWN`, reconcile before any retry) / `held`: a low-confidence `buy` raises a `LOW_CONFIDENCE_SAMPLE` exception, nothing is signed and the purchase stays `PROPOSED`; while that exception is open the route answers 409 `sample_low_confidence`, after approval the next call proceeds on the stored sample, after rejection it ends `FAILED_BEFORE_FUNDING`. A quote that disagrees with the order is never signed: `REJECTED` with `decodedRevert` `QuoteMismatch(<field>)` and 409 `quote_mismatch`. Funding is set only by the indexer from `OrderFunded` |
 | `GET /api/purchases/:id`, `GET /api/escrow/:id` | Order, chain and escrow state |
 | `GET /api/agents`, `POST /api/agents/:id/pause` | Tree; pause opens a controller approval |
 | `GET /api/activity`, `GET /events` (SSE) | History and live feed |
@@ -639,7 +639,7 @@ Amounts are integer atomic units. `idempotencyKey` is unique.
 | `GET /api/reconciliation`, `POST /api/reconciliation/run` | Last run (treasury and every escrow check, differences, materiality) with open exceptions; on-demand run |
 | `GET /api/treasury` | Overview money cards: USDC `balanceOf(treasury)` and `reservedTotal()` read at one block (null with the reason when no RPC is wired) plus the USDC the open, funded escrows hold |
 | `GET /api/exceptions?status`, `POST /api/exceptions/:id/decide` | Exceptions with their prepared controller request; the controller's offchain decision (onchain types: reject only) |
-| Seller: `GET /r/:id` (402), `POST /orders`, `GET /orders/:id/cipher`, `POST /orders/:id/sample` | Recourse seller protocol |
+| Seller: `GET /r/:id?order=` (402, payee = the per-order escrow), `GET /r/:id/manifest`, `POST /orders`, `GET /orders/:id`, `GET /orders/:id/cipher`, `POST /orders/:id/sample`, `GET /sellers`, `GET`/`PUT /sellers/:id/behavior` | Recourse seller protocol (SIMULATED sellers; behavior honest, swap or ghost) |
 
 There is no generic `/api/execute`.
 
@@ -676,6 +676,10 @@ For live pitches outside Hyphenate, swap the first two rows so the problem comes
 - An agent passes its cap: `OverBudget`; the controller raises the cap in Coinbase Wallet and work resumes.
 - Pausing the orchestrator stops its whole subtree.
 - Every refusal appears in the Blocked lane with its reason and a Basescan link.
+
+### Scripted replay (labeled fallback)
+
+`DEMO_SCRIPTED=record` saves every model answer of one mission, keyed by call site (`oracle.extract`, `sample.judge`, `mission.plan`, `mission.synthesize`, `agent.<role>`), to `data/scripted/<name>.json`. `DEMO_SCRIPTED=replay` answers each model call from that file and never calls the API; the call site runs the same Zod validation, and everything after the model (order terms, signing, settle, escrow funding, reveal, accept, indexing, ledger) runs for real with new transactions. Replay never fakes a chain result, and a missing or exhausted recording fails that call loudly. Labels: every service log line starts with `[SCRIPTED]`, each replayed call is an `oracle.model_call` event saying "SCRIPTED replay", `GET /` reports `scripted.mode`, and the web top bar shows the SCRIPTED badge from that field.
 
 ### A judge's own scenario
 

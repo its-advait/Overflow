@@ -13,7 +13,11 @@
     "sellers:demo": "tsx scripts/sellers-demo.ts",
     "mission:run": "tsx scripts/run-mission.ts",
     "preflight": "tsx scripts/preflight.ts",
-    "anvil:provision": "tsx scripts/anvil-provision.ts"
+    "anvil:provision": "tsx scripts/anvil-provision.ts",
+    "recourse:demo": "tsx scripts/recourse-demo.ts",
+    "flow:demo": "tsx scripts/flow-demo.ts",
+    "demo:preflight": "tsx scripts/demo-preflight.ts",
+    "demo:reset": "tsx scripts/demo-reset.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",

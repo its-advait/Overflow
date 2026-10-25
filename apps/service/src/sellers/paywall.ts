@@ -32,9 +32,13 @@ export type SellerEnv = {
 };
 
 export interface PaywallOptions {
-  amountAtomic: AtomicAmount;
-  payTo: () => Address | null;
+  /** Fixed price, or derived from the request (the Recourse /r route prices per order). */
+  amountAtomic: AtomicAmount | ((c: Context) => AtomicAmount);
+  /** Payee for this request; null answers 503 (fixture not configured). */
+  payTo: (c: Context) => Address | null;
   description: string;
+  /** Keep the query string in the 402 resource url (default: pathname only). */
+  keepQuery?: boolean | undefined;
   sellerUrl: string;
   facilitator: Facilitator | null;
   /** When null, paid retries answer 503 with this reason. */
@@ -85,12 +89,15 @@ export function payloadMatchesRequirement(payload: PaymentPayload, requirement: 
 
 export function paywall(opts: PaywallOptions): MiddlewareHandler<SellerEnv> {
   return async (c, next) => {
-    const payTo = opts.payTo();
+    const payTo = opts.payTo(c);
     if (!payTo) {
       return c.json({ error: "fixture_not_configured", message: `${opts.description}: payee address is not configured`, simulated: true }, 503);
     }
-    const requirement = requirementFor(payTo, opts.amountAtomic);
-    const required = buildPaymentRequired({ resourceUrl: `${opts.sellerUrl}${new URL(c.req.url).pathname}`, description: opts.description, requirement });
+    const amountAtomic = typeof opts.amountAtomic === "function" ? opts.amountAtomic(c) : opts.amountAtomic;
+    const requirement = requirementFor(payTo, amountAtomic);
+    const url = new URL(c.req.url);
+    const resourceUrl = `${opts.sellerUrl}${url.pathname}${opts.keepQuery ? url.search : ""}`;
+    const required = buildPaymentRequired({ resourceUrl, description: opts.description, requirement });
 
     const sigHeader = c.req.header(X402_HEADERS.paymentSignature);
     if (!sigHeader) return respond402(c, required, {});

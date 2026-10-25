@@ -1334,6 +1334,7 @@ export const serviceStatus: ServiceStatus = ServiceStatusSchema.parse({
   chainId: 84532,
   session: { organizationId: ORGANIZATION_ID, principal: "controller:mock" },
   indexer: { state: "idle", reason: `${MOCK_LABEL}: fixtures, no indexer` },
+  scripted: { mode: "off", recording: null },
 });
 
 // Judge controls (SIMULATED) -------------------------------------------------

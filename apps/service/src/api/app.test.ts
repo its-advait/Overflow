@@ -1,10 +1,23 @@
 import type { PaymentRequirements } from "@overflow/payment-client";
-import type { PurchaseOrder } from "@overflow/schemas";
+import type { Address, PurchaseOrder } from "@overflow/schemas";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createPurchaseService } from "../orchestration/purchase-service.js";
-import { ATTACKER, b32, fixtureMissionAndResource, purchaseInput, quoteFor, testDatabase, TREASURY } from "../test-db.js";
+import type { SampleJudge } from "../orchestration/sample-judgment.js";
+import { fakeModel, fakeSeller } from "../orchestration/sample-judgment.test-util.js";
+import { ATTACKER, b32, fixtureMissionAndResource, NOW, purchaseInput, quoteFor, SELLER, testDatabase, TREASURY } from "../test-db.js";
 import { createApp } from "./app.js";
 import type { PaymentAdapter } from "./ports.js";
+
+/** SIMULATED step 4: every purchase passes the sample with a fixed verdict; nothing is fetched or asked of a model. */
+function fakeJudge(): SampleJudge {
+  return {
+    cached: () => undefined,
+    judge: async (purchaseId) => ({
+      outcome: "buy",
+      sample: { id: `sample-${purchaseId}`, purchaseId, indices: [0], verdict: "buy", reason: "fake sample: fits", judge: "fake (SIMULATED, test)", rows: [], confidence: 1, simulated: true, createdAt: NOW },
+    }),
+  };
+}
 
 const JSON_HEADERS = { "content-type": "application/json" };
 // Response bodies are untyped JSON in these tests; every 2xx body was already parsed by its Zod response schema.
@@ -49,6 +62,7 @@ describe("REST API", () => {
     app = createApp({
       db: handle.db,
       ports: { adapters: { "overflow-facilitator": good.adapter } },
+      sampleJudge: fakeJudge(),
       session: { organizationId: "org-demo", principal: "owner", ownerAddress: null },
       treasury: TREASURY,
     }).app;
@@ -182,6 +196,7 @@ describe("REST API", () => {
       expect(body1.purchase.authorizationDigest).toBe(b32(0xd1));
       expect(body1.purchase.txHashes).toEqual([b32(0x77)]);
       expect(body1.submission).toEqual({ outcome: "submitted", txHash: b32(0x77) });
+      expect(body1.sample).toEqual({ id: "sample-p1", verdict: "buy", confidence: 1, reason: "fake sample: fits" });
       expect(body1.replayed).toBe(false);
       expect(good.calls).toEqual({ requirements: 1, prepare: 1, submit: 1 });
 
@@ -247,6 +262,7 @@ describe("REST API", () => {
       const { app: app2 } = createApp({
         db: handle.db,
         ports: { adapters: { "overflow-facilitator": evil.adapter } },
+        sampleJudge: fakeJudge(),
         session: { organizationId: "org-demo", principal: "owner", ownerAddress: null },
       });
       await service().propose({
@@ -264,12 +280,26 @@ describe("REST API", () => {
       expect(body.error.code).toBe("quote_mismatch");
       expect(body.error.details.field).toBe("payTo");
       expect(evil.calls).toEqual({ requirements: 1, prepare: 0, submit: 0 });
+      // REJECTED with a decoded reason so it shows in the Blocked lane; the quote was never signed.
       const p3 = (await handle.repos.purchases.getById("p3"))!;
-      expect(p3.status).toBe("FAILED_BEFORE_FUNDING");
+      expect(p3.status).toBe("REJECTED");
       expect(p3.authorizationDigest).toBeUndefined();
       const last = (await handle.repos.activityEvents.listByPurchase("p3")).at(-1)!;
+      expect(last.kind).toBe("policy.blocked");
+      expect(last.decodedRevert).toBe("QuoteMismatch(payTo)");
       expect(last.message).toMatch(/quote refused, not signed: quote mismatch on payTo/);
       expect(last.simulated).toBe(true);
+    });
+
+    it("answers 501 when no sample judge is wired (never signs without a sample)", async () => {
+      const bare = createApp({ db: handle.db, ports: { adapters: { "overflow-facilitator": good.adapter } }, session: { organizationId: "org-demo", principal: "owner", ownerAddress: null } });
+      const r5 = await handle.repos.resources.insert({ ...(await handle.repos.resources.getById("resource-1"))!, id: "resource-5", manifestHash: b32(11) });
+      await service().propose({ purchase: purchaseInput({ id: "p5", resourceId: r5.id, orderIdBytes32: b32(5), idempotencyKey: "k-p5" }), reason: "r", source: { kind: "oracle", reference: "t" } });
+      const res = await bare.app.request("/api/purchases/p5/authorize", { method: "POST", headers: { ...JSON_HEADERS, "Idempotency-Key": "auth-p5" }, body: "{}" });
+      expect(res.status).toBe(501);
+      expect((await json(res)).error.code).toBe("not_wired");
+      expect((await handle.repos.purchases.getById("p5"))!.status).toBe("PROPOSED");
+      expect(good.calls.requirements).toBe(1);
     });
 
     it("answers 501 when no adapter is registered for the order's path", async () => {
@@ -298,6 +328,123 @@ describe("REST API", () => {
       expect(body.activity).toHaveLength(3);
       expect((await app.request("/api/purchases/nope")).status).toBe(404);
       expect((await app.request("/api/escrow/p1")).status).toBe(404);
+    });
+  });
+
+  describe("POST /api/purchases/:id/authorize with the real sample judge (SIMULATED seller, scripted model)", () => {
+    const seller = fakeSeller();
+    let seq = 0;
+    const service = () => createPurchaseService(handle.db);
+
+    /** App wired like index.ts would: seller URL + in-process fetch + model; one purchase per SIMULATED order. */
+    async function setup(script: Parameters<typeof fakeModel>[0], swapIndex?: number) {
+      const n = ++seq;
+      const model = fakeModel(script);
+      const adapter = fakeAdapter((o) => quoteFor(o));
+      const api = createApp({
+        db: handle.db,
+        ports: { adapters: { "overflow-facilitator": adapter.adapter } },
+        oracle: model.model,
+        sellerUrl: seller.sellerUrl,
+        sellerFetch: seller.fetch,
+        sampleSize: 6, // every chunk of the 6-row SIMULATED order, so the swapped chunk is always sampled (deterministic, no 1-in-3 miss)
+        sampleConfidenceMin: 0.7,
+        session: { organizationId: "org-demo", principal: "owner", ownerAddress: null },
+        treasury: TREASURY,
+      });
+      const resource = await handle.repos.resources.insert({ ...(await handle.repos.resources.getById("resource-1"))!, id: `resource-j${n}`, manifestHash: b32(300 + n) });
+      const orderId = b32(3000 + n);
+      const escrowAddress = `0x${(0x7000 + n).toString(16).padStart(40, "0")}` as Address;
+      const order = seller.addOrder({ orderId, resourceId: resource.id, buyer: TREASURY, seller: SELLER, escrowAddress, swapIndex });
+      const id = `pj${n}`;
+      await service().propose({
+        purchase: purchaseInput({ id, resourceId: resource.id, orderIdBytes32: orderId, idempotencyKey: `k-${id}`, escrowAddress }),
+        escrow: order.escrow,
+        reason: "r",
+        source: { kind: "oracle", reference: "t" },
+        simulated: true,
+      });
+      const authorize = (key: string) => api.app.request(`/api/purchases/${id}/authorize`, { method: "POST", headers: { ...JSON_HEADERS, "Idempotency-Key": key }, body: "{}" });
+      return { id, api, model, adapter, authorize };
+    }
+
+    it("held: 202 outcome held, exception row, status PROPOSED; a second authorize is 409; approval proceeds on the stored sample", async () => {
+      const t = await setup([{ verdict: "buy", reason: "looks like US EV data but only four rows", confidence: 0.45 }]);
+      const res = await t.authorize("h-1");
+      expect(res.status).toBe(202);
+      const body = await json(res);
+      expect(body.submission.outcome).toBe("held");
+      expect(body.authorizationDigest).toBeUndefined();
+      expect(body.purchase.status).toBe("PROPOSED");
+      expect(body.sample).toMatchObject({ verdict: "buy", confidence: 0.45, reason: "looks like US EV data but only four rows" });
+      const exception = (await handle.repos.exceptions.getById(body.submission.exceptionId))!;
+      expect(exception).toMatchObject({ type: "LOW_CONFIDENCE_SAMPLE", status: "open", purchaseId: t.id, requestedBy: "system:oracle" });
+      expect(exception.details).toMatchObject({ sampleId: body.sample.id, confidence: 0.45 });
+      expect(t.adapter.calls).toEqual({ requirements: 0, prepare: 0, submit: 0 });
+      expect(t.model.calls).toBe(1);
+
+      const again = await t.authorize("h-2");
+      expect(again.status).toBe(409);
+      const err = (await json(again)).error;
+      expect(err.code).toBe("sample_low_confidence");
+      expect(err.details).toMatchObject({ exceptionId: exception.id, sampleId: body.sample.id });
+      expect(t.model.calls).toBe(1);
+
+      const decide = await t.api.app.request(`/api/exceptions/${exception.id}/decide`, {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ decidedBy: "owner", decision: "approve", reason: "the rows are the right market" }),
+      });
+      expect(decide.status).toBe(200);
+      const after = await t.authorize("h-3");
+      expect(after.status).toBe(202);
+      const body3 = await json(after);
+      expect(body3.submission).toEqual({ outcome: "submitted", txHash: b32(0x77) });
+      expect(body3.purchase.status).toBe("PAYMENT_PENDING");
+      expect(body3.sample.id).toBe(body.sample.id);
+      // One sample row, one model call for the whole episode.
+      expect(await handle.repos.samples.listByPurchase(t.id)).toHaveLength(1);
+      expect(t.model.calls).toBe(1);
+      expect(t.adapter.calls).toEqual({ requirements: 1, prepare: 1, submit: 1 });
+    });
+
+    it("skip: 409 sample_skipped and FAILED_BEFORE_FUNDING; nothing signed", async () => {
+      const t = await setup([{ verdict: "skip", reason: "state-level US rows; the mission needs EU countries", confidence: 0.9 }]);
+      const res = await t.authorize("s-1");
+      expect(res.status).toBe(409);
+      const err = (await json(res)).error;
+      expect(err.code).toBe("sample_skipped");
+      expect(err.details.reason).toMatch(/EU countries/);
+      expect((await handle.repos.purchases.getById(t.id))!.status).toBe("FAILED_BEFORE_FUNDING");
+      expect(t.adapter.calls).toEqual({ requirements: 0, prepare: 0, submit: 0 });
+      const kinds = (await handle.repos.activityEvents.listByPurchase(t.id)).map((e) => e.kind);
+      expect(kinds).toEqual(["purchase.proposed", "oracle.model_call", "oracle.sample", "purchase.status"]);
+    });
+
+    it("a swapped chunk is caught by code: 409 sample_skipped with no model call", async () => {
+      const t = await setup([], 1);
+      const res = await t.authorize("w-1");
+      expect(res.status).toBe(409);
+      const err = (await json(res)).error;
+      expect(err.code).toBe("sample_skipped");
+      expect(err.details.reason).toMatch(/decrypt-mismatch/);
+      expect(t.model.calls).toBe(0);
+      expect((await handle.repos.purchases.getById(t.id))!.status).toBe("FAILED_BEFORE_FUNDING");
+    });
+
+    it("without a model the judge answers 503 and the purchase stays PROPOSED", async () => {
+      const t = await setup([]);
+      const noModel = createApp({
+        db: handle.db,
+        ports: { adapters: { "overflow-facilitator": t.adapter.adapter } },
+        sellerUrl: seller.sellerUrl,
+        sellerFetch: seller.fetch,
+        session: { organizationId: "org-demo", principal: "owner", ownerAddress: null },
+      });
+      const res = await noModel.app.request(`/api/purchases/${t.id}/authorize`, { method: "POST", headers: { ...JSON_HEADERS, "Idempotency-Key": "m-1" }, body: "{}" });
+      expect(res.status).toBe(503);
+      expect((await json(res)).error.code).toBe("oracle_unavailable");
+      expect((await handle.repos.purchases.getById(t.id))!.status).toBe("PROPOSED");
     });
   });
 
@@ -432,7 +579,8 @@ describe("REST API", () => {
       expect((await post("/api/exceptions/nope/decide", { decidedBy: "owner", decision: "approve", reason: "r" })).status).toBe(404);
 
       const all = await json(await app.request("/api/exceptions?status=all"));
-      expect(all.exceptions.map((e: { type: string }) => e.type).sort()).toEqual(["PAUSE_REQUEST", "UNCLEAR_LICENSE"]);
+      // The LOW_CONFIDENCE_SAMPLE row is the one the controller approved in the authorize tests above.
+      expect(all.exceptions.map((e: { type: string }) => e.type).sort()).toEqual(["LOW_CONFIDENCE_SAMPLE", "PAUSE_REQUEST", "UNCLEAR_LICENSE"]);
       expect((await json(await app.request("/api/exceptions"))).exceptions.map((e: { type: string }) => e.type)).toEqual(["PAUSE_REQUEST"]);
     });
 

@@ -146,7 +146,7 @@ describe("exceptions and controller requests (SIMULATED fixture)", () => {
       const done = await svc.listRequests("done");
       expect(done.map((r) => r.action.kind).sort()).toEqual(["pause", "raise-cap", "set-allow"]);
       const allowLog = fixture.logs.find((l) => l.blockNumber === "102" && l.logIndex === 0)!;
-      const ownerLog = fixture.logs.find((l) => l.blockNumber === "110" && l.logIndex === 1)!;
+      const ownerLog = fixture.logs.find((l) => l.blockNumber === "110" && l.logIndex === 2)!;
       expect(done.find((r) => r.action.kind === "set-allow")!.txHash).toBe(allowLog.transactionHash);
       expect(done.find((r) => r.action.kind === "set-allow")!.submission?.requestId).toBe("wmcp-allow"); // the submission survives
       expect(done.find((r) => r.action.kind === "raise-cap")!.txHash).toBe(ownerLog.transactionHash);

@@ -14,6 +14,11 @@ import { resolveAgentKeys } from "../src/orchestration/agent-keys.js";
 import { ROLES } from "../src/orchestration/delegation-plan.js";
 import { resolveSellerConfig } from "../src/sellers/config.js";
 import { SEARCH_PRICE_ATOMIC } from "../src/sellers/prices.js";
+import { resolveRecourseConfig } from "../src/sellers/recourse/config.js";
+
+/** Cheapest SIMULATED Recourse listing (listing-national-monthly-2021-2022: 4 USDC); its bond is bps of this. */
+const CHEAPEST_RECOURSE_PRICE = BigInt(toAtomic("4"));
+const MIN_SELLER_GAS_WEI = 500_000_000_000_000n; // 0.0005 ETH
 
 type Row = { check: string; status: "PASS" | "FAIL" | "WARN" | "INFO"; detail: string };
 const rows: Row[] = [];
@@ -99,6 +104,32 @@ async function main(): Promise<void> {
   const [balance, floor, reservedTotal] = await Promise.all([usdcOf(d.treasury), read<bigint>("floor"), read<bigint>("reservedTotal").catch(() => 0n)]);
   const need = floor + reservedTotal + BigInt(SEARCH_PRICE_ATOMIC);
   add("treasury USDC covers floor + search price", balance >= need, `balance ${formatUsdc(balance)} USDC, floor ${formatUsdc(floor)}, reserved ${formatUsdc(reservedTotal)}, search ${formatUsdc(SEARCH_PRICE_ATOMIC)}`);
+  add("treasury USDC covers the cheapest recourse listing", balance >= floor + reservedTotal + CHEAPEST_RECOURSE_PRICE, `recourse: cheapest listing ${formatUsdc(CHEAPEST_RECOURSE_PRICE)} USDC; balance ${formatUsdc(balance)} USDC`);
+
+  // --- SIMULATED Recourse sellers: factory wiring, seller keys (gas ETH + bond USDC only) --------------------------
+  if (!d.escrowFactory) add("escrowFactory in deployments", false, "null: redeploy with the factory (pnpm contracts:deploy); Recourse sellers stay idle");
+  else {
+    const code = await client.getCode({ address: d.escrowFactory });
+    const onTreasury = await read<Address>("escrowFactory");
+    add("escrowFactory has code", !!code && code !== "0x", `${d.escrowFactory} (${explorerUrl("address", d.escrowFactory)})`);
+    add("treasury.escrowFactory() matches deployments", getAddress(onTreasury) === getAddress(d.escrowFactory), `treasury says ${onTreasury}`);
+  }
+  const recourse = resolveRecourseConfig();
+  if (!recourse.ok) add("SELLER_KEYS (recourse sellers)", false, recourse.reason);
+  else {
+    const cfg = recourse.config;
+    add("SELLER_KEYS (recourse sellers)", cfg.sellers.size >= 1, `${cfg.sellers.size} seller key(s): ${[...cfg.sellers.values()].map((s) => `${s.sellerId}=${cfg.behaviors.get(s.sellerId) ?? "honest"}`).join(", ")}`);
+    const bond = (CHEAPEST_RECOURSE_PRICE * BigInt(cfg.bondBps)) / 10000n;
+    const seen = new Set<string>();
+    for (const s of cfg.sellers.values()) {
+      const addr = getAddress(s.account.address);
+      if (seen.has(addr)) continue;
+      seen.add(addr);
+      const [eth, usdc] = await Promise.all([client.getBalance({ address: addr }), usdcOf(addr)]);
+      add(`seller ${addr.slice(0, 10)} gas ETH`, eth === 0n ? false : eth < MIN_SELLER_GAS_WEI ? "warn" : true, `${eth} wei${eth < MIN_SELLER_GAS_WEI ? " (< 0.0005 ETH: pnpm --filter @overflow/scripts dev-fund-gas --to " + addr + ")" : ""}`);
+      add(`seller ${addr.slice(0, 10)} bond USDC`, usdc >= bond ? true : "warn", `${formatUsdc(usdc)} USDC, cheapest bond ${formatUsdc(bond)} USDC (${cfg.bondBps} bps of ${formatUsdc(CHEAPEST_RECOURSE_PRICE)})${usdc >= bond ? "" : " -> pnpm dev:fund " + formatUsdc(bond) + " --to " + addr}`);
+    }
+  }
 
   // --- relayer (gas) and owner (setAllow) ----------------------------------------------------------------------
   try {

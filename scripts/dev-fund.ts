@@ -7,10 +7,12 @@
  * (never logged); otherwise shells out to `cast send --account <keystore> --password-file <path>` so no
  * private key is loaded into this process.
  *
- * Usage: pnpm dev:fund <usdc amount, e.g. 5 or 0.50>
+ * Usage: pnpm dev:fund <usdc amount, e.g. 5 or 0.50> [--to <address>]
+ *   --to (DEV ONLY): send to another address instead of the treasury, e.g. bond USDC for a SIMULATED Recourse
+ *   seller key (SELLER_KEYS). Seller keys hold gas ETH and bond USDC only.
  */
 import { spawnSync } from "node:child_process";
-import { createWalletClient, erc20Abi, http } from "viem";
+import { createWalletClient, erc20Abi, getAddress, http } from "viem";
 import type { PrivateKeyAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
 import { resolveSigner } from "@overflow/payment-client/keystore";
@@ -20,13 +22,25 @@ import { assertChainId, deployerAddress, loadEnv, publicClient, requireEnv } fro
 async function main(): Promise<void> {
   console.log("[DEV ONLY] dev-fund: SIMULATES the controller funding the treasury. Not for the demo.");
   loadEnv();
-  const human = process.argv[2];
+  const args = process.argv.slice(2);
+  const toIndex = args.indexOf("--to");
+  const toOverride = toIndex >= 0 ? args[toIndex + 1] : undefined;
+  const human = args.find((a, i) => !a.startsWith("--") && i !== toIndex + 1);
   if (!human) {
-    console.error("usage: pnpm dev:fund <usdc amount>");
+    console.error("usage: pnpm dev:fund <usdc amount> [--to <address>]");
     process.exit(2);
   }
   const amount = atomicToBigInt(toAtomic(human));
   const d = await loadDeployments();
+  let recipient: `0x${string}` = d.treasury;
+  if (toIndex >= 0) {
+    if (!toOverride || !/^0x[0-9a-fA-F]{40}$/.test(toOverride)) {
+      console.error(`--to is not an address: ${toOverride ?? "(missing)"}`);
+      process.exit(2);
+    }
+    recipient = getAddress(toOverride);
+    console.log(`[DEV ONLY] --to ${recipient}: funding this address instead of the treasury (e.g. a SIMULATED seller's bond USDC)`);
+  }
   const client = publicClient();
   await assertChainId(client);
   const rpc = requireEnv("BASE_SEPOLIA_RPC_URL");
@@ -50,16 +64,16 @@ async function main(): Promise<void> {
   }
 
   const txHash = /^0x[0-9a-fA-F]{64}$/.test(process.env["DEPLOYER_PRIVATE_KEY"] ?? "")
-    ? await sendWithEnvKey(client, d.token, d.treasury, amount, funder, rpc)
-    : sendWithCast(d.token, d.treasury, amount, funder, account, passwordFile, rpc);
+    ? await sendWithEnvKey(client, d.token, recipient, amount, funder, rpc)
+    : sendWithCast(d.token, recipient, amount, funder, account, passwordFile, rpc);
   const after = await client.readContract({
     address: d.token,
     abi: erc20Abi,
     functionName: "balanceOf",
-    args: [d.treasury],
+    args: [recipient],
   });
   console.log(`tx ${explorerUrl("tx", txHash)}`);
-  console.log(`treasury balance now ${formatUsdc(after)} USDC`);
+  console.log(`${recipient === d.treasury ? "treasury" : recipient} balance now ${formatUsdc(after)} USDC`);
 }
 
 type Client = ReturnType<typeof publicClient>;
@@ -81,7 +95,7 @@ async function sendWithEnvKey(
     process.exit(2);
   }
   const wallet = createWalletClient({ account: acct, chain: baseSepolia, transport: http(rpc) });
-  console.log(`sending ${formatUsdc(amount)} USDC from ${funder} to treasury ${treasury} (${signer.source})`);
+  console.log(`sending ${formatUsdc(amount)} USDC from ${funder} to ${treasury} (${signer.source})`);
   const { request } = await client.simulateContract({
     address: token,
     abi: erc20Abi,
@@ -110,7 +124,7 @@ function sendWithCast(
   passwordFile: string | undefined,
   rpc: string,
 ): `0x${string}` {
-  console.log(`sending ${formatUsdc(amount)} USDC from ${funder} to treasury ${treasury} via cast (${account})`);
+  console.log(`sending ${formatUsdc(amount)} USDC from ${funder} to ${treasury} via cast (${account})`);
   const res = spawnSync(
     "cast",
     [

@@ -494,12 +494,30 @@ importers:
 
   scripts:
     dependencies:
+      '@overflow/database':
+        specifier: workspace:*
+        version: link:../packages/database
+      '@overflow/datasets':
+        specifier: workspace:*
+        version: link:../packages/datasets
+      '@overflow/fusion':
+        specifier: workspace:*
+        version: link:../packages/fusion
+      '@overflow/oracle':
+        specifier: workspace:*
+        version: link:../packages/oracle
       '@overflow/payment-client':
         specifier: workspace:*
         version: link:../packages/payment-client
+      '@overflow/recourse-crypto':
+        specifier: workspace:*
+        version: link:../packages/recourse-crypto
       '@overflow/schemas':
         specifier: workspace:*
         version: link:../packages/schemas
+      hono:
+        specifier: ^4.13.13
+        version: 4.13.13
       viem:
         specifier: ^2.57.10
         version: 2.57.10(typescript@7.0.2)(zod@4.6.7)

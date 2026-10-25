@@ -63,7 +63,7 @@ export function eventSignature(ev: AbiEvent): string {
   return `${ev.name}(${ev.inputs.map((i) => i.type).join(",")})`;
 }
 
-/** topic0 -> { kind, event } for every indexed event. Selectors are distinct across the three ABIs. */
+/** topic0 -> { kind, event } for every indexed event. Selectors are distinct across the four ABIs. */
 export const EVENT_BY_TOPIC: ReadonlyMap<`0x${string}`, { kind: ContractKind; event: AbiEvent }> = (() => {
   const m = new Map<`0x${string}`, { kind: ContractKind; event: AbiEvent }>();
   const add = (kind: ContractKind, list: readonly AbiEvent[]): void => {

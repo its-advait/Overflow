@@ -24,12 +24,6 @@ export async function purchaseForOrder(repos: Repositories, orderId: string): Pr
   return list.find((p) => !isTerminalStatus(p.status)) ?? list.at(-1);
 }
 
-/** The stored factory OrderCreated log for an order, if the indexer has seen it. */
-export async function orderCreatedFor(repos: Repositories, orderId: string): Promise<ChainTransaction | undefined> {
-  const rows = await repos.chainTransactions.listByEvent("OrderCreated");
-  return rows.find((r) => typeof r.args["orderId"] === "string" && same(r.args["orderId"], orderId));
-}
-
 /** The stored factory OrderCreated log naming this escrow, if the indexer has seen it. */
 export async function orderCreatedForEscrow(repos: Repositories, escrow: Address): Promise<ChainTransaction | undefined> {
   const rows = await repos.chainTransactions.listByEvent("OrderCreated");

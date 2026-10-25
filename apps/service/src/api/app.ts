@@ -7,7 +7,9 @@ import { createActivityBus, type ActivityBus, type IndexerStatus } from "../chai
 import { createExceptionService } from "../exceptions/service.js";
 import type { MissionRunner } from "../orchestration/mission-runner.js";
 import { createOraclePort, notWiredOrderTerms, type OracleModel, type OrderTermsPort } from "../orchestration/oracle-port.js";
+import { createPurchaseFlow } from "../orchestration/purchase-flow.js";
 import { createPurchaseService } from "../orchestration/purchase-service.js";
+import { createSampleJudge, notWiredSampleJudge, type SampleFetch, type SampleJudge } from "../orchestration/sample-judgment.js";
 import type { ApiDeps } from "./deps.js";
 import { ApiError, errorResponse, type ApiEnv } from "./http.js";
 import { defaultPorts, type OrchestrationPort, type Ports } from "./ports.js";
@@ -43,6 +45,19 @@ export interface CreateAppOptions {
   orderTerms?: OrderTermsPort | undefined;
   /** Mission runner (orchestrator + three sub-agents). Omitted: POST /api/missions/:id/run answers 501. */
   runner?: MissionRunner | undefined;
+  /**
+   * Step 4 sample judge. Omitted: built from `oracle` + `sellerUrl` + `sellerFetch` when both seller options are
+   * present (the judge answers 503 while `oracle` is null); otherwise a judge that refuses with 501, so authorize
+   * never signs without a sample.
+   */
+  sampleJudge?: SampleJudge | undefined;
+  /** Base URL of the SIMULATED Recourse seller app (cipher, sample and manifest URLs are rebuilt from it). */
+  sellerUrl?: string | undefined;
+  /** How to reach the seller app (in-process `sellerApp.request` in production, a fake in tests). */
+  sellerFetch?: SampleFetch | undefined;
+  /** SAMPLE_SIZE (default 20) and SAMPLE_CONFIDENCE_MIN (default 0.7). */
+  sampleSize?: number | undefined;
+  sampleConfidenceMin?: number | undefined;
 }
 
 /**
@@ -68,11 +83,32 @@ function withRunner(port: OrchestrationPort, runner: MissionRunner | undefined):
 export function createApp(opts: CreateAppOptions) {
   const base = defaultPorts();
   const bus = opts.bus ?? createActivityBus();
+  const repos = createRepositories(opts.db);
+  const purchases = createPurchaseService(opts.db, { publish: (event) => bus.publish(event) });
+  const exceptions = createExceptionService({ db: opts.db, treasury: opts.treasury ?? null, bus });
+  const adapters = opts.ports?.adapters ?? base.adapters;
+  const policy = opts.ports?.policy ?? base.policy;
+  const judge =
+    opts.sampleJudge ??
+    (opts.sellerUrl && opts.sellerFetch
+      ? createSampleJudge({
+          db: opts.db,
+          bus,
+          exceptions,
+          purchases,
+          sellerUrl: opts.sellerUrl,
+          fetch: opts.sellerFetch,
+          model: opts.oracle ?? null,
+          sampleSize: opts.sampleSize ?? 20,
+          confidenceMin: opts.sampleConfidenceMin ?? 0.7,
+        })
+      : notWiredSampleJudge());
   const deps: ApiDeps = {
     db: opts.db,
-    repos: createRepositories(opts.db),
-    purchases: createPurchaseService(opts.db, { publish: (event) => bus.publish(event) }),
-    exceptions: createExceptionService({ db: opts.db, treasury: opts.treasury ?? null, bus }),
+    repos,
+    purchases,
+    exceptions,
+    flow: createPurchaseFlow({ purchases, repos, exceptions, judge, adapters, policy }),
     bus,
     indexerStatus: opts.indexerStatus ?? (() => ({ state: "idle", reason: "no indexer attached" })),
     ports: {
@@ -87,8 +123,8 @@ export function createApp(opts: CreateAppOptions) {
           }),
           opts.runner,
         ),
-      adapters: opts.ports?.adapters ?? base.adapters,
-      policy: opts.ports?.policy ?? base.policy,
+      adapters,
+      policy,
       reconciliation: opts.ports?.reconciliation ?? base.reconciliation,
       treasuryRead: opts.ports?.treasuryRead ?? base.treasuryRead,
       escrowRead: opts.ports?.escrowRead ?? base.escrowRead,

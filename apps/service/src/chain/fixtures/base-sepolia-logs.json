@@ -244,7 +244,7 @@
       "blockNumber": "110",
       "blockTimestamp": "1700000000",
       "transactionHash": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff000b",
-      "logIndex": 1
+      "logIndex": 2
     },
     {
       "address": "0x1111111111111111111111111111111111111111",
@@ -256,7 +256,7 @@
       "blockNumber": "110",
       "blockTimestamp": "1700000000",
       "transactionHash": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff000b",
-      "logIndex": 3
+      "logIndex": 4
     },
     {
       "address": "0x1111111111111111111111111111111111111111",
@@ -268,7 +268,7 @@
       "blockNumber": "110",
       "blockTimestamp": "1700000000",
       "transactionHash": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff000c",
-      "logIndex": 2
+      "logIndex": 3
     },
     {
       "address": "0x5555555555555555555555555555555555555555",

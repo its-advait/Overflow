@@ -8,6 +8,7 @@ import { runAgent, type AgentClient, type AgentRunResult } from "./agent-loop.js
 import type { AgentKeys } from "./agent-keys.js";
 import { createChildren, pauseDescendant, readNode, readNodeOfKey, type ChildNode, type DelegationRelay, type NodeReader } from "./delegation.js";
 import { ORCHESTRATOR_AGENT_ID, ROLE_AGENT_IDS, ROLES, type Role, type RolePolicies } from "./delegation-plan.js";
+import { stepClient, type ScriptedModel } from "./scripted-model.js";
 import { executeTool, type ToolContext } from "./tools.js";
 
 // ---------------------------------------------------------------------------------------------------
@@ -22,7 +23,8 @@ export interface PlannerClient extends AgentClient {
 export interface MissionRunnerDeps {
   db: Db;
   bus: ActivityBus;
-  model: { client: PlannerClient; model: string };
+  /** `scripted` (DEMO_SCRIPTED record/replay) wraps the client per step; absent means live calls. */
+  model: { client: PlannerClient; model: string; scripted?: ScriptedModel | undefined };
   treasury: Address;
   chain: NodeReader;
   relay: DelegationRelay;
@@ -72,7 +74,7 @@ export function createMissionRunner(d: MissionRunnerDeps) {
 
   async function plan(mission: MissionRecord): Promise<Record<Role, string>> {
     try {
-      const response = await d.model.client.messages.parse({
+      const response = await stepClient(d.model, "mission.plan", mission.id).messages.parse({
         model: d.model.model,
         max_tokens: 4000,
         system: "You are the orchestrator of a team of three sub-agents (research, finance, verification) buying data for a company. Write one concrete assignment brief per role for the mission. Agents can list catalog resources, read samples, call a paid search/scrape API, fetch seller pages and propose purchases; they cannot pay for datasets directly.",
@@ -93,7 +95,7 @@ export function createMissionRunner(d: MissionRunnerDeps) {
   async function synthesize(mission: MissionRecord, agents: AgentRunResult[]): Promise<string> {
     const Synthesis = z.object({ recommendation: z.string().min(1).max(3000) });
     try {
-      const response = await d.model.client.messages.parse({
+      const response = await stepClient(d.model, "mission.synthesize", mission.id).messages.parse({
         model: d.model.model,
         max_tokens: 3000,
         system: "You are the orchestrator. Merge your sub-agents' reports into one recommendation for the controller: what to buy, why, what was refused by treasury policy and what still needs a human.",
@@ -165,7 +167,7 @@ export function createMissionRunner(d: MissionRunnerDeps) {
         const agents = await Promise.all(
           children.map((child) =>
             runAgent({
-              client: d.model.client,
+              client: stepClient(d.model, `agent.${child.role}`, mission.id),
               model: d.model.model,
               ctx: childContext(mission, child),
               role: child.role,

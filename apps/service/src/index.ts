@@ -3,14 +3,17 @@ import { serve } from "@hono/node-server";
 import { createDatabase, createRepositories, seed } from "@overflow/database";
 import { oracleModelFromEnv } from "@overflow/oracle";
 import { resolveSigner } from "@overflow/payment-client/keystore";
-import { CHAIN_ID, loadDeployments, PACKAGE_NAME as SCHEMAS } from "@overflow/schemas";
+import { CHAIN_ID, formatUsdc, loadDeployments, PACKAGE_NAME as SCHEMAS, type Address } from "@overflow/schemas";
+import { erc20Abi, type AbiEvent } from "viem";
 import { createApp } from "./api/index.js";
+import type { PaymentAdapter } from "./api/ports.js";
 import { verifyBoot } from "./chain/boot";
 import { viemChainClient } from "./chain/client";
 import { viemEscrowRead } from "./chain/escrow-read.js";
 import { viemTreasuryRead } from "./chain/treasury-read.js";
 import { createActivityBus, createIndexer, createLogSource, readTreasurySnapshot, resolveIndexerConfig, type Indexer } from "./chain/index.js";
 import { loadEnv, readConfig } from "./config";
+import { createExceptionService } from "./exceptions/service.js";
 import { createFacilitatorApp } from "./facilitator/app";
 import { bridgeFacilitatorRefusals } from "./facilitator/activity-bridge";
 import { createBus, createLogPoller } from "./facilitator/events";
@@ -18,9 +21,15 @@ import { facilitatorViaApp } from "./facilitator/in-process.js";
 import { createRelayer } from "./facilitator/relayer";
 import { MemoryStore } from "./facilitator/store";
 import { createReconciliation, type Reconciliation } from "./ledger/index.js";
+import { createDeliveryWatcher } from "./orchestration/delivery-watcher.js";
 import {
   AGENT_KEYS_LIMITATION,
   createMissionRunner,
+  createPurchaseService,
+  createSampleJudge,
+  createScriptedModel,
+  createSellerOrderTerms,
+  notWiredSampleJudge,
   orchestrationStatus,
   relayViaApp,
   resolveAgentKeys,
@@ -28,13 +37,25 @@ import {
   seedCatalog,
   type MissionRunner,
   type OracleModel,
+  type OrderTermsPort,
+  type PlannerClient,
+  type SampleFetch,
+  type SampleJudge,
 } from "./orchestration/index.js";
+import { createNodeSigners, type NodeSigners } from "./payment/node-signers.js";
+import { createOverflowFacilitatorAdapter, viemAdapterChain, type AdapterPublicClient } from "./payment/overflow-adapter.js";
 import { createSweepReconciler, MemoryExceptions, MemoryLedger, MemoryPurchaseIndex } from "./reconciliation/sweeps";
 import { createRecoursePort, isAnvil, redact, resolveRecourseAccounts, type RecourseRunner } from "./recourse/index.js";
 import { viemNetworkInfo } from "./chain/network-info.js";
 import { createSellerApp, resolveSellerConfig, sellersStatus } from "./sellers/index.js";
+import { viemRecourseChain, viemRecourseReads } from "./sellers/recourse/chain.js";
+import { resolveRecourseConfig } from "./sellers/recourse/config.js";
+import { loadRecourseCatalog } from "./sellers/recourse/datasets.js";
+import { createRecourseSellers } from "./sellers/recourse/index.js";
 
-const log = (line: string) => console.log(`${new Date().toISOString()} ${line}`);
+/** Every line carries the scripted mode once it is known: [SCRIPTED] in replay, [RECORDING] in record (Leash's setPrefix). */
+let logPrefix = "";
+const log = (line: string) => console.log(`${new Date().toISOString()} ${logPrefix}${line}`);
 
 /**
  * One process, three listeners' worth of modules:
@@ -46,6 +67,8 @@ const log = (line: string) => console.log(`${new Date().toISOString()} ${line}`)
 async function main(): Promise<void> {
   loadEnv();
   const config = readConfig();
+  if (config.scripted.mode === "replay") logPrefix = "[SCRIPTED] ";
+  else if (config.scripted.mode === "record") logPrefix = "[RECORDING] ";
   const deployments = await loadDeployments(config.deploymentsPath);
 
   // Signer: a Foundry keystore decrypted in memory (RELAYER_ACCOUNT + RELAYER_PASSWORD_FILE) or a dev key. Never logged.
@@ -64,6 +87,7 @@ async function main(): Promise<void> {
   // Database: DATABASE_URL selects Postgres; otherwise PGlite at PGLITE_DATA_DIR (or in-memory). Migrate, then seed
   // the SIMULATED demo company and its agents (idempotent), then the SIMULATED seller catalog into `resources`.
   const database = await createDatabase({ log: console.log });
+  const activityBus = createActivityBus();
   await database.migrate();
   log(`[database] migrations applied (dialect=${database.dialect}, from ${database.migrationsFolder})`);
   const seeded = await seed(database.db);
@@ -71,16 +95,29 @@ async function main(): Promise<void> {
   const catalog = await seedCatalog(database.db);
   log(`[catalog] SIMULATED catalog: ${catalog.total} listings (${catalog.inserted} inserted, ${catalog.existing} existing) from ${catalog.catalogPath}`);
 
-  // Oracle extraction model: only with ANTHROPIC_API_KEY and CLAUDE_MODEL; otherwise plan answers 503.
+  // Model: ANTHROPIC_API_KEY + CLAUDE_MODEL give the live client; otherwise plan/authorize answer 503 and the runner idles.
+  // DEMO_SCRIPTED=record wraps the live client and saves every answer; DEMO_SCRIPTED=replay needs no API key at all:
+  // answers come from the recording (loud failure if it is missing), everything after the model stays real.
   let oracle: OracleModel | null = null;
-  if (process.env["ANTHROPIC_API_KEY"] && process.env["CLAUDE_MODEL"]?.trim()) {
-    oracle = { client: new Anthropic(), model: oracleModelFromEnv() };
+  const liveClient = process.env["ANTHROPIC_API_KEY"] && process.env["CLAUDE_MODEL"]?.trim() ? new Anthropic() : null;
+  if (config.scripted.mode === "replay") {
+    const scripted = createScriptedModel({ mode: "replay", file: config.scripted.file, live: null, model: null, audit: createRepositories(database.db).activityEvents, publish: (e) => activityBus.publish(e), log });
+    oracle = { client: scripted.forStep("oracle.extract", "boot") as unknown as OracleModel["client"], model: scripted.model, scripted };
+    log(`[oracle] ${scripted.status()}`);
+  } else if (config.scripted.mode === "record") {
+    if (!liveClient) throw new Error("DEMO_SCRIPTED=record needs ANTHROPIC_API_KEY and CLAUDE_MODEL: a recording is made from real model answers");
+    const scripted = createScriptedModel({ mode: "record", file: config.scripted.file, live: liveClient as unknown as PlannerClient, model: oracleModelFromEnv(), log });
+    oracle = { client: liveClient, model: scripted.model, scripted };
+    log(`[oracle] ${scripted.status()}`);
+  } else if (liveClient) {
+    oracle = { client: liveClient, model: oracleModelFromEnv() };
     log(`[oracle] extraction model ${oracle.model}`);
   } else {
     log("[oracle] idle: ANTHROPIC_API_KEY / CLAUDE_MODEL not set; POST /api/missions/:id/plan answers 503");
   }
 
-  // Facilitator: the one relayer, the treasury log poller and the settle/reserve/release routes.
+  // Facilitator: the one relayer, the treasury log poller and the settle/reserve/release routes. The same relayer
+  // (one nonce manager per key) later submits the buyer's accept / complaint / timeout calls for the delivery watcher.
   const facilitatorBus = createBus();
   const poller = createLogPoller({ client, treasury: boot.treasury, bus: facilitatorBus, fromBlock: boot.blockNumber, intervalMs: config.eventsPollMs, log });
   // The ONE relayer: every broadcast (settle/reserve/delegate and the recourse runner's escrow calls) shares its nonce manager.
@@ -100,7 +137,6 @@ async function main(): Promise<void> {
   });
 
   // Chain indexer + ledger reconciliation: read-only, over the activity bus the API streams.
-  const activityBus = createActivityBus();
   // The SIMULATED bypass's USDC refusal has no other path into the audit trail (no agent tool, no logs); bridge it.
   bridgeFacilitatorRefusals({ facilitatorBus, repos: createRepositories(database.db), activityBus, log });
   const indexerConfig = await resolveIndexerConfig();
@@ -144,16 +180,160 @@ async function main(): Promise<void> {
   // SIMULATED sellers on their own port (SELLER_URL). They settle through the facilitator app in-process, so the
   // relayer key has one nonce manager. The attacker payee is never allowlisted.
   const sellerConfig = resolveSellerConfig();
+  const facilitator = facilitatorViaApp(facilitatorApp, { demoToken: config.demoToken, log });
+
+  // RECOURSE WIRING: the SIMULATED Recourse sellers (per-order escrow, reveal, challenge) and the buyer-side
+  // OrderTermsPort that verifies their POST /orders answer against the factory. Needs the escrow factory from
+  // deployments and SELLER_KEYS; each seller key holds gas ETH and bond USDC only, nothing of the treasury's.
+  // One ChainClient + relayer per distinct seller address, so every key has exactly one nonce manager.
+  const recourseConfig = resolveRecourseConfig();
+  // Agent keys (AGENT_ROOT_KEY + AGENT_KEYS): the mission runner signs CreateChild/PauseChild with them and the
+  // payment adapter signs EIP-3009 / Accept with the paying node's key. They never send transactions.
+  const agentKeys = resolveAgentKeys();
+  let recourse: ReturnType<typeof createRecourseSellers> | undefined;
+  let orderTerms: OrderTermsPort | undefined;
+  let recourseStatus: string;
+  if (!boot.escrowFactory) recourseStatus = "idle: no escrowFactory in deployments";
+  else if (!recourseConfig.ok) recourseStatus = `idle: ${recourseConfig.reason}`;
+  else {
+    const factory = boot.escrowFactory;
+    const catalog = await loadRecourseCatalog();
+    const chains = new Map<string, ReturnType<typeof viemRecourseChain>>();
+    for (const key of recourseConfig.config.sellers.values()) {
+      const addr = key.account.address.toLowerCase();
+      if (chains.has(addr)) continue;
+      const sellerClient = viemChainClient(config.rpcUrl, key.account);
+      const relayer = createRelayer({ client: sellerClient, address: key.account.address, log });
+      chains.set(addr, viemRecourseChain({ client: sellerClient, relayer, factory, usdc: deployments.usdc }));
+    }
+    const chainFor = (seller: Address) => {
+      const chain = chains.get(seller.toLowerCase());
+      if (!chain) throw new Error(`no chain client for seller ${seller}; SELLER_KEYS does not hold its key`);
+      return chain;
+    };
+    recourse = createRecourseSellers({
+      config: recourseConfig.config,
+      listings: catalog.listings,
+      chainFor,
+      facilitator,
+      sellerUrl: sellerConfig.sellerUrl,
+      allowForceBroadcast: sellerConfig.allowForceBroadcast,
+      intervalMs: config.eventsPollMs,
+      log,
+    });
+    recourseStatus = recourse.status();
+    for (const [addr] of chains) {
+      const [eth, usdc] = await Promise.all([
+        client.getBalance(addr as Address),
+        client.readContract({ address: deployments.usdc, abi: erc20Abi, functionName: "balanceOf", args: [addr] }) as Promise<bigint>,
+      ]);
+      log(`[sellers:recourse:SIMULATED] seller key ${addr} holds ${eth} wei gas, ${formatUsdc(usdc)} USDC for bonds (never treasury funds)`);
+      if (eth === 0n) log(`[sellers:recourse:SIMULATED] WARNING: seller ${addr} has no ETH; create/reveal/finalize will fail`);
+    }
+  }
+  log(`[sellers:recourse:SIMULATED] ${recourseStatus}`);
+
   const sellerApp = createSellerApp({
     config: sellerConfig,
-    facilitator: facilitatorViaApp(facilitatorApp, { demoToken: config.demoToken, log }),
+    facilitator,
+    ...(recourse ? { recourse } : {}),
   });
+  // The seller app is reached in-process (no socket): the same fetch serves order terms, the payment adapter and the sample judge.
+  const sellerFetch: SampleFetch = (url, init) => Promise.resolve(sellerApp.request(url, init));
+  const recourseReads = boot.escrowFactory ? viemRecourseReads(client, boot.escrowFactory, deployments.usdc) : undefined;
+  if (recourse && recourseReads) {
+    // Buyer side: propose() asks the seller app in-process for an order and verifies it against the factory.
+    orderTerms = createSellerOrderTerms({
+      sellerUrl: sellerConfig.sellerUrl,
+      fetch: sellerFetch,
+      reads: recourseReads,
+      treasury: boot.treasury,
+      log,
+    });
+  }
+
+  // FLOW WIRING (docs/SPEC.md "One purchase, end to end", steps 4 to 9): the "overflow-facilitator" payment adapter
+  // signs one EIP-3009 authorization per purchase with the paying node's key (confirmed by treasury.nodeOfKey) and
+  // sends the paid retry to the SIMULATED seller, whose paywall settles through the facilitator app in-process; the
+  // sample judge (Claude) judges a verified sample before anything is signed; the delivery watcher verifies the
+  // revealed file and submits accept / complaint / timeout refund through the relayer. Only treasury.settle() and
+  // OverflowEscrow move USDC; terminal states still come from the indexer's confirmed events.
+  // PurchaseService / ExceptionService are stateless over the database, so these instances and createApp's own share state.
+  const purchases = createPurchaseService(database.db, { publish: (event) => activityBus.publish(event) });
+  const exceptions = createExceptionService({ db: database.db, treasury: boot.treasury, bus: activityBus });
+  let adapter: PaymentAdapter | undefined;
+  let nodeSigners: NodeSigners | undefined;
+  let judge: SampleJudge = notWiredSampleJudge();
+  let watcher: ReturnType<typeof createDeliveryWatcher> | undefined;
+  let flowBoot: string;
+  if (!boot.escrowFactory || !recourseReads) flowBoot = "idle: no escrowFactory in deployments";
+  else if (!orderTerms) flowBoot = `idle: SIMULATED Recourse sellers not wired (${recourseStatus})`;
+  else if (!agentKeys.ok) flowBoot = `idle: ${agentKeys.reason}`;
+  else {
+    // Reads the adapter needs (nodeOfKey, USDC.authorizationState, Paid log scan) over the service's ChainClient,
+    // whose getLogs takes explicit block numbers.
+    const deployBlock = deployments.deployBlock ? BigInt(deployments.deployBlock) : boot.blockNumber;
+    const adapterClient: AdapterPublicClient = {
+      readContract: (a) => client.readContract(a),
+      getLogs: async ({ address, event, fromBlock, toBlock }) =>
+        client.getLogs({
+          address,
+          fromBlock: typeof fromBlock === "bigint" ? fromBlock : deployBlock,
+          toBlock: typeof toBlock === "bigint" ? toBlock : await client.getBlockNumber(),
+          event: event as AbiEvent,
+        }),
+    };
+    const adapterChain = viemAdapterChain(adapterClient, { treasury: boot.treasury, usdc: deployments.usdc, fromBlock: deployBlock });
+    nodeSigners = createNodeSigners({ keys: agentKeys.keys, chain: adapterChain, log });
+    adapter = createOverflowFacilitatorAdapter({
+      sellerUrl: sellerConfig.sellerUrl,
+      fetch: sellerFetch,
+      treasury: boot.treasury,
+      nodeSigners,
+      chain: adapterChain,
+      log,
+    });
+    // One judge instance for the API route and the watcher (the watcher reuses its cached cipher chunks). Without a
+    // model, judge() answers 503 (OracleUnavailableError) before touching the network; nothing is signed.
+    judge = createSampleJudge({
+      db: database.db,
+      bus: activityBus,
+      exceptions,
+      purchases,
+      sellerUrl: sellerConfig.sellerUrl,
+      fetch: sellerFetch,
+      model: oracle,
+      sampleSize: config.sampleSize,
+      confidenceMin: config.sampleConfidenceMin,
+      log,
+    });
+    watcher = createDeliveryWatcher({
+      db: database.db,
+      bus: activityBus,
+      purchases,
+      judge,
+      sellerUrl: sellerConfig.sellerUrl,
+      fetch: sellerFetch,
+      nodeSigners,
+      reads: recourseReads,
+      chain: client,
+      relayer,
+      adapter,
+      treasury: boot.treasury,
+      intervalMs: config.eventsPollMs,
+      log,
+    });
+    const judgeStatus = oracle ? `sample judge ${oracle.model}${oracle.scripted ? ` [${oracle.scripted.mode.toUpperCase()}]` : ""} (size ${config.sampleSize}, confidence >= ${config.sampleConfidenceMin})` : "sample judge idle: CLAUDE_MODEL / ANTHROPIC_API_KEY unset (authorize answers 503)";
+    flowBoot = `live: adapter overflow-facilitator (signers ${nodeSigners.candidates().map((c) => `${c.agentId}=${c.address}`).join(", ")}), ${judgeStatus}, SIMULATED seller ${sellerConfig.sellerUrl}`;
+  }
+  const flowStatus = (): string => (watcher ? `${flowBoot}, delivery watcher ${watcher.status()}` : flowBoot);
+  log(`[flow] ${flowStatus()}`);
+  // END RECOURSE WIRING
 
   // Mission runner: the orchestrator (AGENT_ROOT_KEY) signs CreateChild/PauseChild for the three sub-agents
   // (AGENT_KEYS) and relays them through the facilitator app in-process. Agents never send transactions.
   let runner: MissionRunner | undefined;
   let runnerStatus: string;
-  const agentKeys = resolveAgentKeys();
   if (!agentKeys.ok) runnerStatus = `idle: ${agentKeys.reason}`;
   else if (!oracle) runnerStatus = "idle: CLAUDE_MODEL / ANTHROPIC_API_KEY unset";
   else {
@@ -161,7 +341,7 @@ async function main(): Promise<void> {
     runner = createMissionRunner({
       db: database.db,
       bus: activityBus,
-      model: { client: oracle.client as Parameters<typeof createMissionRunner>[0]["model"]["client"], model: oracle.model },
+      model: { client: oracle.client as Parameters<typeof createMissionRunner>[0]["model"]["client"], model: oracle.model, scripted: oracle.scripted },
       treasury: boot.treasury,
       chain: client,
       relay: relayViaApp(facilitatorApp),
@@ -171,7 +351,7 @@ async function main(): Promise<void> {
       demoMode: config.demoMode,
       log,
     });
-    runnerStatus = `live: orchestrator ${agentKeys.keys.root.address} (${agentKeys.keys.rootSource}); sub-agents research ${agentKeys.keys.children.research.address}, finance ${agentKeys.keys.children.finance.address}, verification ${agentKeys.keys.children.verification.address}; ${AGENT_KEYS_LIMITATION}`;
+    runnerStatus = `live${oracle.scripted ? ` [${oracle.scripted.mode.toUpperCase()} model answers]` : ""}: orchestrator ${agentKeys.keys.root.address} (${agentKeys.keys.rootSource}); sub-agents research ${agentKeys.keys.children.research.address}, finance ${agentKeys.keys.children.finance.address}, verification ${agentKeys.keys.children.verification.address}; ${AGENT_KEYS_LIMITATION}`;
   }
   log(`[orchestration] mission runner ${runnerStatus}`);
 
@@ -180,13 +360,13 @@ async function main(): Promise<void> {
   const recourseAccounts = resolveRecourseAccounts();
   const anvil = await isAnvil(config.rpcUrl);
   const bootRun = process.env["RECOURSE_ANVIL_RUN"] === "1";
-  let recourseStatus: string;
-  let recourse: RecourseRunner | undefined;
-  if (!recourseAccounts.ok) recourseStatus = `idle: ${recourseAccounts.reason}`;
-  else if (!anvil) recourseStatus = `refused: ${redact(config.rpcUrl)} is not an Anvil node (no anvil_nodeInfo); the SIMULATED recourse run never targets Base Sepolia`;
-  else if (!boot.escrowFactory) recourseStatus = "idle: the deployments file has no escrow factory (run anvil:provision)";
+  let judgeControlsStatus: string;
+  let judgeRecourse: RecourseRunner | undefined;
+  if (!recourseAccounts.ok) judgeControlsStatus = `idle: ${recourseAccounts.reason}`;
+  else if (!anvil) judgeControlsStatus = `refused: ${redact(config.rpcUrl)} is not an Anvil node (no anvil_nodeInfo); the SIMULATED recourse run never targets Base Sepolia`;
+  else if (!boot.escrowFactory) judgeControlsStatus = "idle: the deployments file has no escrow factory (run anvil:provision)";
   else {
-    recourse = createRecoursePort({
+    judgeRecourse = createRecoursePort({
       db: database.db,
       bus: activityBus,
       rpcUrl: config.rpcUrl,
@@ -199,9 +379,9 @@ async function main(): Promise<void> {
       accounts: recourseAccounts.accounts,
       log,
     });
-    recourseStatus = `live: judge controls for 3 SIMULATED sellers on local Anvil ${redact(config.rpcUrl)} (GET/PUT /api/settings/sellers, POST /api/settings/orders); boot demo ${bootRun ? "scheduled after the indexer (RECOURSE_ANVIL_RUN=1)" : "off (RECOURSE_ANVIL_RUN is not 1)"}; root node key ${recourseAccounts.accounts.rootNode.address}`;
+    judgeControlsStatus = `live: judge controls for 3 SIMULATED sellers on local Anvil ${redact(config.rpcUrl)} (GET/PUT /api/settings/sellers, POST /api/settings/orders); boot demo ${bootRun ? "scheduled after the indexer (RECOURSE_ANVIL_RUN=1)" : "off (RECOURSE_ANVIL_RUN is not 1)"}; root node key ${recourseAccounts.accounts.rootNode.address}`;
   }
-  log(`[recourse] ${recourseStatus}`);
+  log(`[recourse] ${judgeControlsStatus}`);
 
   const { app } = createApp({
     db: database.db,
@@ -217,11 +397,19 @@ async function main(): Promise<void> {
       // Treasury owner/floor/window views for GET /api/settings/network; read-only.
       network: viemNetworkInfo({ chain: client, chainId: boot.chainId, anvil, rpcHost: redact(config.rpcUrl), treasury: boot.treasury, escrowFactory: boot.escrowFactory, token: boot.token, relayer: account.address, deployments }),
       // Judge controls over the SIMULATED recourse sellers; only on a local Anvil fork with the seller keys.
-      ...(recourse ? { recourse } : {}),
+      ...(judgeRecourse ? { recourse: judgeRecourse } : {}),
+      // Without the adapter the authorize route answers 501; it never fakes a payment.
+      adapters: adapter ? { "overflow-facilitator": adapter } : {},
     },
     treasury: boot.treasury,
     oracle,
     ...(runner ? { runner } : {}),
+    ...(orderTerms ? { orderTerms } : {}),
+    sampleJudge: judge,
+    sellerUrl: sellerConfig.sellerUrl,
+    sellerFetch,
+    sampleSize: config.sampleSize,
+    sampleConfidenceMin: config.sampleConfidenceMin,
     indexerStatus: () => indexer?.status() ?? { state: "idle", reason: indexerConfig.ok ? "not started" : indexerConfig.reason },
     status: {
       treasury: boot.treasury,
@@ -229,16 +417,22 @@ async function main(): Promise<void> {
       database: { dialect: database.dialect, migrationsFolder: database.migrationsFolder, migrated: true },
       modules: {
         api: "ready",
-        orchestration: `${orchestrationStatus({ model: oracle?.model ?? null, treasury: boot.treasury, orderTermsWired: false })}; mission runner ${runnerStatus}`,
+        orchestration: `${orchestrationStatus({ model: oracle?.model ?? null, treasury: boot.treasury, orderTermsWired: orderTerms !== undefined, scripted: oracle?.scripted?.status() })}; mission runner ${runnerStatus}`,
         facilitator: `live: relayer ${account.address} (${signer.source}); routes at / and /facilitator`,
-        sellers: sellersStatus(sellerConfig, true),
+        sellers: sellersStatus(sellerConfig, true, recourseStatus),
         chain: chainStatus,
         ledger: ledgerStatus,
         sweeps: boot.escrowFactory ? `reconciling late arrivals and sweeps for factory ${boot.escrowFactory}` : "disabled: no escrow factory in deployments",
         exceptions: `controller requests target treasury ${boot.treasury}; done only on indexed AllowSet/CapRaised/NodePaused`,
-        recourse: recourseStatus,
+        recourse: judgeControlsStatus,
+        // Read on every GET / so the delivery watcher's live state shows; serializes to a plain string.
+        get flow(): string {
+          return flowStatus();
+        },
       },
       dependsOn: [SCHEMAS],
+      // The web top bar shows the SCRIPTED badge from this field, never from its own environment.
+      scripted: { mode: config.scripted.mode, recording: oracle?.scripted?.recording ?? null },
     },
   });
   // Facilitator routes at the root (/settle, /reserve, /release, /verify, /delegate, /health) for the adapters and
@@ -267,13 +461,17 @@ async function main(): Promise<void> {
   const server = serve({ fetch: app.fetch, port: config.port }, (info) =>
     log(`[service] chain ${CHAIN_ID} API + facilitator listening on http://localhost:${info.port}`),
   );
-  const sellerServer = serve({ fetch: sellerApp.fetch, port: sellerConfig.port }, (info) =>
-    log(`[sellers] SIMULATED sellers listening on http://localhost:${info.port} (${sellerConfig.sellerUrl})`),
-  );
+  const sellerServer = serve({ fetch: sellerApp.fetch, port: sellerConfig.port }, (info) => {
+    log(`[sellers] SIMULATED sellers listening on http://localhost:${info.port} (${sellerConfig.sellerUrl})`);
+    // RECOURSE WIRING: the sellers' worker (markFunded / revealKey / finalizePayout per behavior) starts once the app serves.
+    recourse?.worker.start();
+  });
   await indexer?.start();
+  // Delivery watcher after the indexer: it acts on statuses the indexer sets from confirmed events.
+  watcher?.start();
 
-  if (recourse && bootRun) {
-    void recourse
+  if (judgeRecourse && bootRun) {
+    void judgeRecourse
       .demo()
       .then((r) => log(`[recourse] run complete: ${r.orders.map((o) => `${o.behaviour} ${o.purchaseId} ${o.escrow} -> ${o.lastStep}`).join("; ")}; warped ${r.warpedSeconds}s`))
       .catch((e: unknown) => log(`[recourse] run failed: ${e instanceof Error ? e.message : String(e)}`));
@@ -281,6 +479,8 @@ async function main(): Promise<void> {
 
   const shutdown = (): void => {
     poller.stop();
+    watcher?.stop();
+    recourse?.worker.stop();
     sellerServer.close();
     server.close(() => {
       void (indexer ? indexer.stop() : Promise.resolve())

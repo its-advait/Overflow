@@ -15,11 +15,18 @@
     "demo-adapters": "tsx adapter-demo.ts",
     "coinbase-spike": "tsx coinbase-spike.ts",
     "allow-payee": "tsx allow-payee.ts",
-    "dev-fund-gas": "tsx dev-fund-gas.ts"
+    "dev-fund-gas": "tsx dev-fund-gas.ts",
+    "proof": "tsx proof/run.ts"
   },
   "dependencies": {
+    "@overflow/database": "workspace:*",
+    "@overflow/datasets": "workspace:*",
+    "@overflow/fusion": "workspace:*",
+    "@overflow/oracle": "workspace:*",
     "@overflow/payment-client": "workspace:*",
+    "@overflow/recourse-crypto": "workspace:*",
     "@overflow/schemas": "workspace:*",
+    "hono": "^4.13.13",
     "viem": "^2.57.10",
     "zod": "^4.6.7"
   },

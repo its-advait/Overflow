@@ -87,6 +87,13 @@ export const ServiceStatusSchema = z
     chainId: z.number().int(),
     session: z.object({ organizationId: z.string(), principal: z.string() }),
     indexer: IndexerStatusSchema,
+    /** DEMO_SCRIPTED on the service: `replay` means model answers come from a recording while every transaction is live. The top bar's SCRIPTED badge reads this, never the web environment. */
+    scripted: z
+      .object({
+        mode: z.enum(["off", "record", "replay"]),
+        recording: z.object({ name: z.string(), file: z.string(), recordedAt: z.string(), model: z.string(), steps: z.record(z.string(), z.number().int()) }).loose().nullable(),
+      })
+      .optional(),
   })
   .loose();
 export type ServiceStatus = z.infer<typeof ServiceStatusSchema>;

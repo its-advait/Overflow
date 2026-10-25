@@ -147,6 +147,17 @@ export const ActivityKindSchema = z.enum([
   "delegation.signed",
   "delegation.relayed",
   "mission.run",
+  // Step 4: Oracle's judgment of a pre-funding chunk sample (verdict, confidence, reason). It authorizes nothing.
+  "oracle.sample",
+  // Step 9 (delivery watcher): every chunk decrypted and checked against the manifest after KeyRevealed.
+  "delivery.verified",
+  // Submissions of accept / complainMismatch|complainPromise / claimTimeoutRefund. SETTLED and REFUNDED still come
+  // only from the indexer's PaidOut / Refunded.
+  "delivery.accept-submitted",
+  "delivery.complaint-submitted",
+  "delivery.timeout-claimed",
+  // A delivery action's simulation or transaction reverted (decoded reason in the message); never retried blindly.
+  "delivery.action-failed",
 ]);
 export type ActivityKind = z.infer<typeof ActivityKindSchema>;
 

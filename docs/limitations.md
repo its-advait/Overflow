@@ -1,0 +1,42 @@
+# Limitations
+
+What Overflow does not do, and what has not been shown to work yet. Status as of 2026-10-25, taken from docs/PROGRESS.md. Overflow is proven with a LIVE test and a LIVE demo on Base Sepolia, with live transactions; until that run happens, the rows below say what is not yet shown live. Nothing here is estimated.
+
+## Not run or not proven yet
+
+| Limitation | Detail | Source |
+|---|---|---|
+| **No live mission has run on Base Sepolia** | The honest / ghost / swap beats (`pnpm --filter @overflow/service flow:demo`) and `mission:run` were not run. The deployed treasury `0x03805bdE8BD8266Ad525A9eb13A0eDa7fAcaDca2` holds 0 USDC, the relayer `0xa0943Eb0ccf97DF2B3B3FF4E2259e3B2785b46A1` holds 0 ETH, the deployer holds 0 USDC and 0.0000526 ETH (head block 50046966), and both SIMULATED seller keys hold 0 gas. Faucets need a human (CAPTCHA). The flow is exercised only in tests against an in-memory fake escrow with the real recourse cryptography. | docs/PROGRESS.md, "live P6.3 / P6.4 / P6.5 checks" and "end-to-end purchase flow" |
+| **No scripted replay recording exists** | `data/scripted/` contains only its README. A recording is made only from real model answers during a funded live run (`DEMO_SCRIPTED=record`); none has been made, so replay cannot be demoed yet. | data/scripted/README.md; docs/PROGRESS.md, "labeled scripted replay mode" |
+| **Live test and live demo not yet run** | The live beats are: the honest seller paid (escrow funded, key revealed, accepted, PaidOut), the ghost seller (timeout refund), the swap seller (mismatch proof, refund plus bond, seller flagged), a flagged seller opening a new order (`PayeeFlagged`), the prompt-injected attacker payee (`PayeeNotAllowed`), a sub-agent over its parent's cap (`OverBudget`), a paused orchestrator (`Paused`), the direct-to-USDC bypass (`FiatTokenV2: invalid signature`), and controller actions. Each is covered by Foundry and Vitest tests ([threat-model.md](threat-model.md)); none has a Basescan link yet. Live tx: TODO (Basescan link after the live run). | docs/PROGRESS.md, "live P6.3 / P6.4 / P6.5 checks" |
+| **No live Basescan refusal yet** | The only Overflow transactions on Base Sepolia are the deployment (`packages/schemas/deployments/base-sepolia.json`) and two `setAllow` calls on the earlier, now retired treasury `0xd3a74fa991ca0b5627d30ef27dc699c134848291` ([0xaf7ebf3e…b4bb](https://sepolia.basescan.org/tx/0xaf7ebf3eba341c67800b19ae09b61d6f0623969143d3733ee79c3364d8efb4bb), [0x0b583f10…b5f1](https://sepolia.basescan.org/tx/0x0b583f106b0b000e882a266f236a97080af0bc51bd98b07b4e2d16c3a852b5f1)). No settle, refusal, escrow payout or refund has landed on Basescan. | docs/PROGRESS.md, "live run on Base Sepolia" |
+| **Coinbase facilitator path is BLOCKED** | CDP's facilitator answered `invalid_payload: contract call failed: unable to call contract: execution reverted` for a treasury-as-payer authorization; settlement through it after a live `reserve()` is unproven. The public x402.org facilitator answers `invalid_exact_evm_signature` for every treasury-as-payer request. The demo uses the Overflow facilitator. | docs/coinbase-feedback.md |
+| **Controller actions were signed by the deployer key** | The payee allowlisting was signed by the deployer (= owner) with a DEV ONLY script that SIMULATES the Coinbase Wallet controller. | docs/PROGRESS.md, "live run on Base Sepolia" |
+
+## Operational gaps found during the build
+
+| Limitation | Detail | Source |
+|---|---|---|
+| Demo readiness is red | `pnpm demo:preflight` exited 1 with 4 red rows (chain preflight funding rows, `modules.flow` idle, mission runner idle, `GET /sellers` 404) against a stale service started before the keys existed. Stale reservations are not released automatically: `demo:reset` with the service stopped only prints the `POST /release` command for each. | docs/PROGRESS.md, "demo scripts and submission pack" |
+| Relayer holds 1 USDC | The design says the relayer holds gas ETH only. It holds 1 USDC that nothing in Overflow moved; left for the owner to decide. | docs/PROGRESS.md, "live P6.3 / P6.4 / P6.5 checks" |
+| Prepared authorizations are in memory | The adapter's prepared authorization (nonce) is lost on restart; `reconcilePayment` then answers `unknown` until the indexer's `OrderFunded` decides. There is no persistent store for it yet. | docs/PROGRESS.md, "end-to-end purchase flow" |
+| SIMULATED seller order store is in memory | A service restart forgets the per-order key and ciphertext for open orders; the chain keeps the commitment and the buyer can `claimTimeoutRefund` at the deadline. | docs/PROGRESS.md, "SIMULATED Recourse sellers" |
+| 200-block `eth_getLogs` cap | The sweep reconciler and the adapter's `Paid` log scan ask `eth_getLogs` for one range; the public RPC caps it at 200 blocks ("eth_getLogs is limited to a 200 range"). They need block chunking before a live run. (The indexer itself chunks at `INDEXER_CHUNK_BLOCKS`, default 190.) | docs/PROGRESS.md, "SIMULATED Recourse sellers" and "end-to-end purchase flow" |
+| Sweep reconciler state is in memory | Ledger, exceptions and purchase index for sweep reconciliation are in memory until Postgres is wired behind those interfaces. | docs/PROGRESS.md, "hardening pass" |
+| Seller clock | `blockTimestamp()` in the SIMULATED seller worker is the local clock, with a 5 s margin before `revealDeadline` and 2 s after `challengeEnd`. | docs/PROGRESS.md, "SIMULATED Recourse sellers" |
+| Swap beat may pick the other seller | `propose` cannot pin a listing, so the swap beat may pick seller A's cheaper identical listing; both SIMULATED sellers run the beat's behavior. | docs/PROGRESS.md, "end-to-end purchase flow" |
+| Replay samples differ | In replay the sample judge picks new random indices, so the recorded verdict is applied to a different (still cryptographically verified) sample; the prompt-hash mismatch is logged and audited. | docs/PROGRESS.md, "labeled scripted replay mode" |
+| Flaky tests | `mission-runner.test.ts` "a refused /delegate is a policy.blocked event" fails intermittently; `ledger/reconciliation.test.ts` timed out once under the full parallel run and passes alone. | docs/PROGRESS.md, "end-to-end purchase flow" and "labeled scripted replay mode" |
+| Web gap | `PlanResponse` and the web do not yet surface the `escrow_orders` row written at propose; the purchase page reads it through `/api/escrow/:id`. | docs/PROGRESS.md, "SIMULATED Recourse sellers" |
+
+## Design limits (from docs/SPEC.md, "Known limitations")
+
+- Policies and budgets are public onchain.
+- Recourse proves delivery against commitments and promises, not truth.
+- A revealed key makes that ciphertext readable, so the demo uses synthetic (SIMULATED) data.
+- Agent trees stop at two levels below the root (`MAX_DEPTH = 2`).
+- Agent keys sit in server secrets for the demo; CDP server wallets would fix this.
+- Refunds don't restore allowance: a refund restores treasury USDC, not the agent's spent budget.
+- Unaudited and testnet-only. Measured gas on USDC: `settle()` 170,085, `reserve()` 224,352, escrow `create()` 420,958 (execution gas, warm call, local EVM against Circle's USDC v2.2 bytecode; add about 21,000 intrinsic gas plus calldata per transaction). Source: docs/gas.md. A reserved payment costs one extra transaction.
+- Treasury guarantees that cannot be established (docs/PROGRESS.md, "hardening pass"): a transfer mined before an escrow's closing transaction is legitimate and cannot be refused; only escrow payees have a closure to detect; the treasury cannot revoke an authorization USDC already executed; the closed-escrow check relies on USDC calling `isValidSignature` at execution time (true for v2.2, confirmed on the fork).
+- Everything SIMULATED stays SIMULATED: the sellers and their catalog (`data/catalog.json`), the cheating behaviors, the attacker, and the company Larkspur Research Partners and its books.

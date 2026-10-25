@@ -143,8 +143,3 @@ export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:400
 export function mocksEnabled(): boolean {
   return process.env.NEXT_PUBLIC_USE_MOCKS === "1";
 }
-
-/** True when NEXT_PUBLIC_SCRIPTED=1: the top bar shows the SCRIPTED badge. */
-export function isScripted(): boolean {
-  return process.env.NEXT_PUBLIC_SCRIPTED === "1";
-}

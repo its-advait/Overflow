@@ -142,7 +142,7 @@ describe("chain indexer (SIMULATED fixture replay)", () => {
     const e4 = (await handle.repos.escrowOrders.getByPurchase("p5"))!;
     expect(e4).toMatchObject({ status: "Refunded", refundReason: "mismatch", revealedKey: b32(0x78), challengeEnd: FIXTURE.challengeEnd });
 
-    // Reservation mirrored then released; budget not restored (USDC had moved) so p2 was not RELEASED.
+    // Reservation mirrored then released; refunded=false (USDC had moved) so p2 was not RELEASED.
     const res = (await handle.repos.reservations.getByDigest(b32(0xd2)))!;
     expect(res.status).toBe("released");
     expect(res.purchaseId).toBe("p2");
@@ -172,6 +172,12 @@ describe("chain indexer (SIMULATED fixture replay)", () => {
       expect(kinds).toContain(k);
     }
     expect(activity.filter((a) => a.purchaseId === "p1" && a.txHash).length).toBe(7);
+    // Real escrow events carry no orderId: the emitting address linked them. KeyRevealed recorded the challenge end; Accepted the node.
+    expect(activity.find((a) => a.kind === "purchase.status" && a.message.includes("KeyRevealed"))!.message).toContain(`challenge window open until ${FIXTURE.challengeEnd}`);
+    expect(activity.find((a) => a.kind === "escrow.accepted")!.message).toContain("node 1");
+    // CheatProven (escrow) flags the seller; CheatRecorded (factory) is its own kind.
+    expect(activity.filter((a) => a.kind === "seller.flagged").length).toBe(1);
+    expect(activity.filter((a) => a.kind === "seller.cheat-recorded").length).toBe(1);
     expect(r.events.length).toBe(published.filter((m) => m.type === "activity").length);
     expect(published.filter((m) => m.type === "indexer").at(-1)).toMatchObject({ status: { state: "idle", cursor: "115", head: "115", trackedEscrows: 4 } });
 
@@ -198,7 +204,7 @@ describe("chain indexer (SIMULATED fixture replay)", () => {
   });
 
   it("a reorg inside the re-read window withdraws confirmation, keeps the record", async () => {
-    const dropped = source.logs.find((l) => l.blockNumber === "110" && l.logIndex === 1)!; // NodePaused
+    const dropped = source.logs.find((l) => l.blockNumber === "110" && l.logIndex === 2)!; // NodePaused
     source.logs = source.logs.filter((l) => l !== dropped);
     source.head = 116n;
     const r = await indexer.tick();

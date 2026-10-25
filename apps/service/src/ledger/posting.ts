@@ -33,6 +33,9 @@ import { isKnownEscrow, purchaseForEscrow, waitingPurchaseForPayee } from "../ch
 // reports OrderFunded (a status event whose balance includes the seller's
 // bond, in a separate transaction from the payment).
 //
+// Escrow events carry no amounts for the price: OrderFunded's `balance` is
+// price + seller bond and Refunded names only a reason, so both read the
+// escrow_orders row of the emitting escrow (chain_transactions.contractAddress).
 // Nothing here moves money; it describes money the chain already moved.
 // ---------------------------------------------------------------------------
 
@@ -100,6 +103,8 @@ interface Single {
   amount: bigint;
   memo: string;
   purchase?: PurchaseRecord | undefined;
+  /** Distinguishes a second row of the same event (e.g. "bond"); source_event_id becomes "<eventKey>#<suffix>". */
+  suffix?: string | undefined;
 }
 
 interface Split {
@@ -119,7 +124,7 @@ function singleRow(ctx: PostingContext, s: Single): FinancialEntryInsert {
     amountAtomic: s.amount.toString(),
     memo: s.memo,
     eventKey,
-    sourceEventId: eventKey,
+    sourceEventId: s.suffix ? `${eventKey}#${s.suffix}` : eventKey,
     txHash: ctx.row.txHash,
     ...(s.purchase ? { purchaseId: s.purchase.id } : {}),
   };
@@ -139,6 +144,9 @@ function splitRows(ctx: PostingContext, s: Split): FinancialEntryInsert[] {
     ...(s.purchase ? { purchaseId: s.purchase.id } : {}),
   }));
 }
+
+/** The escrow that emitted this log. */
+const escrowOf = (ctx: PostingContext): Address => ctx.row.contractAddress as Address;
 
 type Rule = (ctx: PostingContext) => Promise<FinancialEntryInsert[]>;
 

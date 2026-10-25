@@ -93,7 +93,7 @@ describe("posting rules (SIMULATED fixture replay)", () => {
 
   it("reservations and a PaidOut with no deposit on the books post nothing", async () => {
     expect(await byEvent(7, 1)).toEqual([]); // Reserved
-    expect(await byEvent(12, 2)).toEqual([]); // ReservationReleased
+    expect(await byEvent(12, 3)).toEqual([]); // ReservationReleased
     expect(await byEvent(13, 1)).toEqual([]); // PaidOut for order 3, never funded
     expect(r.warnings.some((w) => w.includes("PaidOut") && w.includes("no escrow deposit"))).toBe(true);
   });

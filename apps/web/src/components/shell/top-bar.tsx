@@ -9,7 +9,7 @@ import { NetworkBadge } from "./network-badge";
 import { SidebarBrand, SidebarNav } from "./sidebar";
 import { TreasuryBalance } from "./treasury-balance";
 
-/** `slot` is reserved for the SCRIPTED badge; the shell fills it from the environment. */
+/** `slot` is reserved for the SCRIPTED badge; the shell fills it from the service's GET / status. */
 export function TopBar({ slot }: { slot?: ReactNode }) {
   const [open, setOpen] = useState(false);
   return (
