@@ -167,3 +167,11 @@ Decoded PAYMENT-REQUIRED (402): error = `invalid_exact_evm_payload_authorization
 - (a) reserve unavailable: HTTP 402, body {} error=invalid_payload: contract call failed: unable to call contract: execution reverted
 - (b) without reserve: HTTP 402, body {} error=invalid_payload: contract call failed: unable to call contract: execution reverted
 - (c) expired: HTTP 402, body {} error=invalid_exact_evm_payload_authorization_valid_before: valid before expired: 1792901015
+
+
+## Wallet MCP controller (not yet run, 2026-10-24)
+
+The controller flow (`docs/controller.md`, skill `.claude/skills/overflow-controller`) is built and tested against a
+SIMULATED fixture only. No `get_wallets`, `send`, `send_calls` or `get_request_status` call has been made yet: this
+session had no Wallet MCP server connected. The live spike (smart wallet address, Base Sepolia support, one harmless
+`send_calls`, treasury funding, setAllow + raiseCap approvals with tx hashes) is recorded here once it runs.

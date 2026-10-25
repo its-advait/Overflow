@@ -171,6 +171,7 @@ export function createIndexer(deps: IndexerDeps): Indexer {
               decoded,
               txHash: raw.transactionHash,
               treasury: config.treasury,
+              owner: config.owner ?? null,
               blockTimestamp: async () =>
                 raw.blockTimestamp !== undefined ? BigInt(raw.blockTimestamp) : source.getBlockTimestamp(BigInt(raw.blockNumber)),
               warn,

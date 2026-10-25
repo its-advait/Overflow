@@ -347,6 +347,38 @@ describe("REST API", () => {
       expect((await post("/api/controller-requests/" + body.requests[0].id + "/done", {})).status).toBe(404);
     });
 
+    it("GET /:id, and the controller records its Wallet MCP submission without changing status", async () => {
+      const [req] = (await json(await app.request("/api/controller-requests"))).requests;
+      expect((await app.request(`/api/controller-requests/${req.id}`)).status).toBe(200);
+      expect((await app.request("/api/controller-requests/nope")).status).toBe(404);
+
+      const sub = { requestId: "wmcp-req-1", approvalUrl: "https://wallet.coinbase.com/approve/wmcp-req-1", submittedBy: "controller:0xW" };
+      const first = await post(`/api/controller-requests/${req.id}/submission`, sub);
+      expect(first.status).toBe(200);
+      const body = await json(first);
+      expect(body.recorded).toBe(true);
+      expect(body.request).toMatchObject({ id: req.id, status: "pending", submission: { ...sub, chain: "base-sepolia" } });
+      expect(body.request.txHash).toBeUndefined();
+      expect(typeof body.request.submission.submittedAt).toBe("string");
+
+      // Same Wallet MCP request id: idempotent. A different one: refused, the first stays on file.
+      expect((await json(await post(`/api/controller-requests/${req.id}/submission`, sub))).recorded).toBe(false);
+      const dup = await post(`/api/controller-requests/${req.id}/submission`, { ...sub, requestId: "wmcp-req-2" });
+      expect(dup.status).toBe(409);
+      const dupBody = await json(dup);
+      expect(dupBody.error.code).toBe("already_submitted");
+      expect(dupBody.error.details.existing.requestId).toBe("wmcp-req-1");
+      expect((await json(await app.request(`/api/controller-requests/${req.id}`))).submission.requestId).toBe("wmcp-req-1");
+      expect((await post(`/api/controller-requests/${req.id}/submission`, { requestId: "x" })).status).toBe(400);
+      expect((await post(`/api/controller-requests/${req.id}/submission`, { ...sub, approvalUrl: "not a url" })).status).toBe(400);
+
+      const recent = await handle.repos.activityEvents.listRecent(1);
+      expect(recent[0]!.kind).toBe("controller.submitted");
+      // Still pending: nothing but the indexed event marks it done.
+      expect((await json(await app.request("/api/controller-requests?status=done"))).requests).toEqual([]);
+    });
+
+
     it("an agent can't decide its own exception; the controller can, once, with who and why", async () => {
       const { deps } = createApp({ db: handle.db, session: { organizationId: "org-demo", principal: "owner", ownerAddress: null }, treasury: TREASURY });
       const raised = await deps.exceptions.raise({
@@ -407,6 +439,31 @@ describe("REST API", () => {
       expect(body.request.txHash).toBeUndefined();
       expect((await json(await app.request("/api/controller-requests"))).requests).toEqual([]);
       expect((await json(await app.request("/api/controller-requests?status=rejected"))).requests).toHaveLength(1);
+    });
+
+    it("POST /api/exceptions raises an onchain exception with its prepared request; a repeat returns the open one", async () => {
+      const payee = "0x5555555555555555555555555555555555555555";
+      const res = await post("/api/exceptions", { type: "NEW_PAYEE", requestedBy: "agent-research", reason: "seller not allowlisted (SIMULATED payee)", payee });
+      expect(res.status).toBe(202);
+      const body = await json(res);
+      expect(body.created).toBe(true);
+      expect(body.exception).toMatchObject({ type: "NEW_PAYEE", status: "open", subject: `payee:${payee}` });
+      expect(body.request).toMatchObject({ status: "pending", target: TREASURY, value: "0", action: { kind: "set-allow", payee, allowed: true } });
+      expect(body.request.summary).toMatch(/^setAllow\(/);
+      const again = await post("/api/exceptions", { type: "NEW_PAYEE", requestedBy: "agent-research", reason: "again", payee });
+      expect(again.status).toBe(200);
+      expect((await json(again))).toMatchObject({ created: false, exception: { id: body.exception.id } });
+      const cap = await post("/api/exceptions", { type: "CAP_RAISE", requestedBy: "agent-orchestrator", reason: "over budget", nodeId: 1, newCapAtomic: "60000000" });
+      expect(cap.status).toBe(202);
+      const capBody = await json(cap);
+      expect(capBody.request.summary).toMatch(/^raiseCap\(1, 60000000/);
+      expect((await post("/api/exceptions", { type: "CAP_RAISE", requestedBy: "a", reason: "r", nodeId: 1, newCapAtomic: "1.5" })).status).toBe(400);
+      expect((await post("/api/exceptions", { type: "NOPE", requestedBy: "a", reason: "r" })).status).toBe(400);
+      // Only the indexed event can approve these; the controller rejects them here so no request lingers.
+      for (const id of [body.exception.id, capBody.exception.id]) {
+        expect((await post(`/api/exceptions/${id}/decide`, { decidedBy: "owner", decision: "reject", reason: "test cleanup" })).status).toBe(200);
+      }
+      expect((await json(await app.request("/api/controller-requests"))).requests).toEqual([]);
     });
   });
 });

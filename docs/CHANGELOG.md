@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- feat(coinbase): controller approvals through Wallet MCP. `ControllerRequest.submission` (Wallet MCP request id + approval URL; status unchanged), `POST /api/controller-requests/:id/submission`, `GET /:id`, `POST /api/exceptions`; owner-gated `NodePaused` completion; `/controller` page in `apps/web`; `.claude/skills/overflow-controller`; `docs/controller.md`. Live Wallet MCP run pending.
 - docs(deploy): read-only Base Sepolia deployment preflight (`docs/deploy-preflight.md`): manifest, blockers, rollback plan, operator commands. Fix: the datasets layout test's annual-row expectation.
 - fix(scripts): `pnpm contracts:export` finds the escrow implementation in the factory tx's nested creates (matched by init code) instead of exporting `null`.
 - fix(recourse-crypto,datasets): records are `timestamp(8) || data(87)` with no version byte, as `RecourseCrypto.sol` reads them; vectors and `data/` regenerated; layout tests on both sides.

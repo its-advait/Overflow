@@ -1,4 +1,5 @@
 import { createRepositories, NotFoundError, type Db, type Repositories } from "@overflow/database";
+import { ControllerSubmissionSchema } from "@overflow/schemas";
 import {
   AddressSchema,
   AtomicAmountSchema,
@@ -62,6 +63,42 @@ export const DecideExceptionInputSchema = z.object({
   reason: z.string().min(1).max(2000),
 });
 export type DecideExceptionInput = z.infer<typeof DecideExceptionInputSchema>;
+
+/** What the controller reports right after Wallet MCP `send_calls` returned; `submittedAt` is stamped here. */
+export const SubmitControllerRequestInputSchema = ControllerSubmissionSchema.omit({ submittedAt: true, chain: true }).extend({
+  chain: z.literal("base-sepolia").default("base-sepolia"),
+});
+export type SubmitControllerRequestInput = z.input<typeof SubmitControllerRequestInputSchema>;
+
+export interface SubmitResult {
+  request: ControllerRequest;
+  /** False when the same Wallet MCP request id was already recorded (idempotent replay). */
+  recorded: boolean;
+  events: ActivityEvent[];
+}
+
+/**
+ * Records the controller's Wallet MCP submission on a pending request. Status does not move: the human still has
+ * to approve in Coinbase Wallet, and only the indexed treasury event marks the request done.
+ */
+export async function submitControllerRequest(repos: Repositories, id: string, raw: SubmitControllerRequestInput): Promise<SubmitResult> {
+  const input = SubmitControllerRequestInputSchema.parse(raw);
+  const before = await repos.controllerRequests.getById(id);
+  if (!before) throw new NotFoundError("controller_requests", id);
+  const request = await repos.controllerRequests.recordSubmission(id, { ...input, submittedAt: new Date().toISOString() });
+  const recorded = before.submission?.requestId !== input.requestId;
+  const events: ActivityEvent[] = [];
+  if (recorded) {
+    events.push(
+      await repos.activityEvents.insert({
+        kind: "controller.submitted",
+        message: `controller request ${id} submitted through Wallet MCP by ${input.submittedBy} (Wallet MCP request ${input.requestId}); awaiting approval in Coinbase Wallet, done only when the treasury event is indexed`,
+        simulated: false,
+      }),
+    );
+  }
+  return { request, recorded, events };
+}
 
 export class SelfResolutionError extends Error {
   constructor(
@@ -252,11 +289,11 @@ const agentIdOf = (e: ExceptionRecord): string | undefined => {
  */
 export async function completeControllerRequests(
   repos: Repositories,
-  log: { eventName: string; args: JsonArgs; txHash: Hex },
+  log: { eventName: string; args: JsonArgs; txHash: Hex; owner?: Address | null | undefined },
 ): Promise<ActivityEvent[]> {
   const events: ActivityEvent[] = [];
   for (const pending of await repos.controllerRequests.listPending()) {
-    if (!requestMatchesLog(pending, log.eventName, log.args)) continue;
+    if (!requestMatchesLog(pending, log.eventName, log.args, { owner: log.owner })) continue;
     const request = await repos.controllerRequests.resolve(pending.id, "done", log.txHash);
     const argText = Object.entries(log.args)
       .map(([k, v]) => `${k}=${String(v)}`)
@@ -295,6 +332,9 @@ export interface ExceptionService {
   decide(id: string, input: DecideExceptionInput): Promise<DecideResult>;
   list(status?: ExceptionStatus | "all"): Promise<Array<ExceptionRecord & { request: ControllerRequest | null }>>;
   listRequests(status?: ControllerRequestStatus | "all"): Promise<ControllerRequest[]>;
+  getRequest(id: string): Promise<ControllerRequest | undefined>;
+  /** The controller's Wallet MCP submission; never changes status. */
+  submit(id: string, input: SubmitControllerRequestInput): Promise<SubmitResult>;
   readonly treasury: Address | null;
 }
 
@@ -324,6 +364,14 @@ export function createExceptionService(deps: ExceptionServiceDeps): ExceptionSer
     },
     listRequests(status = "pending") {
       return createRepositories(deps.db).controllerRequests.list(status);
+    },
+    getRequest(id) {
+      return createRepositories(deps.db).controllerRequests.getById(id);
+    },
+    async submit(id, input) {
+      const r = await deps.db.transaction((tx) => submitControllerRequest(createRepositories(tx), id, input));
+      publish(r.events);
+      return r;
     },
   };
 }

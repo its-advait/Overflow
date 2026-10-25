@@ -1,4 +1,4 @@
-import { InvalidEscrowTransitionError, NotFoundError, UniqueViolationError } from "@overflow/database";
+import { AlreadySubmittedError, InvalidEscrowTransitionError, NotFoundError, RequestNotPendingError, UniqueViolationError } from "@overflow/database";
 import { QuoteMismatchError } from "@overflow/payment-client";
 import { InvalidTransitionError } from "@overflow/schemas";
 import type { Context } from "hono";
@@ -62,6 +62,8 @@ export function toApiError(e: unknown): ApiError {
   if (e instanceof OnchainApprovalRequiredError) {
     return new ApiError(409, "onchain_approval_required", e.message, { exceptionId: e.exceptionId, requestId: e.requestId });
   }
+  if (e instanceof AlreadySubmittedError) return new ApiError(409, "already_submitted", e.message, { id: e.id, existing: e.existing });
+  if (e instanceof RequestNotPendingError) return new ApiError(409, "not_pending", e.message, { id: e.id, status: e.status });
   if (e instanceof NotWiredError) return new ApiError(501, "not_wired", e.message, { port: e.port, lands: e.lands });
   return new ApiError(500, "internal_error", "internal error");
 }

@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Wallet } from "lucide-react";
 import { CHAIN_ID, USDC_DECIMALS } from "@overflow/schemas";
 import { Button } from "@/components/ui/button";
@@ -21,7 +22,12 @@ export default function Home() {
         {USDC_DECIMALS} decimals), buys digital resources over x402, and pays sellers through
         per-order escrow that releases only on verifiable delivery.
       </p>
-      <Button disabled>Dashboard coming soon</Button>
+      <div className="flex gap-3">
+        <Button disabled>Dashboard coming soon</Button>
+        <Button variant="outline" render={<Link href="/controller" />}>
+          Controller requests
+        </Button>
+      </div>
     </main>
   );
 }

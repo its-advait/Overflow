@@ -961,3 +961,32 @@ Follow-ups: a facilitator route for `releaseClosed` (the Coinbase adapter's reco
 
 ### Open issues
 - The live deployment waits for the operator (funding + password entry). Phase 3 (Recourse sellers) proceeds in code and unit tests; its on-chain DONE WHEN runs after the deploy and funding.
+
+## 2026-10-24: controller approvals through Coinbase Wallet MCP (code; live run pending)
+
+### Built
+- **Submission record.** `ControllerRequest.submission?` = `{requestId, approvalUrl, chain: "base-sepolia", submittedBy, submittedAt}` (`packages/schemas/src/ledger.ts`, `ControllerSubmissionSchema`); column `controller_requests.submission jsonb` (migration `0005_controller_request_submission`); `controllerRequests.recordSubmission(id, submission)`: only while `pending`, idempotent for the same Wallet MCP request id, `AlreadySubmittedError` for a different one (a second `send_calls` is never recorded silently), `RequestNotPendingError` once done or rejected. Status is untouched: `done` still comes from the indexer alone. Activity kind `controller.submitted`.
+- **API.** `GET /api/controller-requests/:id`; `POST /api/controller-requests/:id/submission` → `{request, recorded}` (409 `already_submitted` with the existing submission, 409 `not_pending`); `POST /api/exceptions` raises an exception (onchain types get their pending `ControllerRequest`) → 202, or 200 with `created: false` when the subject is already open.
+- **Owner-gated pause completion.** `NodePaused` completes a `pause` request only when `by` is the treasury owner (`exceptions/matching.ts`, owner from the deployments file through `IndexerConfig.owner` and `HandlerContext.owner`); `pauseChild` relayed by an ancestor key no longer completes an owner request. Unknown owner keeps the old behaviour.
+- **UI.** `apps/web` `/controller` (`src/app/controller/page.tsx`, `src/components/controller-requests.tsx`): polls `GET /api/controller-requests?status=all` every 5 s; badges `pending`, `awaiting approval` (Coinbase Wallet link), `DONE (indexed event)` with the Basescan tx link, `rejected`. No success is shown without `status === "done"`. `NEXT_PUBLIC_SERVICE_URL` in `.env.example`; link from the home page.
+- **Skill.** `.claude/skills/overflow-controller/SKILL.md`: read the live tool schemas first, list pending requests one line each, `send_calls({chain: "base-sepolia", calls: [{to, data, value: "0x0"}]})`, record the submission, show/open the approval URL, wait for the human, `get_request_status` once, never say DONE; "never twice" rule; reject path; fund-the-treasury (`send` USDC) and deploy-wiring (`setEscrowFactory` + `createRoot` batch) recipes. No credentials anywhere in the repo; Wallet MCP OAuth lives in Claude Code's user config.
+- **Docs.** `docs/controller.md` (request / submission / done kept apart, API, Wallet MCP specifics, deploy with owner = smart wallet, fallback), README controller section, `.env.example` owner comment.
+
+### Design choices
+- The owner is the controller's Coinbase smart wallet (decided 2026-10-24); `Deploy.s.sol` already handles `owner != deployer` by printing the wiring calldata for the controller's `send_calls`. One deploy, after a harmless `send_calls` probe proves the mechanism on Base Sepolia.
+- Submission ≠ done. The approval URL, the Wallet MCP request id and `get_request_status` are evidence the controller acted, not that the chain did. The only writer of `done` is still `completeControllerRequests` from an indexed event.
+- Wallet MCP tool shapes (`chain` string, hex `value`, `{approvalUrl, requestId}`) come from docs.cdp.coinbase.com; the skill tells the controller to read the server's own schemas before calling.
+
+### Verified (real output, 2026-10-24)
+| Check | Result |
+|---|---|
+| `pnpm -r typecheck` (incl. `next typegen`) | exit 0 |
+| `pnpm lint` | exit 0 |
+| `pnpm test` | 56 files passed, 1 skipped (live-key oracle test); 521 tests passed, 1 skipped |
+| `pnpm --filter @overflow/web build` | ok: routes `/`, `/_not-found`, `/controller` |
+| `drizzle-kit generate --name controller_request_submission` | `0005_controller_request_submission.sql`: `ALTER TABLE "controller_requests" ADD COLUMN "submission" jsonb;` |
+
+### Open issues / live run pending
+- Nothing has been sent through Wallet MCP yet. Stage A (probe: `get_wallets`, harmless `send_calls` on base-sepolia), Stage B (deploy with `OWNER_ADDRESS` = smart wallet, wiring batch, `send` 1 USDC) and Stage D (setAllow + raiseCap approved, indexer marks both done) need a Claude Code session started after `claude mcp add --transport http --scope user base-mcp https://wallet-mcp.coinbase.com`, test funds in the smart wallet, the deployer funded, and the service running (`RELAYER_ACCOUNT` + `RELAYER_PASSWORD_FILE`). Results and tx hashes go to `docs/coinbase-feedback.md`.
+- `apps/service/src/chain/abi.ts` still declares `ReservationReleased(bytes32,uint256,uint256,bool)` while the contract emits `ReservationReleased(bytes32 indexed digest, bool refunded)` and lacks `ReservationWindowSet`; release logs on the new treasury will not decode. Separate fix.
+- `setFloor` and `withdraw` emit no treasury event, so requests of those kinds can never reach `done` under the current rule; they have no calldata builder either.

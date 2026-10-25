@@ -21,6 +21,28 @@ export class NotFoundError extends Error {
   }
 }
 
+/** A controller request already carries a different Wallet MCP submission; a second send_calls is never recorded silently. */
+export class AlreadySubmittedError extends Error {
+  constructor(
+    public readonly id: string,
+    public readonly existing: unknown,
+  ) {
+    super(`controller request ${id} already has a Wallet MCP submission`);
+    this.name = "AlreadySubmittedError";
+  }
+}
+
+/** The request is no longer pending (done or rejected), so nothing may be submitted for it. */
+export class RequestNotPendingError extends Error {
+  constructor(
+    public readonly id: string,
+    public readonly status: string,
+  ) {
+    super(`controller request ${id} is ${status}, not pending`);
+    this.name = "RequestNotPendingError";
+  }
+}
+
 interface DriverErrorShape {
   code?: unknown;
   constraint?: unknown;

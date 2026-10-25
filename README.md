@@ -39,6 +39,16 @@ pnpm dev:fund 5                   # DEV ONLY: move 5 USDC deployer -> treasury (
 
 `contracts/script/Deploy.s.sol` deploys `OverflowTreasury(TOKEN_ADDRESS, OWNER_ADDRESS)`. When the owner is the deployer it also calls `createRoot(AGENT_ROOT_ADDRESS, ROOT_CAP, ROOT_MAX_PER_CALL, ROOT_EXPIRY)`; otherwise it prints the `createRoot` calldata for the controller to approve. Addresses land in `packages/schemas/deployments/base-sepolia.json` (`BASE_SEPOLIA_DEPLOYMENT`, `loadDeployments()`) and ABIs in `packages/schemas/src/abi/` (`overflowTreasuryAbi`). No private key is ever read: signing goes through a Foundry keystore.
 
+## The controller (Coinbase Wallet MCP)
+
+The treasury owner is the controller's Coinbase smart wallet; the owner key is on no server. A Claude Code session
+with Wallet MCP connected (`claude mcp add --transport http --scope user base-mcp https://wallet-mcp.coinbase.com`)
+runs the `overflow-controller` skill: it lists `GET /api/controller-requests`, sends each prepared call with
+`send_calls` on `base-sepolia`, records `{requestId, approvalUrl}` at `POST /api/controller-requests/:id/submission`,
+shows the approval URL, and checks `get_request_status` once the human approved. A request becomes DONE only when
+the indexer stores the treasury event. Details: `docs/controller.md`; live results: `docs/coinbase-feedback.md`.
+UI: `pnpm --filter @overflow/web dev` then `/controller` (needs `NEXT_PUBLIC_SERVICE_URL`).
+
 ## Run the facilitator (service)
 
 ```bash

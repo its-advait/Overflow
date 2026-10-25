@@ -23,6 +23,8 @@ export const IndexerConfigSchema = z.object({
   rpcUrl: z.url(),
   treasury: AddressSchema,
   escrowFactory: AddressSchema,
+  /** Treasury owner (the controller's Coinbase smart wallet); gates which NodePaused completes an owner request. */
+  owner: AddressSchema.nullable().optional(),
   /** USDC; the indexer reads its Transfer logs into and out of the treasury, reconciliation its balanceOf. */
   usdc: AddressSchema,
   deployBlock: UintStringSchema,
@@ -65,6 +67,7 @@ export async function resolveIndexerConfig(env: NodeJS.ProcessEnv = process.env)
       rpcUrl: e.BASE_SEPOLIA_RPC_URL,
       treasury: deployments.treasury as Address,
       escrowFactory: deployments.escrowFactory as Address,
+      owner: (deployments.owner as Address | undefined) ?? null,
       usdc: deployments.usdc as Address,
       deployBlock: deployments.deployBlock,
       pollMs: e.INDEXER_POLL_MS,

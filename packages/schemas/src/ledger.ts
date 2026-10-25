@@ -103,6 +103,8 @@ export const ActivityKindSchema = z.enum([
   "escrow.refunded",
   "policy.blocked",
   "controller.requested",
+  // The controller submitted the owner call through Coinbase Wallet MCP (send_calls); approval is still pending.
+  "controller.submitted",
   "controller.resolved",
   "exception.opened",
   "reconciliation.ok",
@@ -270,6 +272,21 @@ export type ControllerAction = z.infer<typeof ControllerActionSchema>;
 export const ControllerRequestStatusSchema = z.enum(["pending", "done", "rejected"]);
 export type ControllerRequestStatus = z.infer<typeof ControllerRequestStatusSchema>;
 
+/**
+ * The controller's Wallet MCP `send_calls` submission for a request: the MCP request id and the approval URL the
+ * human confirms in Coinbase Wallet. Recording it never changes `status`; only the indexed treasury event does.
+ */
+export const ControllerSubmissionSchema = z.object({
+  /** Wallet MCP request id returned by `send_calls`; `get_request_status` takes it. */
+  requestId: z.string().min(1),
+  approvalUrl: z.url(),
+  chain: z.literal("base-sepolia"),
+  /** Who submitted, e.g. `controller:<smart wallet address>`. */
+  submittedBy: z.string().min(1),
+  submittedAt: IsoDateTimeSchema,
+});
+export type ControllerSubmission = z.infer<typeof ControllerSubmissionSchema>;
+
 export const ControllerRequestSchema = z.object({
   id: IdSchema,
   action: ControllerActionSchema,
@@ -288,5 +305,7 @@ export const ControllerRequestSchema = z.object({
   resolvedAt: IsoDateTimeSchema.optional(),
   /** Set only after the owner transaction is confirmed onchain. */
   txHash: Bytes32Schema.optional(),
+  /** Present once the controller sent the call through Wallet MCP; "awaiting approval" in the UI. */
+  submission: ControllerSubmissionSchema.optional(),
 });
 export type ControllerRequest = z.infer<typeof ControllerRequestSchema>;
