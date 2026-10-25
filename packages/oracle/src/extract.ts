@@ -55,7 +55,7 @@ export const EXTRACTION_SYSTEM_PROMPT = [
   "- regions: use only codes from the region vocabulary given (US means the national aggregate; US-XX means state detail for that state). If the mission needs state-level detail nationwide, include US and every state code you need, or just US when any national dataset will do.",
   "- dateRange: calendar dates YYYY-MM-DD, inside the data horizon when one is given. Never end after today's date; data for the current month does not exist yet.",
   "- granularity: the finest resolution the mission needs (daily, weekly, monthly, quarterly, annual).",
-  "- requiredFields: lowercase column names the mission must have.",
+  "- requiredFields: lowercase column names the mission must have. When a field vocabulary is given, use its exact names (e.g. units, not registrations or sales); a column with no match there keeps its own name and goes in assumptions.",
   "- format: every format the buyer can read, only from the allowed formats given.",
   "- license: company-use when more than one person or agent will use the data, single-user otherwise, unclear only if the mission says so.",
   "- freshnessMaxAgeDays: how old the data may be, in whole days.",
@@ -69,6 +69,8 @@ export interface ExtractionInput {
   mission: Pick<Mission, "id" | "goal" | "budgetAtomic"> & Partial<Pick<Mission, "horizon" | "allowedFormats">>;
   /** Region codes the catalog knows (e.g. from the listings' coverage). */
   knownRegions: readonly string[];
+  /** Column names the catalog's listings carry; coverage matches field names exactly, so the model reuses these. */
+  knownFields?: readonly string[];
   /** Clock used for "today" and the date clamp. */
   now: Date;
 }
@@ -220,6 +222,7 @@ function missionTurn(input: ExtractionInput): string {
     ...(input.mission.horizon ? [`Data horizon: ${input.mission.horizon.start} to ${input.mission.horizon.end} (requests must stay inside it)`] : []),
     `Allowed formats: ${(input.mission.allowedFormats ?? FormatSchema.options).join(", ")}`,
     `Region vocabulary: ${input.knownRegions.length > 0 ? input.knownRegions.join(", ") : "(none given; use ISO 3166-2 style codes such as US, US-CA)"}`,
+    ...(input.knownFields?.length ? [`Field vocabulary: ${input.knownFields.join(", ")}`] : []),
   ].join("\n");
 }
 

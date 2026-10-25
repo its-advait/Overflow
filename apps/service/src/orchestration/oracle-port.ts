@@ -203,10 +203,11 @@ export function createOraclePort(opts: OraclePortOptions): OrchestrationPort {
       const repos = createRepositories(opts.db);
       const listings = await repos.resources.list();
       const knownRegions = [...new Set(listings.flatMap((l) => l.coverage.regions))].sort();
+      const knownFields = [...new Set(listings.flatMap((l) => l.coverage.fields.map((f) => f.toLowerCase())))].sort();
       const agentId = await requesterAgentId(mission);
 
       const result = await extractRequirements(
-        { mission, knownRegions, now: now() },
+        { mission, knownRegions, knownFields, now: now() },
         { client: stepClient(opts.model, "oracle.extract", mission.id), model: opts.model.model, audit: repos.activityEvents },
       );
 
