@@ -1305,3 +1305,28 @@ Confirmed, no change needed: `apps/service/src/orchestration/oracle-port.ts` `pr
 - Live DONE WHEN pending funding and keys (above). Replay is exercised end to end only against the in-process fake seller and escrow in tests.
 - In replay the sample judge's random indices differ from the recorded run, so the recorded verdict is replayed against a different (still cryptographically verified) sample; the prompt-hash mismatch is logged and audited, not hidden.
 - A service already listening on port 4000 (left running from an earlier session) made the first local boot fail with EADDRINUSE; the check above used port 4010. That process was left untouched.
+
+## 2026-10-25: live P6.3 / P6.4 / P6.5 checks on Base Sepolia (attempted; blocked on deployer funding)
+
+### Done
+- `.env` filled by a one-off script (deleted after use) that only set EMPTY/ABSENT variables, printed no secret, and left a mode-600 backup (gitignored by `.env.*`): `AGENT_KEYS` (3 fresh keys: research `0x7F0b83a4b656e693a05177b2095040dC6A4529D3`, finance `0xF992CD62E3c2EbD883824B70FF0109aa29D4393B`, verification `0x909DB8Bee78c3B5e2b363A578379206A1B792d99`), `SELLER_KEYS` (2 fresh SIMULATED seller keys: sim-seller-a `0x940ebB6b3377812718BdCd732952aCafeCdFd1AF`, sim-seller-b `0x5E6DEa9859d9e74028B0578886AD1030b44E2aa8`), `ATTACKER_ADDRESS` `0x4795Ed1330f4Ce3293c1EDb7747bc52613880F58` (SIMULATED, random, no key exists, never allowlisted), `CLAUDE_MODEL=claude-opus-5-5`, `SELLER_URL=http://localhost:4100`, `OVERFLOW_DEPLOYMENTS_PATH` (absolute path: a relative one resolves against `apps/service` and fails), `DEMO_MODE=true`, `DEMO_TOKEN` (random).
+- `PAYEE_SEARCH_ADDRESS` / `PAYEE_SCRAPE_ADDRESS` pinned to the two payees already allowlisted on the treasury (`0x918917ed990014659ab8C8B35075C9d53f05B41a`, `0x7dd254f347F0b50B50A2a6044466ba489ef83c7c`). Without the pin, setting `SELLER_KEYS` re-derives both payees from the seller keys (`sellers/config.ts`), and those addresses are not allowlisted.
+
+### Not done: no transaction was sent
+| Check | Result |
+|---|---|
+| Balances (head block 50046966, gas price 0.006 gwei) | deployer `0xB6F4…06C3` 0.0000526 ETH, **0 USDC**; relayer `0xa094…46A1` 0 ETH, 1 USDC; treasury `0x0380…dca2` 0 USDC; root key `0x390C…Ea89` 0 ETH |
+| "Send 5 USDC from the deployer to the treasury" | **Impossible**: the deployer holds 0 USDC |
+| Gas top-ups from the deployer | **Not sent**: the deployer's 0.0000526 ETH is below the code's own floors (relayer min 0.002 ETH in `dev-fund-gas`, 0.0005 ETH per seller key in preflight); splitting it would still fail preflight and strand the owner key that signs `setAllow` |
+| `pnpm --filter @overflow/service preflight --budget 5` after the env fill | 5 FAIL, all funding: treasury USDC (0.00; needs 4.00 for the cheapest listing), seller A and B gas (0 wei < 0.0005 ETH), relayer gas (0 wei); WARN seller A and B bond USDC (0.00 < 0.80). Every key, payee, allowlist, factory and env row passes. |
+| Service boot, honest mission with `DEMO_SCRIPTED=record`, ghost mission, honest replay | **Not run** (would fail at the first escrow funding). P6.3, P6.4 and P6.5 live checks stay open; no recording exists. |
+
+### To unblock (faucets need a human; CAPTCHAs)
+1. Fund the deployer `0xB6F4162192F753C9998B63893CBb48FA046906C3` with Base Sepolia ETH (≥ 0.005) and USDC from Circle's faucet (≥ 15).
+2. 5 USDC is not enough for the three runs: honest 4 + ghost 4 (refunded only after the reveal window) + replay 4 → send ≥ 12 USDC to the treasury: `pnpm dev:fund 12`.
+3. Bonds: `pnpm dev:fund 2.4 --to 0x940ebB6b3377812718BdCd732952aCafeCdFd1AF` (seller A sells the 2021-2022 listing used by honest and ghost; the ghost bond is forfeited) and `pnpm dev:fund 0.8 --to 0x5E6DEa9859d9e74028B0578886AD1030b44E2aa8`.
+4. Gas: `pnpm --filter @overflow/scripts dev-fund-gas` (relayer), then `--to` each seller address with `--amount 0.001`.
+5. `preflight --budget 5` → 0 FAIL, then `RECOURSE_REVEAL_WINDOW_S=180 RECOURSE_CHALLENGE_WINDOW_S=60 DEMO_SCRIPTED=record PGLITE_DATA_DIR=<fresh> pnpm --filter @overflow/service dev` → `flow:demo --beat honest` → restart without `DEMO_SCRIPTED` → `flow:demo --beat ghost` → restart with `DEMO_SCRIPTED=replay` and a fresh `PGLITE_DATA_DIR` → `flow:demo --beat honest`.
+
+### Observed
+- The relayer holds 1 USDC, although the design says it holds gas ETH only. Nothing moved it; left for the owner to decide.
