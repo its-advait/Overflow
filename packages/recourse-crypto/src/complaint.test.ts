@@ -27,8 +27,8 @@ describe("buildMismatchComplaint", () => {
     const swapped = commitDataset({ plainChunks: honest.plainChunks.map((c, i) => (i === index ? swappedPlain : c)), sellerSecret, orderId, buyer });
 
     // Buyer's pre-funding checks pass against what the seller committed.
-    expect(verifyCiphertext(swapped.cipherChunks, swapped.rootCipher)).toBe(true);
-    expect(verifyPlainLeaves(honest.plainLeaves, honest.rootPlain)).toBe(true);
+    expect(verifyCiphertext(swapped.cipherChunks, swapped.rootCipher, 7)).toBe(true);
+    expect(verifyPlainLeaves(honest.plainLeaves, honest.rootPlain, 7)).toBe(true);
 
     const args = buildMismatchComplaint({
       index,
@@ -43,8 +43,8 @@ describe("buildMismatchComplaint", () => {
     expect(args.plainLeaf).toBe(honest.plainLeaves[index]);
     expect(args.cipherProof.length).toBe(2); // odd-level leaf
     // What the contract does with them:
-    expect(verifyProof({ root: swapped.rootCipher, leaf: hashLeaf(args.cipherChunk), index, proof: args.cipherProof, leafCount: 7 })).toBe(true);
-    expect(verifyProof({ root: honest.rootPlain, leaf: args.plainLeaf, index, proof: args.plainProof, leafCount: 7 })).toBe(true);
+    expect(verifyProof({ root: swapped.rootCipher, leaf: hashLeaf(args.cipherChunk), index, proof: args.cipherProof, chunkCount: 7 })).toBe(true);
+    expect(verifyProof({ root: honest.rootPlain, leaf: args.plainLeaf, index, proof: args.plainProof, chunkCount: 7 })).toBe(true);
     expect(args.cipherProof.length).toBe(args.plainProof.length);
     const check = checkMismatch(index, args.cipherChunk, honest.perBuyerKey, args.plainLeaf);
     expect(check.mismatch).toBe(true);
@@ -79,7 +79,7 @@ describe("buildPromiseComplaint", () => {
     expect(Object.keys(args)).toEqual(["i", "plainChunk", "plainProof"]);
     expect(args.i).toBe(4n);
     expect(verdict).toMatchObject({ ok: false, reason: "wrong-source", signer: privateKeyToAddress(impostorKey) });
-    expect(verifyProof({ root: delivered.rootPlain, leaf: hashLeaf(args.plainChunk), index, proof: args.plainProof, leafCount: 7 })).toBe(true);
+    expect(verifyProof({ root: delivered.rootPlain, leaf: hashLeaf(args.plainChunk), index, proof: args.plainProof, chunkCount: 7 })).toBe(true);
     expect(await recoverRecordSigner(args.plainChunk)).not.toBe(sourceAddress);
   });
 

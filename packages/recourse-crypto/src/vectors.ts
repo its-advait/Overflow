@@ -56,7 +56,7 @@ export const GoldenVectorsSchema = z.object({
   buyer: AddressSchema,
   perBuyerKey: Bytes32Schema,
   keyCommitment: Bytes32Schema,
-  leafCount: z.number().int().positive(),
+  chunkCount: z.number().int().positive(),
   rootPlain: Bytes32Schema,
   rootCipher: Bytes32Schema,
   chunks: z.array(ChunkVectorSchema),
@@ -158,7 +158,7 @@ export async function generateGoldenVectors(): Promise<GoldenVectors> {
   });
 
   const randomBytes = simulatedBytes32("sample-randomness");
-  const indices = pickSampleIndices(honest.leafCount, SAMPLE_COUNT, randomBytes);
+  const indices = pickSampleIndices(honest.chunkCount, SAMPLE_COUNT, randomBytes);
 
   // Swap attack: after the sample, the seller ships ciphertext whose chunk 3 is
   // a different (still source-signed) record. rootPlain stays the honest one, so
@@ -209,7 +209,7 @@ export async function generateGoldenVectors(): Promise<GoldenVectors> {
     buyer,
     perBuyerKey: honest.perBuyerKey,
     keyCommitment: honest.keyCommitment,
-    leafCount: honest.leafCount,
+    chunkCount: honest.chunkCount,
     rootPlain: honest.rootPlain,
     rootCipher: honest.rootCipher,
     chunks,

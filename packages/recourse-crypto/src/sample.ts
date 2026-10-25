@@ -47,8 +47,8 @@ export interface SampleProofs {
   plainProof: readonly Hex[];
   rootCipher: Hex;
   rootPlain: Hex;
-  /** Chunk count from the manifest; pins the plain proof shape when known. */
-  leafCount?: number;
+  /** Chunk count from the escrow terms / manifest; pins both proof shapes. */
+  chunkCount: number;
 }
 
 export type SampleVerdict =
@@ -68,10 +68,10 @@ export function verifySample(
 ): SampleVerdict {
   const cipher = toBytes(cipherChunk);
   const cipherLeaf = hashLeaf(cipher);
-  if (!verifyProof({ root: proofs.rootCipher, leaf: cipherLeaf, index: proofs.index, proof: proofs.cipherProof, leafCount: proofs.leafCount })) {
+  if (!verifyProof({ root: proofs.rootCipher, leaf: cipherLeaf, index: proofs.index, proof: proofs.cipherProof, chunkCount: proofs.chunkCount })) {
     return { ok: false, reason: "cipher-proof", detail: `ciphertext chunk ${proofs.index} does not prove under rootCipher` };
   }
-  if (!verifyProof({ root: proofs.rootPlain, leaf: Bytes32Schema.parse(plainLeaf), index: proofs.index, proof: proofs.plainProof, leafCount: proofs.leafCount })) {
+  if (!verifyProof({ root: proofs.rootPlain, leaf: Bytes32Schema.parse(plainLeaf), index: proofs.index, proof: proofs.plainProof, chunkCount: proofs.chunkCount })) {
     return { ok: false, reason: "plain-proof", detail: `plain leaf ${proofs.index} does not prove under rootPlain` };
   }
   const plainChunk = decryptChunkWithChunkKey(cipher, revealedChunkKey);

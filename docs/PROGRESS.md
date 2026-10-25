@@ -117,3 +117,25 @@
 ### Open issues
 - Engineer B: `OverflowEscrow` must either store `chunkCount` or enforce `cipherProof.length == plainProof.length` in `complainMismatch` (see caveat above), and should add a Foundry test that replays `contracts/test/fixtures/recourse-vectors.json`.
 - Plain leaves of short CSV rows are low-entropy; a published leaf list is brute-forceable. Acceptable for synthetic demo data; note in limitations.
+
+## 2026-10-24: `@overflow/recourse-crypto` domain-separated, shape-pinned Merkle proofs
+
+### Built
+- `hashLeaf(chunk) = keccak256(0x00 || chunk)` and rejects any chunk that is not exactly 160 bytes; `hashPair(l, r) = keccak256(0x01 || l || r)`. `LEAF_PREFIX`/`NODE_PREFIX` exported.
+- `expectedProofLength(index, chunkCount)` for the odd-node carry-up tree; `verifyProof({ root, leaf, index, proof, chunkCount })` now requires `chunkCount`, rejects `index >= chunkCount`, and rejects any proof whose length differs from the expected one. `computeRootFromProof(leaf, index, proof, chunkCount)` walks the known shape; the shape-inferring verifier from the previous entry is gone.
+- `verifySample` requires `chunkCount`; `verifyCiphertext`/`verifyPlainLeaves` take `chunkCount` and require exactly that many entries. `leafCount` renamed to `chunkCount` everywhere, including the vectors JSON.
+- Vectors regenerated (`test/vectors.json`, `contracts/test/fixtures/recourse-vectors.json`): all leaves, roots and proofs changed; keys, ciphertext and signatures did not. README Merkle section rewritten with pseudo-Solidity for `expectedProofLength` and `verify`.
+
+### Design choices
+- Two independent defenses: the `0x00`/`0x01` prefixes keep leaf and node hashes in separate domains, and the pinned proof length means a shorter proof presenting an internal node as a leaf is rejected before any hashing. The attack test in `merkle.test.ts` is kept and now asserts failure.
+- The escrow must read `chunkCount` from its own stored terms or committed manifest, never from the complainant's calldata.
+
+### Verified (real output, 2026-10-24)
+| Check | Result |
+|---|---|
+| `pnpm typecheck` | exit 0, 8 workspaces Done |
+| `pnpm test` | exit 0, 11 files / 139 tests passed (includes the second-preimage attack now failing, 160-byte rejection, expectedProofLength == getProof length for 1..40 leaves) |
+| `pnpm --filter @overflow/recourse-crypto vectors` twice | identical; fixture copy byte-identical (`cmp`) |
+
+### Open issues
+- Engineer B: `OverflowEscrow` needs `chunkCount` in storage (OrderTerms or manifest-bound) to call `verify`; the README pseudo-Solidity is the reference. Replay `contracts/test/fixtures/recourse-vectors.json` in a Foundry test.

@@ -89,7 +89,7 @@ switch (command) {
     const km = KeyMaterial.parse(values);
     const c = commitDataset({ plainChunks: await readChunks(input), sellerSecret: km.secret, orderId: km.order, buyer: km.buyer });
     print({
-      leafCount: c.leafCount,
+      chunkCount: c.chunkCount,
       rootPlain: c.rootPlain,
       rootCipher: c.rootCipher,
       keyCommitment: c.keyCommitment,
@@ -105,7 +105,7 @@ switch (command) {
     const km = KeyMaterial.parse(values);
     const c = commitDataset({ plainChunks: await readChunks(input), sellerSecret: km.secret, orderId: km.order, buyer: km.buyer });
     await writeFile(output, joinChunks(c.cipherChunks));
-    print({ wrote: output, leafCount: c.leafCount, rootCipher: c.rootCipher, keyCommitment: c.keyCommitment });
+    print({ wrote: output, chunkCount: c.chunkCount, rootCipher: c.rootCipher, keyCommitment: c.keyCommitment });
     break;
   }
   case "sample": {
@@ -147,7 +147,7 @@ switch (command) {
     const chunks = await readChunks(input);
     const index = IntString.parse(values.index);
     const tree = buildTreeFromChunks(chunks);
-    print({ leafCount: chunks.length, index, leaf: tree.leaves[index], root: tree.root, proof: getProof(tree, index) });
+    print({ chunkCount: chunks.length, index, leaf: tree.leaves[index], root: tree.root, proof: getProof(tree, index) });
     break;
   }
   default:

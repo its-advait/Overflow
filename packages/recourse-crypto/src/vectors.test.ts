@@ -24,7 +24,7 @@ describe("golden vectors", () => {
 
   it("every value in the file is reproducible from the primitives", async () => {
     const v = parseGoldenVectors(await readFile(vectorsPath, "utf8"));
-    expect(v.leafCount).toBe(7);
+    expect(v.chunkCount).toBe(7);
     expect(v.chunks.length).toBe(7);
 
     const k = perBuyerKey(v.sellerSecret, v.orderId, v.buyer);
@@ -48,8 +48,8 @@ describe("golden vectors", () => {
       expect(hashLeaf(c.plain)).toBe(c.plainLeaf);
       expect(hashLeaf(c.cipher)).toBe(c.cipherLeaf);
       expect(hashLeaf(decryptChunk(c.cipher, k, c.index))).toBe(c.plainLeaf);
-      expect(verifyProof({ root: v.rootPlain, leaf: c.plainLeaf, index: c.index, proof: c.plainProof, leafCount: 7 })).toBe(true);
-      expect(verifyProof({ root: v.rootCipher, leaf: c.cipherLeaf, index: c.index, proof: c.cipherProof, leafCount: 7 })).toBe(true);
+      expect(verifyProof({ root: v.rootPlain, leaf: c.plainLeaf, index: c.index, proof: c.plainProof, chunkCount: 7 })).toBe(true);
+      expect(verifyProof({ root: v.rootCipher, leaf: c.cipherLeaf, index: c.index, proof: c.cipherProof, chunkCount: 7 })).toBe(true);
     }
     expect(v.chunks[6]!.plainProof.length).toBe(2); // odd-level carry
     expect(pickSampleIndices(7, v.sample.count, v.sample.randomBytes)).toEqual(v.sample.indices);
@@ -63,8 +63,8 @@ describe("golden vectors", () => {
     expect(a.i).toBe(String(s.index));
     expect(a.cipherChunk).toBe(s.cipher);
     expect(a.plainLeaf).toBe(v.chunks[s.index]!.plainLeaf);
-    expect(verifyProof({ root: s.rootCipher, leaf: hashLeaf(a.cipherChunk), index: s.index, proof: a.cipherProof, leafCount: 7 })).toBe(true);
-    expect(verifyProof({ root: v.rootPlain, leaf: a.plainLeaf, index: s.index, proof: a.plainProof, leafCount: 7 })).toBe(true);
+    expect(verifyProof({ root: s.rootCipher, leaf: hashLeaf(a.cipherChunk), index: s.index, proof: a.cipherProof, chunkCount: 7 })).toBe(true);
+    expect(verifyProof({ root: v.rootPlain, leaf: a.plainLeaf, index: s.index, proof: a.plainProof, chunkCount: 7 })).toBe(true);
     const check = checkMismatch(s.index, a.cipherChunk, v.perBuyerKey, a.plainLeaf);
     expect(check.mismatch).toBe(true);
     expect(check.derivedLeaf).toBe(s.derivedPlainLeaf);
@@ -76,7 +76,7 @@ describe("golden vectors", () => {
     const w = v.wrongSourceRecord;
     expect(w.complainPromise.i).toBe(String(w.index));
     expect(w.complainPromise.plainChunk).toBe(w.plain);
-    expect(verifyProof({ root: w.rootPlain, leaf: hashLeaf(w.plain), index: w.index, proof: w.complainPromise.plainProof, leafCount: 7 })).toBe(true);
+    expect(verifyProof({ root: w.rootPlain, leaf: hashLeaf(w.plain), index: w.index, proof: w.complainPromise.plainProof, chunkCount: 7 })).toBe(true);
     const signer = await recoverRecordSigner(w.plain);
     expect(signer).toBe(w.recoveredSigner);
     expect(signer).toBe(v.wrongSigner.address);

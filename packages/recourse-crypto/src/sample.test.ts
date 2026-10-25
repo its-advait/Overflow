@@ -39,7 +39,7 @@ describe("pickSampleIndices", () => {
 describe("verifySample", () => {
   it("accepts an honest sample using only the revealed chunk keys", async () => {
     const d = await dataset(7);
-    const indices = pickSampleIndices(d.leafCount, 3, simulatedBytes32("rand"));
+    const indices = pickSampleIndices(d.chunkCount, 3, simulatedBytes32("rand"));
     for (const { index, chunkKey: ck } of revealChunkKeys(d.perBuyerKey, indices)) {
       expect(ck).toBe(chunkKey(d.perBuyerKey, index));
       const verdict = verifySample(d.cipherChunks[index]!, ck, d.plainLeaves[index]!, {
@@ -48,7 +48,7 @@ describe("verifySample", () => {
         plainProof: getProof(d.plainTree, index),
         rootCipher: d.rootCipher,
         rootPlain: d.rootPlain,
-        leafCount: d.leafCount,
+        chunkCount: d.chunkCount,
       });
       expect(verdict.ok).toBe(true);
       if (verdict.ok) expect(verdict.plainChunk).toEqual(d.plainChunks[index]);
@@ -64,7 +64,7 @@ describe("verifySample", () => {
       plainProof: getProof(honest.plainTree, index),
       rootCipher: honest.rootCipher,
       rootPlain: honest.rootPlain,
-      leafCount: honest.leafCount,
+      chunkCount: honest.chunkCount,
     };
     const ck = chunkKey(honest.perBuyerKey, index);
 
