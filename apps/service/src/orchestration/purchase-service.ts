@@ -16,6 +16,7 @@ import {
   type EscrowOrder,
   type PurchaseRecord,
   type PurchaseStatus,
+  UintStringSchema,
 } from "@overflow/schemas";
 import { z } from "zod";
 
@@ -58,6 +59,8 @@ export const TransitionEvidenceSchema = z.object({
     .object({
       status: EscrowStatusSchema,
       revealedKey: Bytes32Schema.optional(),
+      /** Unix seconds; KeyRevealed's challengeEnd. */
+      challengeEnd: UintStringSchema.optional(),
       refundReason: z.string().min(1).optional(),
     })
     .optional(),
@@ -233,6 +236,7 @@ export function createPurchaseService(db: Executor, options: PurchaseServiceOpti
           if (existing) {
             escrow = await repos.escrowOrders.setStatus(purchaseId, ev.escrow.status, {
               ...(ev.escrow.revealedKey ? { revealedKey: ev.escrow.revealedKey } : {}),
+              ...(ev.escrow.challengeEnd ? { challengeEnd: ev.escrow.challengeEnd } : {}),
               ...(ev.escrow.refundReason ? { refundReason: ev.escrow.refundReason } : {}),
             });
           }

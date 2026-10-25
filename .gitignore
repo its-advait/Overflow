@@ -22,6 +22,9 @@ contracts/snapshots/
 # read-only reference code (cloned, never imported)
 reference/
 
+# local anvil fork state (deployments + dev keys written by anvil-provision)
+apps/service/.anvil/
+
 # misc
 .DS_Store
 *.log

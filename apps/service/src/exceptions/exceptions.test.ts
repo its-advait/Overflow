@@ -141,7 +141,7 @@ describe("exceptions and controller requests (SIMULATED fixture)", () => {
         warn: () => undefined,
       });
       const tick = await indexer.tick();
-      expect(tick.logsInserted).toBe(27);
+      expect(tick.logsInserted).toBe(33);
 
       const done = await svc.listRequests("done");
       expect(done.map((r) => r.action.kind).sort()).toEqual(["pause", "raise-cap", "set-allow"]);

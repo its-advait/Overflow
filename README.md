@@ -68,6 +68,20 @@ USDC. The demo script signs the same way with `AGENT_ROOT_ACCOUNT=overflow-agent
 `ATTACKER_ADDRESS`. No key is ever printed, exported or written. There are no `/admin` routes: owner actions go
 through the controller.
 
+## Local Anvil recourse demo (never Base Sepolia)
+
+The three recourse scenarios from the spec (honest seller paid, ghost seller timed out, swap seller caught by a Merkle proof) run end to end against the real contracts on a local Anvil fork of Base Sepolia. Nothing here broadcasts to the live chain: the fork reads Base Sepolia through `BASE_SEPOLIA_RPC_URL` and keeps every transaction local.
+
+```sh
+pnpm contracts:build                               # artifacts in contracts/out
+bash scripts/anvil-up.sh                           # anvil --fork-url $BASE_SEPOLIA_RPC_URL --chain-id 84532 (ANVIL_FORK_BLOCK pins the block)
+pnpm --filter @overflow/service anvil:provision    # deploys treasury + factory on the fork, createRoot, mints test USDC, writes apps/service/.anvil/
+set -a; source apps/service/.anvil/service.env; set +a
+pnpm --filter @overflow/service dev                # boots, indexes, then runs the three SIMULATED orders (RECOURSE_ANVIL_RUN=1)
+```
+
+Then `GET /api/escrow` lists the orders and `GET /api/escrow/:id` shows each one's terms, live chain state, chain events, the pre-funding sample with its rule-based judgment, the complaint with both proofs, and which escrow calls the contract would accept right now. The run refuses any RPC that does not answer `anvil_nodeInfo`, so `RECOURSE_ANVIL_RUN=1` against Base Sepolia only logs a refusal. Keys in `service.env` are Anvil's public dev accounts; the file is gitignored.
+
 ## Payment adapters (`@overflow/payment-client`)
 
 `OverflowFacilitatorAdapter` and `CoinbaseFacilitatorAdapter` implement the spec's `PaymentAdapter`

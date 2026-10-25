@@ -236,6 +236,7 @@ describe("table row schemas", () => {
   it("escrow transitions have exactly two terminal states", () => {
     const terminal = Object.entries(ESCROW_TRANSITIONS).filter(([, to]) => to.length === 0);
     expect(terminal.map(([s]) => s).sort()).toEqual(["Refunded", "Settled"]);
-    expect(ESCROW_TRANSITIONS.Created).toEqual(["Funded"]);
+    // claimTimeoutRefund() accepts Created as well as Funded once the reveal deadline has passed.
+    expect(ESCROW_TRANSITIONS.Created).toEqual(["Funded", "Refunded"]);
   });
 });

@@ -5,6 +5,7 @@ import {
   AddressSchema,
   AtomicAmountSchema,
   Bytes32Schema,
+  HexSchema,
   IdSchema,
   IsoDateTimeSchema,
   UintStringSchema,
@@ -113,11 +114,12 @@ export const ChainTransactionSchema = z.object({
 });
 export type ChainTransaction = z.infer<typeof ChainTransactionSchema>;
 
-/** Mirrors OverflowEscrow `enum Status`. */
-
-/** Created → Funded → Revealed → Settled; Refunded from Funded (timeout) or Revealed (proof). */
+/**
+ * Mirrors OverflowEscrow `enum Status`: Created → Funded → Revealed → Settled; Refunded from Created or Funded
+ * (claimTimeoutRefund accepts both once revealDeadline passed) and from Revealed (a proven complaint).
+ */
 export const ESCROW_TRANSITIONS: Readonly<Record<EscrowStatus, readonly EscrowStatus[]>> = {
-  Created: ["Funded"],
+  Created: ["Funded", "Refunded"],
   Funded: ["Revealed", "Refunded"],
   Revealed: ["Settled", "Refunded"],
   Settled: [],
@@ -144,8 +146,12 @@ export const EscrowOrderSchema = z.object({
   sourceKey: AddressSchema,
   /** Unix seconds. */
   minTimestamp: UintStringSchema,
+  /** Number of 160-byte records (OrderTerms.chunkCount, uint32); pins every Merkle proof length. */
+  chunkCount: z.number().int().min(1).max(4_294_967_295).default(1),
   status: EscrowStatusSchema,
   revealedKey: Bytes32Schema.optional(),
+  /** Unix seconds; set by the indexed KeyRevealed (reveal time + challengeWindow). */
+  challengeEnd: UintStringSchema.optional(),
   refundReason: z.string().optional(),
   createdAt: IsoDateTimeSchema,
   updatedAt: IsoDateTimeSchema,
@@ -201,21 +207,94 @@ export const ReservationRecordSchema = z.object({
 export type ReservationRecord = z.infer<typeof ReservationRecordSchema>;
 
 export const SampleVerdictSchema = z.enum(["buy", "skip"]);
+export type SampleVerdict = z.infer<typeof SampleVerdictSchema>;
 
-/** Oracle's judgment of a random chunk sample, with prompt/output hashes for audit. */
+/** Outcome of recourse-crypto's verifySample for one sampled chunk. */
+export const SampleRowVerifiedSchema = z.enum(["ok", "cipher-proof", "plain-proof", "decrypt-mismatch"]);
+
+/**
+ * One sampled chunk as the buyer saw it before funding: the ciphertext and both Merkle proofs the seller served,
+ * the chunk key the seller revealed, and the decrypted record. Everything a reader needs to re-verify in a browser.
+ */
+export const SampleRowSchema = z.object({
+  index: z.number().int().min(0),
+  /** Record timestamp (uint64, unix seconds) decoded from the plaintext payload; absent when decryption failed. */
+  timestamp: UintStringSchema.optional(),
+  /** The decoded CSV row text; absent when decryption failed. */
+  row: z.string().optional(),
+  cipherChunk: HexSchema,
+  chunkKey: Bytes32Schema,
+  plainLeaf: Bytes32Schema,
+  plainChunk: HexSchema.optional(),
+  cipherProof: z.array(Bytes32Schema),
+  plainProof: z.array(Bytes32Schema),
+  verified: SampleRowVerifiedSchema,
+});
+export type SampleRow = z.infer<typeof SampleRowSchema>;
+
+/** The buyer's judgment of a random chunk sample, with the evidence and (for a model judge) prompt/output hashes. */
 export const SampleRecordSchema = z.object({
   id: IdSchema,
   purchaseId: IdSchema,
   indices: z.array(z.number().int().min(0)).min(1),
+  /** The bytes pickSampleIndices drew from; lets a reader re-derive `indices`. */
+  randomness: Bytes32Schema.optional(),
   verdict: SampleVerdictSchema,
   reason: z.string().min(1),
+  /** Who judged: a model id, or a labelled rule such as "rule:recourse-sample-v1 (SIMULATED, no model)". */
+  judge: z.string().min(1).default("unspecified"),
+  rows: z.array(SampleRowSchema).default([]),
   /** Model confidence 0..1 (a score, not money). */
   confidence: z.number().min(0).max(1).optional(),
   promptHash: Bytes32Schema.optional(),
   outputHash: Bytes32Schema.optional(),
+  /** True when the seller, dataset or judge is simulated. */
+  simulated: z.boolean().default(false),
   createdAt: IsoDateTimeSchema,
 });
 export type SampleRecord = z.infer<typeof SampleRecordSchema>;
+
+export const COMPLAINT_KINDS = ["mismatch", "promise"] as const;
+export const ComplaintKindSchema = z.enum(COMPLAINT_KINDS);
+export type ComplaintKind = z.infer<typeof ComplaintKindSchema>;
+export const COMPLAINT_STATUSES = ["built", "submitted", "proven", "rejected"] as const;
+export const ComplaintStatusSchema = z.enum(COMPLAINT_STATUSES);
+export type ComplaintStatus = z.infer<typeof ComplaintStatusSchema>;
+
+/**
+ * A complaint the buyer built after the key reveal: exactly the calldata of complainMismatch / complainPromise,
+ * the checks the buyer ran before sending it, and what the chain said. `proven` is set only by the indexed
+ * CheatProven event. An allegation alone never refunds.
+ */
+export const ComplaintRecordSchema = z.object({
+  id: IdSchema,
+  purchaseId: IdSchema,
+  escrowAddress: AddressSchema,
+  kind: ComplaintKindSchema,
+  chunkIndex: z.number().int().min(0),
+  /** complainMismatch: the ciphertext chunk; complainPromise: the plaintext record. */
+  chunk: HexSchema,
+  cipherProof: z.array(Bytes32Schema).default([]),
+  /** The committed plain leaf (mismatch) or the record's leaf (promise). */
+  plainLeaf: Bytes32Schema,
+  plainProof: z.array(Bytes32Schema),
+  /** keccak256(decrypt(chunk, k_i)) the buyer derived; mismatch only. */
+  derivedLeaf: Bytes32Schema.optional(),
+  revealedKey: Bytes32Schema.optional(),
+  /** The decrypted row text, when it decodes (mismatch only). */
+  decryptedRow: z.string().optional(),
+  cipherProofVerified: z.boolean(),
+  plainProofVerified: z.boolean(),
+  /** The cheat the complaint alleges, as the buyer recomputed it (leaf differs / promise broken). */
+  cheatVerified: z.boolean(),
+  detail: z.string().min(1),
+  status: ComplaintStatusSchema,
+  txHash: Bytes32Schema.optional(),
+  simulated: z.boolean().default(false),
+  createdAt: IsoDateTimeSchema,
+  updatedAt: IsoDateTimeSchema,
+});
+export type ComplaintRecord = z.infer<typeof ComplaintRecordSchema>;
 
 /** Persists across missions (SPEC "Time and memory"). */
 export const SellerHistorySchema = z.object({

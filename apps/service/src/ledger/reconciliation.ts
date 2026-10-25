@@ -1,4 +1,4 @@
-import { createRepositories, type Db } from "@overflow/database";
+import { createRepositories, type Db, type Repositories } from "@overflow/database";
 import {
   atomicToBigInt,
   DEFAULT_MATERIALITY_ATOMIC,
@@ -14,6 +14,7 @@ import {
 import type { ActivityBus } from "../chain/bus.js";
 import type { BalanceReader, LogSource } from "../chain/log-source.js";
 import { DEFAULT_CURSOR_NAME } from "../chain/indexer.js";
+import { orderAmountForEscrow } from "../chain/lookup.js";
 import { eventKeyOf } from "./posting.js";
 
 // ---------------------------------------------------------------------------
@@ -28,6 +29,22 @@ import { eventKeyOf } from "./posting.js";
 // A difference above materiality (default 0.01 USDC), or any missing entry,
 // opens an exception for the controller. The ledger is never silently edited.
 // ---------------------------------------------------------------------------
+
+/** USDC the treasury sent into an escrow minus what came back, from the indexed Transfer logs. */
+async function treasuryShareOf(repos: Repositories, treasury: Address, escrow: Address): Promise<bigint> {
+  const same = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
+  let total = 0n;
+  for (const row of await repos.chainTransactions.listByEvent("Transfer")) {
+    if (!row.confirmed) continue;
+    const from = row.args["from"];
+    const to = row.args["to"];
+    const value = row.args["value"];
+    if (typeof from !== "string" || typeof to !== "string" || typeof value !== "string") continue;
+    if (same(from, treasury) && same(to, escrow)) total += atomicToBigInt(value);
+    else if (same(from, escrow) && same(to, treasury)) total -= atomicToBigInt(value);
+  }
+  return total < 0n ? 0n : total;
+}
 
 export interface ReconciliationDeps {
   db: Db;
@@ -95,8 +112,12 @@ export function createReconciliation(deps: ReconciliationDeps): Reconciliation {
         expected = 0n;
         note = `closed (${order.status}) order must net to zero`;
       } else if (order.status === "Created") {
-        expected = 0n;
-        note = "unfunded order holds nothing of the treasury's";
+        // settle() and markFunded() are separate transactions, so a Created order may already hold the price (and
+        // the seller's bond, which is not ours). The treasury's share is what the indexed USDC transfers moved in.
+        chain = await deps.reader.balanceOf(deps.usdc, order.escrowAddress, block);
+        const moved = await treasuryShareOf(repos, deps.treasury, order.escrowAddress);
+        expected = moved < chain ? moved : chain;
+        note = `Created order ${order.escrowAddress} holds ${chain} at block ${block}, of which ${expected} came from the treasury`;
       } else {
         chain = await deps.reader.balanceOf(deps.usdc, order.escrowAddress, block);
         expected = chain - atomicToBigInt(order.bondAtomic);
@@ -137,11 +158,14 @@ export function createReconciliation(deps: ReconciliationDeps): Reconciliation {
         eventsChecked++;
         const key = eventKeyOf(row);
         if ((await repos.financialEntries.listByEventKey(key)).length === 0) {
+          // Escrow events carry no orderId or price: the emitting address is the order; the price is the stored terms'.
+          const held = await orderAmountForEscrow(repos, row.contractAddress);
+          const amount = arg(row, "amount") || held?.amount.toString() || "0";
           differences.push({
             kind: "event-coverage",
             subject: `event:${key}`,
-            reason: `${name} ${key} (order ${arg(row, "orderId")}, ${arg(row, "amount")} atomic USDC) has no journal entry`,
-            differenceAtomic: arg(row, "amount") || "0",
+            reason: `${name} ${key} (escrow ${row.contractAddress}, ${amount} atomic USDC) has no journal entry`,
+            differenceAtomic: amount,
             eventKey: key,
             ...(row.purchaseId ? { purchaseId: row.purchaseId } : {}),
             material: true,

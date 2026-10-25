@@ -21,7 +21,7 @@ export class InvalidEscrowTransitionError extends Error {
   }
 }
 
-export type EscrowOrderInsert = WithOptional<EscrowOrder, "id" | "createdAt" | "updatedAt" | "status">;
+export type EscrowOrderInsert = WithOptional<EscrowOrder, "id" | "createdAt" | "updatedAt" | "status" | "chunkCount">;
 
 const toRecord = (r: typeof escrowOrders.$inferSelect): EscrowOrder =>
   parseOne(EscrowOrderSchema, {
@@ -41,8 +41,10 @@ const toRecord = (r: typeof escrowOrders.$inferSelect): EscrowOrder =>
     challengeWindow: r.challengeWindow,
     sourceKey: r.sourceKey,
     minTimestamp: r.minTimestamp,
+    chunkCount: r.chunkCount,
     status: r.status,
     revealedKey: opt(r.revealedKey),
+    challengeEnd: opt(r.challengeEnd),
     refundReason: opt(r.refundReason),
     createdAt: iso(r.createdAt),
     updatedAt: iso(r.updatedAt),
@@ -79,8 +81,10 @@ export function escrowOrdersRepository(db: Executor) {
             challengeWindow: row.challengeWindow,
             sourceKey: row.sourceKey,
             minTimestamp: row.minTimestamp,
+            chunkCount: row.chunkCount,
             status: row.status,
             revealedKey: nul(row.revealedKey),
+            challengeEnd: nul(row.challengeEnd),
             refundReason: nul(row.refundReason),
             createdAt: new Date(row.createdAt),
             updatedAt: new Date(row.updatedAt),
@@ -112,7 +116,7 @@ export function escrowOrdersRepository(db: Executor) {
     async setStatus(
       purchaseId: string,
       to: EscrowStatus,
-      extra: { revealedKey?: EscrowOrder["revealedKey"]; refundReason?: string } = {},
+      extra: { revealedKey?: EscrowOrder["revealedKey"]; challengeEnd?: string; refundReason?: string } = {},
     ): Promise<EscrowOrder> {
       const next = EscrowStatusSchema.parse(to);
       return withDbErrors(() =>
@@ -132,6 +136,7 @@ export function escrowOrdersRepository(db: Executor) {
               status: next,
               updatedAt: new Date(),
               ...(extra.revealedKey !== undefined ? { revealedKey: extra.revealedKey } : {}),
+              ...(extra.challengeEnd !== undefined ? { challengeEnd: extra.challengeEnd } : {}),
               ...(extra.refundReason !== undefined ? { refundReason: extra.refundReason } : {}),
             })
             .where(eq(escrowOrders.id, current.id))

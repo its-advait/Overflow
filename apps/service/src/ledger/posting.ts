@@ -9,7 +9,7 @@ import {
   type PurchaseRecord,
 } from "@overflow/schemas";
 import type { DecodedLog, JsonArgs } from "../chain/decode.js";
-import { isKnownEscrow, orderCreatedFor, purchaseForOrder, waitingPurchaseForPayee } from "../chain/lookup.js";
+import { isKnownEscrow, purchaseForEscrow, waitingPurchaseForPayee } from "../chain/lookup.js";
 
 // ---------------------------------------------------------------------------
 // Journal posting rules (docs/SPEC.md "Journal entries (immediate-expense
@@ -20,17 +20,37 @@ import { isKnownEscrow, orderCreatedFor, purchaseForOrder, waitingPurchaseForPay
 //
 //   Event                                  Debit                     Credit
 //   USDC Transfer into the treasury        usdc-treasury             owner-contribution
-//   OrderFunded                            escrow-deposit            usdc-treasury
+//   USDC Transfer treasury -> escrow       escrow-deposit            usdc-treasury
 //   PaidOut (delivery accepted)            data-expense / dept       escrow-deposit
-//   Refunded (timeout or proven cheat)     usdc-treasury             escrow-deposit
-//   BondForfeited                          usdc-treasury             other-income-seller-forfeiture
+//   Refunded (price part)                  usdc-treasury             escrow-deposit
+//   Refunded (bond part)                   usdc-treasury             other-income-seller-forfeiture
+//   Swept (late arrival recovered)         usdc-treasury             escrow-deposit
 //   USDC Transfer out to a direct payee    data-expense / dept       usdc-treasury
-//   Reserved, ReservationReleased, Paid, transfers to/from an escrow: no entry.
+//   Reserved, ReservationReleased, Paid, OrderFunded, transfers escrow -> treasury: no entry.
+//
+// The books follow the money: the deposit is booked when USDC leaves the
+// treasury for an escrow (settle()'s Transfer), not when the escrow later
+// reports OrderFunded (a status event whose balance includes the seller's
+// bond, in a separate transaction from the payment).
 //
 // Nothing here moves money; it describes money the chain already moved.
 // ---------------------------------------------------------------------------
 
 export const UNALLOCATED_DEPARTMENT = "unallocated";
+
+/** USDC the escrow sent back to the treasury in this transaction (the Transfer logs precede Refunded). */
+async function returnedInTx(ctx: PostingContext, escrow: Address): Promise<bigint> {
+  let total = 0n;
+  for (const row of await ctx.repos.chainTransactions.listByTxHash(ctx.row.txHash)) {
+    if (row.eventName !== "Transfer") continue;
+    const from = row.args["from"];
+    const to = row.args["to"];
+    const value = row.args["value"];
+    if (typeof from !== "string" || typeof to !== "string" || typeof value !== "string") continue;
+    if (same(from, escrow) && same(to, ctx.treasury)) total += atomicToBigInt(value);
+  }
+  return total;
+}
 
 export interface PostingContext {
   repos: Repositories;
@@ -129,7 +149,7 @@ const rules: Record<string, Rule> = {
     const to = str(a, "to") as Address;
     const value = atomicToBigInt(str(a, "value"));
     if (same(to, ctx.treasury) && !same(from, ctx.treasury)) {
-      // Money returning from an escrow is booked by Refunded / BondForfeited.
+      // Money returning from an escrow is booked by Refunded (price + bond) or by the sweep reconciler.
       if (await isKnownEscrow(ctx.repos, from)) return [];
       return [
         singleRow(ctx, {
@@ -141,8 +161,20 @@ const rules: Record<string, Rule> = {
       ];
     }
     if (same(from, ctx.treasury) && !same(to, ctx.treasury)) {
-      // Escrow funding is booked by the escrow's OrderFunded.
-      if (await isKnownEscrow(ctx.repos, to)) return [];
+      if (await isKnownEscrow(ctx.repos, to)) {
+        // The treasury's USDC now sits in an escrow we know: a deposit, never an expense (that waits for PaidOut).
+        const purchase = await purchaseForEscrow(ctx.repos, to);
+        if (!purchase) ctx.warn(`USDC ${value} to escrow ${to} matches no purchase; deposit posted without a purchase id`);
+        return [
+          singleRow(ctx, {
+            debit: "escrow-deposit",
+            credit: "usdc-treasury",
+            amount: value,
+            memo: `Escrow ${to} funded by the treasury: ${value} atomic USDC${purchase ? ` (purchase ${purchase.id})` : " (no matching purchase)"}`,
+            purchase,
+          }),
+        ];
+      }
       const purchase = await waitingPurchaseForPayee(ctx.repos, to);
       if (!purchase) {
         ctx.warn(`USDC outflow ${value} to ${to} matches no purchase; nothing posted (reconciliation will flag the treasury difference)`);
@@ -160,77 +192,94 @@ const rules: Record<string, Rule> = {
     return [];
   },
 
-  async OrderFunded(ctx) {
-    const a = ctx.decoded.args;
-    const orderId = str(a, "orderId");
-    const amount = atomicToBigInt(str(a, "amount"));
-    const created = await orderCreatedFor(ctx.repos, orderId);
-    if (created && typeof created.args["buyer"] === "string" && !same(created.args["buyer"], ctx.treasury)) {
-      ctx.warn(`OrderFunded for order ${orderId} has buyer ${created.args["buyer"]}, not the treasury; nothing posted`);
-      return [];
-    }
-    const purchase = await purchaseForOrder(ctx.repos, orderId);
-    if (!purchase) ctx.warn(`OrderFunded for order ${orderId} matches no purchase; posted without a purchase id`);
-    return [
-      singleRow(ctx, {
-        debit: "escrow-deposit",
-        credit: "usdc-treasury",
-        amount,
-        memo: `Escrow funded for order ${orderId}: ${amount} atomic USDC${purchase ? ` (purchase ${purchase.id})` : " (no matching purchase)"}`,
-        purchase,
-      }),
-    ];
-  },
-
   async PaidOut(ctx) {
     const a = ctx.decoded.args;
-    const orderId = str(a, "orderId");
+    const escrow = ctx.row.contractAddress;
     const amount = atomicToBigInt(str(a, "amount"));
-    const purchase = await purchaseForOrder(ctx.repos, orderId);
+    const purchase = await purchaseForEscrow(ctx.repos, escrow);
     const deposit = purchase ? await ctx.repos.financialEntries.depositLineForPurchase(purchase.id) : 0n;
     if (deposit <= 0n) {
       // No funding on the books for this order: an expense here would leave escrow-deposit negative.
-      ctx.warn(`PaidOut for order ${orderId} has no escrow deposit on the books; nothing posted (reconciliation will flag it)`);
+      ctx.warn(`PaidOut from escrow ${escrow} has no escrow deposit on the books; nothing posted (reconciliation will flag it)`);
       return [];
     }
     return splitRows(ctx, {
       debit: "data-expense",
       credit: "escrow-deposit",
       amount,
-      memo: `Delivery accepted for order ${orderId}: ${amount} atomic USDC paid to seller ${str(a, "seller")} (purchase ${purchase!.id})`,
+      memo: `Delivery accepted for escrow ${escrow}: ${amount} atomic USDC paid to seller ${str(a, "seller")}, bond ${str(a, "bond")} returned to the seller (purchase ${purchase!.id})`,
       purchase,
       allocations: purchase!.allocations,
     });
   },
 
+  /**
+   * The escrow's whole balance came back to the treasury in the Transfer that precedes Refunded in the same
+   * transaction. The part that was our deposit reverses it; anything above it is the seller's forfeited bond.
+   * A refund restores treasury USDC and never the agent's allowance; no expense.
+   */
   async Refunded(ctx) {
     const a = ctx.decoded.args;
-    const orderId = str(a, "orderId");
+    const escrow = ctx.row.contractAddress;
+    const reason = str(a, "reason") || "unspecified";
+    const purchase = await purchaseForEscrow(ctx.repos, escrow);
+    const deposit = purchase ? await ctx.repos.financialEntries.depositLineForPurchase(purchase.id) : 0n;
+    const returned = await returnedInTx(ctx, escrow);
+    if (deposit <= 0n && returned === 0n) {
+      // Nothing of ours was in the escrow (never funded on our books) and nothing came back.
+      ctx.warn(`Refunded from escrow ${escrow} (${reason}) with no deposit on the books and no USDC returned; nothing posted`);
+      return [];
+    }
+    const price = returned === 0n ? deposit : returned < deposit ? returned : deposit;
+    const bond = returned > deposit ? returned - deposit : 0n;
+    if (returned === 0n) ctx.warn(`Refunded from escrow ${escrow}: no USDC Transfer back found in ${ctx.row.txHash}; reversing the booked deposit ${deposit}`);
+    const eventKey = eventKeyOf(ctx.row);
+    const rows: FinancialEntryInsert[] = [];
+    if (price > 0n) {
+      rows.push(
+        singleRow(ctx, {
+          debit: "usdc-treasury",
+          credit: "escrow-deposit",
+          amount: price,
+          memo: `Refund from escrow ${escrow}: ${price} atomic USDC price returned to the treasury (${reason})${purchase ? ` (purchase ${purchase.id})` : ""}`,
+          purchase,
+        }),
+      );
+    }
+    if (bond > 0n) {
+      rows.push({
+        ...singleRow(ctx, {
+          debit: "usdc-treasury",
+          credit: "other-income-seller-forfeiture",
+          amount: bond,
+          memo: `Seller bond forfeited on escrow ${escrow}: ${bond} atomic USDC to the treasury (${reason})${purchase ? ` (purchase ${purchase.id})` : ""}`,
+          purchase,
+        }),
+        sourceEventId: `${eventKey}#bond`,
+      });
+    }
+    return rows;
+  },
+
+  /** USDC that reached a closed order came back: reverse what the books still hold for it (a late deposit). */
+  async Swept(ctx) {
+    const a = ctx.decoded.args;
+    const escrow = ctx.row.contractAddress;
     const amount = atomicToBigInt(str(a, "amount"));
-    const purchase = await purchaseForOrder(ctx.repos, orderId);
-    // Reverses the deposit. A refund restores treasury USDC; it never restores the agent's allowance, and no expense is ever posted.
+    const purchase = await purchaseForEscrow(ctx.repos, escrow);
+    const deposit = purchase ? await ctx.repos.financialEntries.depositLineForPurchase(purchase.id) : 0n;
+    if (deposit <= 0n) {
+      ctx.warn(`Swept ${amount} from escrow ${escrow} with no deposit on the books; nothing posted (reconciliation will flag the treasury difference)`);
+      return [];
+    }
+    const reversed = amount < deposit ? amount : deposit;
+    if (reversed < amount) ctx.warn(`Swept ${amount} from escrow ${escrow} exceeds the booked deposit ${deposit}; only the deposit is reversed`);
     return [
       singleRow(ctx, {
         debit: "usdc-treasury",
         credit: "escrow-deposit",
-        amount,
-        memo: `Refund for order ${orderId}: ${amount} atomic USDC returned to the treasury (${str(a, "reason") || "unspecified"})${purchase ? ` (purchase ${purchase.id})` : " (no matching purchase)"}`,
-        purchase,
-      }),
-    ];
-  },
-
-  async BondForfeited(ctx) {
-    const a = ctx.decoded.args;
-    const orderId = str(a, "orderId");
-    const bond = atomicToBigInt(str(a, "bond"));
-    const purchase = await purchaseForOrder(ctx.repos, orderId);
-    return [
-      singleRow(ctx, {
-        debit: "usdc-treasury",
-        credit: "other-income-seller-forfeiture",
-        amount: bond,
-        memo: `Seller bond forfeited for order ${orderId}: ${bond} atomic USDC from seller ${str(a, "seller")}${purchase ? ` (purchase ${purchase.id})` : ""}`,
+        amount: reversed,
+        memo: `Sweep from closed escrow ${escrow}: ${reversed} atomic USDC returned to the treasury${purchase ? ` (purchase ${purchase.id})` : ""}`,
         purchase,
       }),
     ];

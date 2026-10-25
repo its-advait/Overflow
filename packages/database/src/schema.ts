@@ -253,8 +253,12 @@ export const escrowOrders = pgTable(
     challengeWindow: money("challenge_window").notNull(),
     sourceKey: text("source_key").notNull(),
     minTimestamp: money("min_timestamp").notNull(),
+    /** OrderTerms.chunkCount (uint32): number of 160-byte records; pins every Merkle proof length. */
+    chunkCount: integer("chunk_count").notNull().default(1),
     status: escrowStatusEnum("status").notNull(),
     revealedKey: text("revealed_key"),
+    /** Unix seconds from the indexed KeyRevealed; null until the reveal. */
+    challengeEnd: money("challenge_end"),
     refundReason: text("refund_reason"),
     createdAt: ts("created_at").notNull().defaultNow(),
     updatedAt: ts("updated_at").notNull().defaultNow(),
@@ -342,15 +346,57 @@ export const samples = pgTable(
       .notNull()
       .references(() => purchases.id),
     indices: integer("indices").array().notNull(),
+    /** The bytes the indices were drawn from (bytes32 hex); lets a reader re-derive them. */
+    randomness: text("randomness"),
     verdict: text("verdict").notNull(),
     reason: text("reason").notNull(),
+    /** Who judged: a model id or a labelled rule. */
+    judge: text("judge").notNull().default("unspecified"),
+    /** SampleRow[] (ciphertext, proofs, revealed chunk key, decrypted record per sampled index). */
+    rows: jsonb("rows").notNull().default([]),
     /** Model confidence 0..1 stored as text to keep the "no float columns" rule simple to audit. */
     confidence: text("confidence"),
     promptHash: text("prompt_hash"),
     outputHash: text("output_hash"),
+    simulated: boolean("simulated").notNull().default(false),
     createdAt: ts("created_at").notNull().defaultNow(),
   },
   (t) => [index("samples_purchase_idx").on(t.purchaseId)],
+);
+
+/**
+ * A complaint the buyer built after the key reveal (SPEC "Complaints"): the exact calldata of
+ * complainMismatch / complainPromise plus the checks the buyer ran. `status` reaches "proven" only
+ * through the indexed CheatProven event; nothing here refunds anything.
+ */
+export const complaints = pgTable(
+  "complaints",
+  {
+    id: text("id").primaryKey(),
+    purchaseId: text("purchase_id")
+      .notNull()
+      .references(() => purchases.id),
+    escrowAddress: text("escrow_address").notNull(),
+    kind: text("kind").notNull(),
+    chunkIndex: integer("chunk_index").notNull(),
+    chunk: text("chunk").notNull(),
+    cipherProof: jsonb("cipher_proof").notNull().default([]),
+    plainLeaf: text("plain_leaf").notNull(),
+    plainProof: jsonb("plain_proof").notNull().default([]),
+    derivedLeaf: text("derived_leaf"),
+    revealedKey: text("revealed_key"),
+    decryptedRow: text("decrypted_row"),
+    cipherProofVerified: boolean("cipher_proof_verified").notNull().default(false),
+    plainProofVerified: boolean("plain_proof_verified").notNull().default(false),
+    cheatVerified: boolean("cheat_verified").notNull().default(false),
+    detail: text("detail").notNull(),
+    status: text("status").notNull(),
+    txHash: text("tx_hash"),
+    simulated: boolean("simulated").notNull().default(false),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [unique("complaints_purchase_id_unique").on(t.purchaseId), index("complaints_escrow_idx").on(t.escrowAddress)],
 );
 
 export const sellerHistory = pgTable("seller_history", {
@@ -492,6 +538,7 @@ export const TABLE_NAMES = [
   "activity_events",
   "reservations",
   "samples",
+  "complaints",
   "seller_history",
   "exceptions",
   "controller_requests",

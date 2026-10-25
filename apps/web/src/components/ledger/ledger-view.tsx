@@ -21,7 +21,7 @@ const JOURNAL_LIMIT = 500;
 
 /** Activity kinds after which the books, the last run or the exception list may have changed. */
 const REFRESH_KINDS = new Set([
-  "usdc.transfer", "escrow.funded", "escrow.settled", "escrow.refunded", "escrow.bond-forfeited",
+  "usdc.transfer", "escrow.funded", "escrow.settled", "escrow.refunded", "escrow.swept",
   "reconciliation.ok", "reconciliation.difference", "exception.opened", "controller.requested", "controller.resolved",
 ]);
 

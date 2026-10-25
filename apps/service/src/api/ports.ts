@@ -1,6 +1,7 @@
 import type { Address } from "viem";
 import type { CheckedQuote, PaymentRequirements } from "@overflow/payment-client";
 import type {
+  EscrowStatus,
   MissionRecord,
   PaymentPath,
   PurchaseOrder,
@@ -104,12 +105,33 @@ export interface TreasuryReadPort {
   nodeAllow(id: bigint, payee: Address): Promise<boolean>;
 }
 
+/** The escrow as the chain holds it at one block: eth_call views plus the USDC balance. */
+export interface EscrowChainRead {
+  status: EscrowStatus;
+  /** Unix seconds; 0 until the key is revealed. */
+  challengeEnd: bigint;
+  /** bytes32(0) until the key is revealed. */
+  revealedKey: Hex;
+  balance: bigint;
+}
+
+/**
+ * Read side of one escrow order (chain/escrow-read.ts): status(), challengeEnd(), revealedKey() and the USDC
+ * balance, plus the block they were read at. Pure view calls; the default refuses (501) so a service without
+ * an RPC never invents an order's state.
+ */
+export interface EscrowReadPort {
+  latest(): Promise<{ blockNumber: bigint; blockTimestamp: bigint }>;
+  state(escrow: Address): Promise<EscrowChainRead>;
+}
+
 export interface Ports {
   orchestration: OrchestrationPort;
   adapters: Partial<Record<PaymentPath, PaymentAdapter>>;
   policy: PolicyPort;
   reconciliation: ReconciliationPort;
   treasuryRead: TreasuryReadPort;
+  escrowRead: EscrowReadPort;
 }
 
 /** Defaults for the ports later prompts build. The orchestration port is always real (createApp builds createOraclePort). */
@@ -124,7 +146,15 @@ export function defaultPorts(): Omit<Ports, "orchestration"> {
       },
     },
     treasuryRead: notWiredTreasuryRead(),
+    escrowRead: notWiredEscrowRead(),
   };
+}
+
+function notWiredEscrowRead(): EscrowReadPort {
+  const refuse = async (): Promise<never> => {
+    throw new NotWiredError("EscrowReadPort (escrow view calls)", "BASE_SEPOLIA_RPC_URL + deployments/base-sepolia.json");
+  };
+  return { latest: refuse, state: refuse };
 }
 
 function notWiredTreasuryRead(): TreasuryReadPort {

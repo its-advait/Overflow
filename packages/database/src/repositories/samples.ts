@@ -5,18 +5,22 @@ import { withDbErrors } from "../errors";
 import { samples } from "../schema";
 import { iso, newId, nowIso, nul, opt, parseOne, type WithOptional } from "./base";
 
-export type SampleInsert = WithOptional<SampleRecord, "id" | "createdAt">;
+export type SampleInsert = WithOptional<SampleRecord, "id" | "createdAt" | "judge" | "rows" | "simulated">;
 
 const toRecord = (r: typeof samples.$inferSelect): SampleRecord =>
   parseOne(SampleRecordSchema, {
     id: r.id,
     purchaseId: r.purchaseId,
     indices: r.indices,
+    randomness: opt(r.randomness),
     verdict: r.verdict,
     reason: r.reason,
+    judge: r.judge,
+    rows: r.rows,
     confidence: r.confidence == null ? undefined : Number(r.confidence),
     promptHash: opt(r.promptHash),
     outputHash: opt(r.outputHash),
+    simulated: r.simulated,
     createdAt: iso(r.createdAt),
   });
 
@@ -35,11 +39,15 @@ export function samplesRepository(db: Executor) {
             id: row.id,
             purchaseId: row.purchaseId,
             indices: row.indices,
+            randomness: nul(row.randomness),
             verdict: row.verdict,
             reason: row.reason,
+            judge: row.judge,
+            rows: row.rows,
             confidence: row.confidence === undefined ? null : String(row.confidence),
             promptHash: nul(row.promptHash),
             outputHash: nul(row.outputHash),
+            simulated: row.simulated,
             createdAt: new Date(row.createdAt),
           })
           .returning(),

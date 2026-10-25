@@ -2,6 +2,7 @@ import type { Executor } from "../client";
 import { activityEventsRepository } from "./activity-events";
 import { agentsRepository } from "./agents";
 import { chainTransactionsRepository } from "./chain-transactions";
+import { complaintsRepository } from "./complaints";
 import { controllerRequestsRepository } from "./controller-requests";
 import { escrowOrdersRepository } from "./escrow-orders";
 import { exceptionsRepository } from "./exceptions";
@@ -21,6 +22,7 @@ import { sellerHistoryRepository } from "./seller-history";
 export * from "./activity-events";
 export * from "./agents";
 export * from "./chain-transactions";
+export * from "./complaints";
 export * from "./controller-requests";
 export * from "./escrow-orders";
 export * from "./exceptions";
@@ -54,6 +56,7 @@ export function createRepositories(db: Executor) {
     activityEvents: activityEventsRepository(db),
     reservations: reservationsRepository(db),
     samples: samplesRepository(db),
+    complaints: complaintsRepository(db),
     sellerHistory: sellerHistoryRepository(db),
     exceptions: exceptionsRepository(db),
     controllerRequests: controllerRequestsRepository(db),

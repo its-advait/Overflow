@@ -33,17 +33,20 @@ const count = (n: number | undefined): number => {
   return n;
 };
 
+/** One row per seller whatever the caller's casing: decoded logs are checksummed, stored purchases often lowercase. */
+const canonical = (sellerAddress: string): string => AddressSchema.parse(sellerAddress).toLowerCase();
+
 export function sellerHistoryRepository(db: Executor) {
   return {
     async get(sellerAddress: string): Promise<SellerHistory | undefined> {
-      const addr = AddressSchema.parse(sellerAddress);
+      const addr = canonical(sellerAddress);
       const [r] = await db.select().from(sellerHistory).where(eq(sellerHistory.sellerAddress, addr));
       return r ? toRecord(r) : undefined;
     },
 
     /** Creates the row on first sight, otherwise adds the counters atomically. */
     async upsertIncrement(sellerAddress: string, inc: SellerHistoryIncrement): Promise<SellerHistory> {
-      const addr = AddressSchema.parse(sellerAddress);
+      const addr = canonical(sellerAddress);
       const orders = count(inc.orders);
       const onTime = count(inc.onTimeReveals);
       const late = count(inc.lateReveals);

@@ -21,28 +21,30 @@ const config = {
 };
 
 /**
- * The SIMULATED fixture replayed through the indexer: p1 settles, p2 refunds with a forfeited bond, p3 is never funded, p4 is a direct x402 buy.
+ * The SIMULATED fixture replayed through the indexer: p1 settles, p2 refunds on timeout with a forfeited bond, p3 is never funded,
+ * p4 is a direct x402 buy, p5 (a second seller) refunds on a proven mismatch with a forfeited bond.
  * `exclude` drops logs before replay (e.g. p3's PaidOut, to get a chain whose books can fully reconcile).
  */
 export async function replayFixture(opts: { exclude?: ((log: RawLog) => boolean) | undefined } = {}) {
   const handle = await testDatabase();
   await fixtureMissionAndResource(handle.repos);
   const svc = createPurchaseService(handle.db);
-  for (const id of ["resource-2", "resource-3", "resource-4"]) {
+  for (const id of ["resource-2", "resource-3", "resource-4", "resource-5"]) {
     await handle.repos.resources.insert({ ...(await handle.repos.resources.getById("resource-1"))!, id });
   }
-  const terms = (purchaseId: string, orderId: `0x${string}`, escrowAddress: `0x${string}`, bondAtomic: string) => ({
-    purchaseId, orderIdBytes32: orderId, escrowAddress, sellerAddress: FIXTURE.seller, amountAtomic: FIXTURE.amount, bondAtomic,
+  const terms = (purchaseId: string, orderId: `0x${string}`, escrowAddress: `0x${string}`, bondAtomic: string, sellerAddress: `0x${string}`) => ({
+    purchaseId, orderIdBytes32: orderId, escrowAddress, sellerAddress, amountAtomic: FIXTURE.amount, bondAtomic,
     termsHash: b32(9), manifestHash: b32(5), rootPlain: b32(21), rootCipher: b32(22), keyCommitment: b32(23),
-    revealDeadline: "1800000000", challengeWindow: "600", sourceKey: FIXTURE.owner, minTimestamp: "0",
+    revealDeadline: "1800000000", challengeWindow: "600", sourceKey: FIXTURE.owner, minTimestamp: "0", chunkCount: 7,
   });
-  for (const [id, order, escrow, resourceId, bond] of [
-    ["p1", b32(1), FIXTURE.escrow1, "resource-1", "0"],
-    ["p2", b32(2), FIXTURE.escrow2, "resource-2", FIXTURE.bond],
-    ["p3", b32(3), FIXTURE.escrow3, "resource-3", "0"],
+  for (const [id, order, escrow, resourceId, bond, seller] of [
+    ["p1", b32(1), FIXTURE.escrow1, "resource-1", "0", FIXTURE.seller],
+    ["p2", b32(2), FIXTURE.escrow2, "resource-2", FIXTURE.bond, FIXTURE.seller],
+    ["p3", b32(3), FIXTURE.escrow3, "resource-3", "0", FIXTURE.seller],
+    ["p5", b32(4), FIXTURE.escrow4, "resource-5", FIXTURE.bond, FIXTURE.cheater],
   ] as const) {
-    await svc.propose({ purchase: purchaseInput({ id, orderIdBytes32: order, escrowAddress: escrow, resourceId, idempotencyKey: `k-${id}` }), reason: "fixture", source: { kind: "oracle", reference: "test" } });
-    await handle.repos.escrowOrders.insert(terms(id, order, escrow, bond));
+    await svc.propose({ purchase: purchaseInput({ id, orderIdBytes32: order, escrowAddress: escrow, sellerAddress: seller, resourceId, idempotencyKey: `k-${id}` }), reason: "fixture", source: { kind: "oracle", reference: "test" } });
+    await handle.repos.escrowOrders.insert(terms(id, order, escrow, bond, seller));
   }
   await svc.propose({
     purchase: purchaseInput({
@@ -53,7 +55,7 @@ export async function replayFixture(opts: { exclude?: ((log: RawLog) => boolean)
     reason: "fixture: direct x402 API purchase (SIMULATED)",
     source: { kind: "oracle", reference: "test" },
   });
-  for (const [id, digest] of [["p1", b32(0xd1)], ["p2", b32(0xd2)], ["p4", b32(0xd4)]] as const) {
+  for (const [id, digest] of [["p1", b32(0xd1)], ["p2", b32(0xd2)], ["p4", b32(0xd4)], ["p5", b32(0xd5)]] as const) {
     await svc.transition(id, "RESERVED", { reason: "signed", source: { kind: "adapter", reference: "t" }, authorizationDigest: digest });
     await svc.transition(id, "PAYMENT_PENDING", { reason: "sent", source: { kind: "adapter", reference: "t" }, authorizationDigest: digest });
   }

@@ -9,7 +9,7 @@ describe("reconciliation (SIMULATED fixture, fake balances)", () => {
   let recon: ReturnType<typeof createReconciliation>;
   const bus = createActivityBus();
   const published: BusMessage[] = [];
-  const LEDGER_TREASURY = 37_400_000n; // 50 + 12 + 2.4 - 12 - 12 - 3 USDC
+  const LEDGER_TREASURY = 39_800_000n; // 50 - 12 - 12 + 14.4 - 3 - 12 + 14.4 USDC
 
   beforeAll(async () => {
     r = await replayFixture();
@@ -25,16 +25,19 @@ describe("reconciliation (SIMULATED fixture, fake balances)", () => {
     expect(run.treasuryChainAtomic).toBe(LEDGER_TREASURY.toString());
     expect(run.treasuryLedgerAtomic).toBe(LEDGER_TREASURY.toString());
     expect(run.treasuryDifferenceAtomic).toBe("0");
-    expect(run.escrowsChecked).toBe(3);
+    expect(run.escrowsChecked).toBe(4);
     expect(run.materialityAtomic).toBe("10000");
     // Every order is recorded, matched or not: p1 settled and p2 refunded net to zero, p3 was never funded.
     expect(run.escrows.map((e) => [e.purchaseId, e.status, e.open, e.expectedAtomic, e.ledgerAtomic, e.differenceAtomic, e.material]).sort()).toEqual([
       ["p1", "Settled", false, "0", "0", "0", false],
       ["p2", "Refunded", false, "0", "0", "0", false],
       ["p3", "Created", true, "0", "0", "0", false],
+      ["p5", "Refunded", false, "0", "0", "0", false],
     ]);
-    expect(run.escrows.every((e) => e.chainAtomic === undefined)).toBe(true); // no open funded order, so no escrow balance was read
-    expect(run.eventsChecked).toBe(5); // PaidOut x2, Refunded x1, Paid x2
+    // Closed orders read no balance; the open Created order (p3) does, since settle() may already have funded it.
+    expect(run.escrows.filter((e) => e.status !== "Created").every((e) => e.chainAtomic === undefined)).toBe(true);
+    expect(run.escrows.find((e) => e.purchaseId === "p3")!.chainAtomic).toBe("0");
+    expect(run.eventsChecked).toBe(7); // PaidOut x2, Refunded x2, Paid x3
     expect(run.differences.map((d) => d.kind)).toEqual(["event-coverage"]);
     // The refused PaidOut handler rolled back its purchase link, so the difference names the event, not p3.
     expect(run.differences[0]).toMatchObject({ subject: expect.stringMatching(/^event:0xf+000d:1$/), differenceAtomic: FIXTURE.amount, material: true });

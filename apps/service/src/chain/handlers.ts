@@ -11,7 +11,13 @@ import {
 import type { PurchaseService, TransitionSource } from "../orchestration/purchase-service.js";
 import type { DecodedLog, JsonArgs } from "./decode.js";
 import { completeControllerRequests } from "../exceptions/service.js";
-import { isKnownEscrow, purchaseForOrder as purchaseForOrderOn, waitingPurchaseForPayee } from "./lookup.js";
+import {
+  isKnownEscrow,
+  orderAmountForEscrow,
+  purchaseForEscrow,
+  purchaseForOrder as purchaseForOrderOn,
+  waitingPurchaseForPayee,
+} from "./lookup.js";
 
 // ---------------------------------------------------------------------------
 // One handler per indexed event. A handler runs inside the per-log database
@@ -53,6 +59,9 @@ const source = (txHash: Hex): TransitionSource => ({ kind: "chain", reference: t
 
 const purchaseForOrder = (ctx: HandlerContext, orderId: string): Promise<PurchaseRecord | undefined> =>
   purchaseForOrderOn(ctx.repos, orderId);
+/** Escrow events carry no orderId: the emitting contract is the order. */
+const escrowOf = (ctx: HandlerContext): Address => ctx.row.contractAddress;
+const purchaseForThisEscrow = (ctx: HandlerContext): Promise<PurchaseRecord | undefined> => purchaseForEscrow(ctx.repos, escrowOf(ctx));
 const same = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
 
 async function link(ctx: HandlerContext, purchase: PurchaseRecord | undefined): Promise<void> {
@@ -76,9 +85,9 @@ async function note(
 }
 
 /** Unmatched escrow events are still recorded, labeled as such, and never move anything. */
-async function unmatched(ctx: HandlerContext, kind: ActivityKind, what: string, orderId: string): Promise<HandlerResult> {
-  ctx.warn(`${ctx.decoded.eventName} for order ${orderId} matches no purchase`);
-  return { events: [await note(ctx, kind, `${what} for order ${orderId} (no matching purchase)`)] };
+async function unmatched(ctx: HandlerContext, kind: ActivityKind, what: string): Promise<HandlerResult> {
+  ctx.warn(`${ctx.decoded.eventName} from escrow ${escrowOf(ctx)} matches no purchase`);
+  return { events: [await note(ctx, kind, `${what} from escrow ${escrowOf(ctx)} (no matching purchase)`)] };
 }
 
 const completed = (ctx: HandlerContext): Promise<ActivityEvent[]> =>
@@ -147,7 +156,8 @@ const handlers: Record<string, Handler> = {
   async ReservationReleased(ctx) {
     const a = ctx.decoded.args;
     const digest = hex(a, "digest");
-    const budgetRestored = a["budgetRestored"] === true;
+    // `refunded`: USDC never consumed the nonce, so the charge was reversed up the ancestor chain (allowance restored).
+    const budgetRestored = a["refunded"] === true;
     const reservation = await ctx.repos.reservations.getByDigest(digest);
     if (reservation && reservation.status === "active") await ctx.repos.reservations.markReleased(digest, ctx.txHash);
     const purchase = await ctx.repos.purchases.getByAuthorizationDigest(digest);
@@ -164,7 +174,9 @@ const handlers: Record<string, Handler> = {
     const event = await note(
       ctx,
       "treasury.released",
-      `ReservationReleased: reservation ${digest} (node ${str(a, "id")}, ${str(a, "value")} atomic USDC) released; budget ${budgetRestored ? "restored (nonce unused)" : "kept (USDC had moved)"}`,
+      `ReservationReleased: reservation ${digest}` +
+        (reservation ? ` (node ${reservation.nodeId}, ${reservation.valueAtomic} atomic USDC)` : "") +
+        ` released; budget ${budgetRestored ? "restored (nonce unused)" : "kept (USDC had moved)"}`,
       { purchase },
     );
     return { events: [event], purchaseId: purchase?.id };
@@ -192,6 +204,11 @@ const handlers: Record<string, Handler> = {
   async EscrowFactorySet(ctx) {
     return {
       events: [await note(ctx, "treasury.policy", `EscrowFactorySet: factory ${str(ctx.decoded.args, "factory")}`)],
+    };
+  },
+  async ReservationWindowSet(ctx) {
+    return {
+      events: [await note(ctx, "treasury.policy", `ReservationWindowSet: reservations may live at most ${str(ctx.decoded.args, "secondsMax")} s`)],
     };
   },
 
@@ -241,22 +258,36 @@ const handlers: Record<string, Handler> = {
     const event = await note(
       ctx,
       "escrow.created",
-      `OrderCreated: escrow ${escrow} for order ${orderId}, seller ${str(a, "seller")}, amount ${str(a, "amount")}, bond ${str(a, "bond")}` +
+      `OrderCreated: escrow ${escrow} for order ${orderId}, buyer ${str(a, "buyer")}, seller ${seller}, amount ${str(a, "amount")}, termsHash ${str(a, "termsHash")}` +
         (purchase ? "" : " (no matching purchase)"),
       { purchase },
     );
     return { events: [event], purchaseId: purchase?.id, newEscrow: escrow };
   },
 
-  // ---- escrow -------------------------------------------------------------
+  /** The factory's cross-treasury cheat count went up (emitted inside the escrow's complaint transaction). */
+  async CheatRecorded(ctx) {
+    const a = ctx.decoded.args;
+    const escrow = addr(a, "escrow");
+    const purchase = await purchaseForEscrow(ctx.repos, escrow);
+    await link(ctx, purchase);
+    const event = await note(
+      ctx,
+      "seller.cheat-recorded",
+      `CheatRecorded: factory counted a proven cheat for seller ${str(a, "seller")} on escrow ${escrow}; the treasury now reverts PayeeFlagged for this seller`,
+      { purchase },
+    );
+    return { events: [event], purchaseId: purchase?.id };
+  },
+
+  // ---- escrow (the emitting address is the order) ---------------------------
   async OrderFunded(ctx) {
     const a = ctx.decoded.args;
-    const orderId = hex(a, "orderId");
-    const purchase = await purchaseForOrder(ctx, orderId);
-    if (!purchase) return unmatched(ctx, "escrow.funded", `OrderFunded ${str(a, "amount")} atomic USDC`, orderId);
+    const purchase = await purchaseForThisEscrow(ctx);
+    if (!purchase) return unmatched(ctx, "escrow.funded", `OrderFunded (balance ${str(a, "balance")} atomic USDC)`);
     await link(ctx, purchase);
     const r = await ctx.purchases.transition(purchase.id, "ESCROW_FUNDED", {
-      reason: `OrderFunded: escrow holds ${str(a, "amount")} atomic USDC for order ${orderId}`,
+      reason: `OrderFunded: escrow ${escrowOf(ctx)} holds ${str(a, "balance")} atomic USDC (price plus the seller's bond)`,
       // The indexer confirming an earlier uncertain broadcast is the reconciliation against the chain.
       source: purchase.status === "PAYMENT_UNKNOWN" ? { kind: "reconciliation", reference: ctx.txHash } : source(ctx.txHash),
       txHash: ctx.txHash,
@@ -268,19 +299,21 @@ const handlers: Record<string, Handler> = {
 
   async KeyRevealed(ctx) {
     const a = ctx.decoded.args;
-    const orderId = hex(a, "orderId");
-    const purchase = await purchaseForOrder(ctx, orderId);
-    if (!purchase) return unmatched(ctx, "escrow.revealed", "KeyRevealed", orderId);
+    const purchase = await purchaseForThisEscrow(ctx);
+    if (!purchase) return unmatched(ctx, "escrow.revealed", "KeyRevealed");
     await link(ctx, purchase);
+    const challengeEnd = str(a, "challengeEnd");
     const r = await ctx.purchases.transition(purchase.id, "DELIVERY_PENDING", {
-      reason: `KeyRevealed: seller revealed the delivery key for order ${orderId}`,
+      reason: `KeyRevealed: seller revealed the delivery key for escrow ${escrowOf(ctx)}; challenge window open until ${challengeEnd}`,
       source: source(ctx.txHash),
       txHash: ctx.txHash,
-      escrow: { status: "Revealed", revealedKey: hex(a, "key") },
+      escrow: { status: "Revealed", revealedKey: hex(a, "key"), challengeEnd },
     });
     if (r.escrow) {
+      // revealKey() requires block.timestamp < revealDeadline, so an indexed reveal is on time by construction;
+      // the block timestamp is still checked so a wrong deadline on the stored order shows up as "late".
       const ts = await ctx.blockTimestamp();
-      const onTime = ts <= BigInt(r.escrow.revealDeadline);
+      const onTime = ts < BigInt(r.escrow.revealDeadline);
       await ctx.repos.sellerHistory.upsertIncrement(purchase.sellerAddress, onTime ? { onTimeReveals: 1 } : { lateReveals: 1 });
     } else {
       ctx.warn(`purchase ${purchase.id} has no escrow_orders row; reveal timing not scored`);
@@ -290,20 +323,21 @@ const handlers: Record<string, Handler> = {
 
   async Accepted(ctx) {
     const a = ctx.decoded.args;
-    const orderId = hex(a, "orderId");
-    const purchase = await purchaseForOrder(ctx, orderId);
+    const purchase = await purchaseForThisEscrow(ctx);
     await link(ctx, purchase);
-    const event = await note(ctx, "escrow.accepted", `Accepted: node key ${str(a, "signer")} accepted delivery for order ${orderId}`, {
-      purchase,
-    });
+    const event = await note(
+      ctx,
+      "escrow.accepted",
+      `Accepted: treasury node ${str(a, "nodeId")} (key ${str(a, "signer")}) accepted delivery from escrow ${escrowOf(ctx)}`,
+      { purchase },
+    );
     return { events: [event], purchaseId: purchase?.id };
   },
 
   async PaidOut(ctx) {
     const a = ctx.decoded.args;
-    const orderId = hex(a, "orderId");
-    const purchase = await purchaseForOrder(ctx, orderId);
-    if (!purchase) return unmatched(ctx, "escrow.settled", `PaidOut ${str(a, "amount")} atomic USDC to ${str(a, "seller")}`, orderId);
+    const purchase = await purchaseForThisEscrow(ctx);
+    if (!purchase) return unmatched(ctx, "escrow.settled", `PaidOut ${str(a, "amount")} atomic USDC (bond ${str(a, "bond")}) to ${str(a, "seller")}`);
     await link(ctx, purchase);
     const r = await ctx.purchases.transition(purchase.id, "SETTLED", {
       reason: `PaidOut: ${str(a, "amount")} atomic USDC paid to seller ${str(a, "seller")} (bond ${str(a, "bond")} returned)`,
@@ -316,14 +350,15 @@ const handlers: Record<string, Handler> = {
 
   async Refunded(ctx) {
     const a = ctx.decoded.args;
-    const orderId = hex(a, "orderId");
     const reason = str(a, "reason") || "unspecified";
-    const purchase = await purchaseForOrder(ctx, orderId);
-    if (!purchase) return unmatched(ctx, "escrow.refunded", `Refunded ${str(a, "amount")} atomic USDC (${reason})`, orderId);
+    const purchase = await purchaseForThisEscrow(ctx);
+    if (!purchase) return unmatched(ctx, "escrow.refunded", `Refunded (${reason})`);
     await link(ctx, purchase);
+    const held = await orderAmountForEscrow(ctx.repos, escrowOf(ctx));
+    const amounts = held ? `${held.amount} atomic USDC price plus ${held.bond} bond` : "the escrow's whole balance";
     // A refund restores treasury USDC. It never restores the agent's spent allowance.
     const r = await ctx.purchases.transition(purchase.id, "REFUNDED", {
-      reason: `Refunded: ${str(a, "amount")} atomic USDC returned to the treasury (${reason}); allowance unchanged`,
+      reason: `Refunded: ${amounts} returned to the treasury (${reason}); allowance unchanged`,
       source: source(ctx.txHash),
       txHash: ctx.txHash,
       escrow: { status: "Refunded", refundReason: reason },
@@ -331,27 +366,36 @@ const handlers: Record<string, Handler> = {
     return { events: [r.event], purchaseId: purchase.id };
   },
 
-  async BondForfeited(ctx) {
+  async CheatProven(ctx) {
     const a = ctx.decoded.args;
-    const orderId = hex(a, "orderId");
-    const purchase = await purchaseForOrder(ctx, orderId);
+    const seller = addr(a, "seller");
+    const purchase = await purchaseForThisEscrow(ctx);
     await link(ctx, purchase);
+    await ctx.repos.sellerHistory.upsertIncrement(seller, { provenCheats: 1, flagged: true });
+    // The stored complaint (if the buyer built one here) is proven only by this event.
+    const complaint = await ctx.repos.complaints.markProven(escrowOf(ctx), ctx.txHash);
     const event = await note(
       ctx,
-      "escrow.bond-forfeited",
-      `BondForfeited: seller ${str(a, "seller")} forfeited a ${str(a, "bond")} atomic USDC bond to the treasury for order ${orderId}` +
-        (purchase ? "" : " (no matching purchase)"),
+      "seller.flagged",
+      `CheatProven: seller ${seller} cheated on chunk ${str(a, "index")} of escrow ${escrowOf(ctx)}; flagged for every treasury` +
+        (complaint ? ` (complaint ${complaint.id} proven)` : ""),
       { purchase },
     );
     return { events: [event], purchaseId: purchase?.id };
   },
 
-  async CheatProven(ctx) {
+  /** USDC that reached a closed order came back to the buyer treasury. Booked by reconciliation/sweeps; noted here. */
+  async Swept(ctx) {
     const a = ctx.decoded.args;
-    const seller = addr(a, "seller");
-    await ctx.repos.sellerHistory.upsertIncrement(seller, { provenCheats: 1, flagged: true });
-    const event = await note(ctx, "seller.flagged", `CheatProven: seller ${seller} cheated on chunk ${str(a, "index")}; flagged for every treasury`);
-    return { events: [event] };
+    const purchase = await purchaseForThisEscrow(ctx);
+    await link(ctx, purchase);
+    const event = await note(
+      ctx,
+      "escrow.swept",
+      `Swept: ${str(a, "amount")} atomic USDC returned from closed escrow ${escrowOf(ctx)} to ${str(a, "buyer")}`,
+      { purchase },
+    );
+    return { events: [event], purchaseId: purchase?.id };
   },
 };
 

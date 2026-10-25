@@ -90,6 +90,7 @@ export function createApp(opts: CreateAppOptions) {
       policy: opts.ports?.policy ?? base.policy,
       reconciliation: opts.ports?.reconciliation ?? base.reconciliation,
       treasuryRead: opts.ports?.treasuryRead ?? base.treasuryRead,
+      escrowRead: opts.ports?.escrowRead ?? base.escrowRead,
     },
     session: opts.session ?? resolveSession(),
   };

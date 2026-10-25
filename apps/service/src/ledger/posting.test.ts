@@ -43,11 +43,12 @@ describe("posting rules (SIMULATED fixture replay)", () => {
   });
 
   it("escrow funded (both payment paths): Dr escrow-deposit / Cr usdc-treasury; the Transfer and Paid post nothing", async () => {
-    expect((await byEvent(4, 2))[0]).toMatchObject({ debitAccount: "escrow-deposit", creditAccount: "usdc-treasury", amountAtomic: FIXTURE.amount, purchaseId: "p1" });
-    expect((await byEvent(8, 1))[0]).toMatchObject({ debitAccount: "escrow-deposit", creditAccount: "usdc-treasury", amountAtomic: FIXTURE.amount, purchaseId: "p2" });
-    expect(await byEvent(4, 0)).toEqual([]); // Transfer treasury -> escrow1
+    // The deposit is booked when the treasury's USDC moves (settle()'s Transfer), on both facilitator paths.
+    expect((await byEvent(4, 0))[0]).toMatchObject({ debitAccount: "escrow-deposit", creditAccount: "usdc-treasury", amountAtomic: FIXTURE.amount, purchaseId: "p1" });
+    expect((await byEvent(8, 0))[0]).toMatchObject({ debitAccount: "escrow-deposit", creditAccount: "usdc-treasury", amountAtomic: FIXTURE.amount, purchaseId: "p2" });
     expect(await byEvent(4, 1)).toEqual([]); // Paid
-    expect(await byEvent(8, 0)).toEqual([]); // Transfer treasury -> escrow2 (coinbase path, no Paid)
+    expect(await byEvent(4, 2)).toEqual([]); // OrderFunded: status only (its balance includes the seller's bond)
+    expect(await byEvent(8, 1)).toEqual([]); // OrderFunded on the coinbase path
   });
 
   it("delivery accepted: expense split by Fusion allocations across departments, total unchanged", async () => {
@@ -60,14 +61,27 @@ describe("posting rules (SIMULATED fixture replay)", () => {
     expect(new Set(lines.map((l) => l.sourceEventId)).size).toBe(2);
   });
 
-  it("timeout refund reverses the deposit and leaves no expense; the bond is other income", async () => {
-    expect((await byEvent(9, 1))[0]).toMatchObject({ debitAccount: "usdc-treasury", creditAccount: "escrow-deposit", amountAtomic: FIXTURE.amount, purchaseId: "p2" });
-    expect((await byEvent(9, 3))[0]).toMatchObject({ debitAccount: "usdc-treasury", creditAccount: "other-income-seller-forfeiture", amountAtomic: FIXTURE.bond, purchaseId: "p2" });
-    expect(await byEvent(9, 0)).toEqual([]); // the two USDC transfers back post nothing
-    expect(await byEvent(9, 2)).toEqual([]);
+  it("timeout refund reverses the deposit and leaves no expense; the bond is other income (both rows from one Refunded)", async () => {
+    const rows = await byEvent(9, 1);
+    expect(rows.map((e) => [e.debitAccount, e.creditAccount, e.amountAtomic, e.purchaseId, e.sourceEventId.endsWith("#bond")]).sort()).toEqual([
+      ["usdc-treasury", "escrow-deposit", FIXTURE.amount, "p2", false],
+      ["usdc-treasury", "other-income-seller-forfeiture", FIXTURE.bond, "p2", true],
+    ]);
+    expect(await byEvent(9, 0)).toEqual([]); // the USDC transfer back (price + bond in one) posts nothing
     const p2 = await r.handle.repos.financialEntries.listForPurchase("p2");
     expect(p2.some((e) => e.debitAccount === "data-expense" || e.creditAccount === "data-expense")).toBe(false);
     expect(await r.handle.repos.financialEntries.depositLineForPurchase("p2")).toBe(0n);
+  });
+
+  it("a proven mismatch books like a timeout: deposit reversed, bond (returned balance minus deposit) forfeited, no expense", async () => {
+    expect((await byEvent(17, 1))[0]).toMatchObject({ debitAccount: "escrow-deposit", creditAccount: "usdc-treasury", amountAtomic: FIXTURE.amount, purchaseId: "p5" }); // the price; OrderFunded's 14.4 balance posts nothing
+    expect(await byEvent(17, 3)).toEqual([]);
+    const rows = await byEvent(19, 3);
+    expect(rows.map((e) => [e.creditAccount, e.amountAtomic]).sort()).toEqual([["escrow-deposit", FIXTURE.amount], ["other-income-seller-forfeiture", FIXTURE.bond]]);
+    expect(await byEvent(19, 0)).toEqual([]); // CheatProven
+    expect(await byEvent(19, 1)).toEqual([]); // CheatRecorded
+    expect(await byEvent(19, 2)).toEqual([]); // Transfer back
+    expect(await r.handle.repos.financialEntries.depositLineForPurchase("p5")).toBe(0n);
   });
 
   it("direct x402 purchase: Dr data-expense (department) / Cr usdc-treasury from the USDC Transfer; Paid posts nothing", async () => {
@@ -86,18 +100,18 @@ describe("posting rules (SIMULATED fixture replay)", () => {
 
   it("debits equal credits for every entry and across the books", async () => {
     const all = await r.handle.repos.financialEntries.listAll();
-    expect(all.length).toBe(8);
+    expect(all.length).toBe(11);
     for (const e of all) expect(e.debitAccount).not.toBe(e.creditAccount); // one debit and one credit of the same amount per row
     const balances = await r.handle.repos.financialEntries.balances();
     const trial = balances.reduce((s, b) => s + b.debitsAtomic - b.creditsAtomic, 0n);
     expect(trial).toBe(0n);
     const net = Object.fromEntries(balances.map((b) => [b.account, (b.debitsAtomic - b.creditsAtomic).toString()]));
     expect(net).toEqual({
-      "usdc-treasury": "37400000",
+      "usdc-treasury": "39800000",
       "escrow-deposit": "0",
       "data-expense": "15000000",
       "owner-contribution": "-50000000",
-      "other-income-seller-forfeiture": "-2400000",
+      "other-income-seller-forfeiture": "-4800000",
     });
     const depts = await r.handle.repos.financialEntries.departmentBalances();
     expect(depts.map((d) => [d.department, d.account, d.debitsAtomic.toString()])).toEqual([
@@ -112,11 +126,11 @@ describe("posting rules (SIMULATED fixture replay)", () => {
     expect(again.logsInserted).toBe(0);
     expect(again.entries).toEqual([]);
     // Calling the rule directly for an already-booked event is also a no-op.
-    const row = (await r.handle.repos.chainTransactions.listByEvent("OrderFunded"))[0]!;
+    const row = (await r.handle.repos.chainTransactions.listByEvent("Transfer")).find((x) => String(x.args["to"]).toLowerCase() === FIXTURE.escrow1)!;
     const posted = await postForLog({
       repos: r.handle.repos,
       row,
-      decoded: { kind: "escrow", eventName: "OrderFunded", args: row.args as Record<string, string>, log: r.source.logs[0]! },
+      decoded: { kind: "usdc", eventName: "Transfer", args: row.args as Record<string, string>, log: r.source.logs[0]! },
       treasury: FIXTURE.treasury,
       warn: () => undefined,
     });

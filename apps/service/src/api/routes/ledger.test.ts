@@ -7,14 +7,15 @@ import { createApp } from "../app.js";
 // The books the way a controller reads them (SPEC "Finance layer for Hyphenate"):
 // GET /api/ledger, GET/POST /api/reconciliation, GET /api/exceptions + decide, driven by the
 // SIMULATED fixture with p3's PaidOut removed, so the chain is one honest order (p1, Fusion split
-// research 8.40 / finance 3.60), one refunded order (p2, bond forfeited) and one direct x402 buy (p4).
+// research 8.40 / finance 3.60), one timeout refund (p2, bond forfeited), one direct x402 buy (p4) and one
+// proven-mismatch refund (p5, bond forfeited).
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const json = (res: Response): Promise<any> => res.json() as Promise<any>;
 const JSON_HEADERS = { "content-type": "application/json" };
 
-/** 50 funding - 12 p1 - 12 p2 + 12 refund + 2.4 bond - 3 direct. */
-const LEDGER_TREASURY = 37_400_000n;
+/** 50 funding - 12 p1 - 12 p2 + 12 refund + 2.4 bond - 3 direct - 12 p5 + 12 refund + 2.4 bond. */
+const LEDGER_TREASURY = 39_800_000n;
 
 describe("ledger, reconciliation and exceptions API (SIMULATED fixture)", () => {
   let r: Awaited<ReturnType<typeof replayFixture>>;
@@ -41,7 +42,7 @@ describe("ledger, reconciliation and exceptions API (SIMULATED fixture)", () => 
     const res = await get("/api/ledger");
     expect(res.status).toBe(200);
     const body = await json(res);
-    expect(body.entries).toHaveLength(8);
+    expect(body.entries).toHaveLength(11);
     for (const e of body.entries) expect(e.txHash).toMatch(/^0x[0-9a-f]{64}$/);
     expect(body.entries.map(line).sort()).toEqual(
       [
@@ -53,6 +54,9 @@ describe("ledger, reconciliation and exceptions API (SIMULATED fixture)", () => 
         "p2 usdc-treasury escrow-deposit 12000000 -", // timeout refund: never an expense
         "p2 usdc-treasury other-income-seller-forfeiture 2400000 -", // bond forfeited
         "p4 data-expense usdc-treasury 3000000 research", // direct x402 purchase
+        "p5 escrow-deposit usdc-treasury 12000000 -", // escrow funded (the price, not the 14.4 balance)
+        "p5 usdc-treasury escrow-deposit 12000000 -", // proven mismatch: price back, never an expense
+        "p5 usdc-treasury other-income-seller-forfeiture 2400000 -", // bond forfeited
       ].sort(),
     );
     expect(body.entries.filter((e: { purchaseId?: string; debitAccount: string }) => e.purchaseId === "p2" && e.debitAccount === "data-expense")).toEqual([]);
@@ -62,7 +66,7 @@ describe("ledger, reconciliation and exceptions API (SIMULATED fixture)", () => 
     expect(net("escrow-deposit")).toBe("0");
     expect(net("data-expense")).toBe("15000000");
     expect(net("owner-contribution")).toBe("-50000000");
-    expect(net("other-income-seller-forfeiture")).toBe("-2400000");
+    expect(net("other-income-seller-forfeiture")).toBe("-4800000");
     expect(body.departments.map((d: { department: string; netAtomic: string }) => [d.department, d.netAtomic])).toEqual([
       ["finance", "3600000"],
       ["research", "11400000"],
@@ -71,7 +75,7 @@ describe("ledger, reconciliation and exceptions API (SIMULATED fixture)", () => 
 
   it("journal filters by account and department; balances stay whole-book", async () => {
     const escrow = await json(await get("/api/ledger?account=escrow-deposit"));
-    expect(escrow.entries).toHaveLength(5);
+    expect(escrow.entries).toHaveLength(7); // OrderFunded x3, PaidOut p1 x2, Refunded price rows x2
     expect(escrow.balances.find((b: { account: string }) => b.account === "usdc-treasury").netAtomic).toBe(LEDGER_TREASURY.toString());
     const finance = await json(await get("/api/ledger?department=finance"));
     expect(finance.entries.map(line)).toEqual(["p1 data-expense escrow-deposit 3600000 finance"]);
@@ -109,14 +113,15 @@ describe("ledger, reconciliation and exceptions API (SIMULATED fixture)", () => 
       treasuryChainAtomic: LEDGER_TREASURY.toString(),
       treasuryLedgerAtomic: LEDGER_TREASURY.toString(),
       treasuryDifferenceAtomic: "0",
-      escrowsChecked: 3,
-      eventsChecked: 4, // PaidOut p1, Refunded p2, Paid x2
+      escrowsChecked: 4,
+      eventsChecked: 6, // PaidOut p1, Refunded p2, Refunded p5, Paid x3
       materialityAtomic: "10000",
     });
     expect(run.escrows.map((e: { purchaseId: string; status: string; open: boolean; ledgerAtomic: string; differenceAtomic: string; material: boolean }) => [e.purchaseId, e.status, e.open, e.ledgerAtomic, e.differenceAtomic, e.material]).sort()).toEqual([
       ["p1", "Settled", false, "0", "0", false],
       ["p2", "Refunded", false, "0", "0", false],
       ["p3", "Created", true, "0", "0", false],
+      ["p5", "Refunded", false, "0", "0", false],
     ]);
     for (const e of run.escrows) expect(e.escrowAddress).toMatch(/^0x[0-9a-fA-F]{40}$/);
 

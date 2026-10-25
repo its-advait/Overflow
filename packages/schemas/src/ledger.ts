@@ -37,7 +37,6 @@ export const ChainEventKindSchema = z.enum([
   "Refunded",
   "Swept",
   "LateArrival",
-  "BondForfeited",
   /** USDC ERC-20 Transfer into or out of the treasury (funding, direct x402 purchase). */
   "Transfer",
 ]);
@@ -121,7 +120,13 @@ export const ActivityKindSchema = z.enum([
   "indexer.unconfirmed",
   // USDC transfers touching the treasury; the ledger books funding and direct purchases from these.
   "usdc.transfer",
-  "escrow.bond-forfeited",
+  // Escrow `Swept`: USDC that reached a closed order came back to the treasury.
+  "escrow.swept",
+  // Factory `CheatRecorded`: the cross-treasury cheat count for a seller went up.
+  "seller.cheat-recorded",
+  // Buyer-side recourse evidence (service, not chain): a sample was judged; a complaint was built.
+  "sample.judged",
+  "complaint.built",
   // Reconciliation run that found at least one difference (each also opens an exception).
   "reconciliation.difference",
   // Oracle audit: one per model call, carrying the prompt hash and output hash (SPEC "Oracle" guardrails).
