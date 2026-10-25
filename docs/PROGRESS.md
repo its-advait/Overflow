@@ -1580,3 +1580,25 @@ Live on the Anvil fork (`anvil-up.sh`, `anvil:provision`: treasury `0x84123aef�
 - A `create`-refused order keeps its `escrow_orders` row, so `GET /api/escrow` shows that escrow as `Created` (the row's default) next to the `REJECTED` purchase; no contract exists at that address.
 - `GET /api/activity?missionId=` lists oldest first; the web sorts.
 - The live model named a field `ev_registrations` that the SIMULATED catalog calls `units`; the owner's requirements edit (already in the UI) fixes it before confirm.
+
+## 2026-10-25: settings and judge controls (web half)
+
+`/settings` replaces the placeholder: five panels over the judge controls API, every row the service's own answer.
+
+- **Sellers (SIMULATED)**: the three recourse sellers with a behaviour select (honest, ghost, swap) wired to `PUT /api/settings/sellers/:address`; the row re-reads from the response. A flagged seller shows the factory's `CheatRecorded` flag. "Run one SIMULATED order now" shows payer, amount, destination and the expected outcome per behaviour before the click (`MoneyActionPreview`), then the runner's steps and tx hashes from `POST /api/settings/orders`; the escrow and purchase status are read back from `GET /api/escrow/:purchaseId` every 3 s until Settled or Refunded. In mock mode the control answers the service's 501 honestly ("SIMULATED orders need the local Anvil fork"); nothing is faked.
+- **Listings (SIMULATED)**: price (USDC string → `toAtomic`), license and seats per simulated listing via `PUT /api/resources/:id`, with the license's effect on Fusion spelled out.
+- **Fusion check**: pick a confirmed or active mission, Propose, and read the `fusion.decision` rows back from `GET /api/activity` (newest first; parsed into Merge / No merge + failing rules from Fusion's exact reason strings). A 501 from a service without order terms is shown as "No order prepared" and the list is re-read; it claims nothing about what was recorded.
+- **Agent caps and payees**: node picker + the existing `RequestDialog` (raise cap, add payee); requests listed with their controller phase; DONE only from the indexed event.
+- **Network and contracts**: `GET /api/settings/network` (treasury, factory, owner, token domain, relayer, floor, reservation window, nodes, block).
+
+Files: `apps/web/src/lib/api/{client,http,mock,contracts}.ts` (new methods and schemas), `lib/mocks/fixtures.ts` (`sellers`, `network`, `SELLER_BEHAVIOUR_LABEL`), `lib/settings/{fusion,orders,index}.ts` + tests, `components/settings/*`, `app/settings/page.tsx`.
+
+### Checks run
+- `pnpm --filter @overflow/web typecheck`: clean. `pnpm --filter @overflow/web lint`: clean. `pnpm exec vitest run apps/web`: 13 files, 109 tests passed (6 new in `lib/settings/settings.test.ts`).
+- `NEXT_PUBLIC_USE_MOCKS=1 next build`: compiled, route `○ /settings` generated.
+- Headless Chrome, mock mode (`next dev -p 3100`): 3 seller rows, 6 listings, network panel, SIMULATED and MOCK badges; seller 0 → ghost round-trips in under 0.3 s; the run-order control shows the 501 ErrorState; license edit on `res-cpi-california` persists to single-user; Raise cap 400 USDC creates a `[MOCK SIMULATED]` request that the sim approves (DONE after ~4 s); Propose answers "Service answered: 1 purchase(s) proposed … merge on res-cpi-national"; zero console errors. A composite step script showed the seller select and Propose not updating when run after the other steps while the same actions pass in isolation; not resolved (likely the step script, not the page), left as a limit.
+- **Not run in this commit**: the live-mode browser walk on the fork (seller → ghost → order → REFUNDED in the UI; license flip → new decision row). The same two DONE WHEN conditions were met through the API in the service commit (`08cfed4`); the UI path over those routes is unverified in a browser and is first on the list for the next commit.
+
+### Limits
+- The Fusion panel's Propose on the live service answers 501 (no `OrderTermsPort`); the panel shows that and re-reads the recorded decisions.
+- The order result card polls `GET /api/escrow/:id` instead of reading the stream; the next commit moves it to the shared live stream.

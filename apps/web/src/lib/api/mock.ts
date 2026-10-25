@@ -16,6 +16,8 @@ import {
   type MissionRecord,
   type PurchaseRecord,
   type ReconciliationRun,
+  type RecourseSellerView,
+  type ResourceRecord,
   type ResourceRequestRecord,
 } from "@overflow/schemas";
 import { filterEntries } from "../ledger/journal";
@@ -65,6 +67,12 @@ const requestFor = (exceptionId: string): ControllerRequest | null => [...contro
 const missionStore = new Map<string, MissionRecord>([[fx.mission.id, fx.mission]]);
 const missionRequestStore = new Map<string, ResourceRequestRecord>(fx.requests.map((r) => [r.id, r]));
 const activityStore: ActivityEvent[] = [...fx.activity];
+/**
+ * Judge controls in mock mode: the SIMULATED sellers' next behaviour and the listings a judge may edit, in memory.
+ * Running an order needs the local Anvil fork, so the mock refuses it the way the service does (501), never a fake run.
+ */
+const sellerStore = new Map<string, RecourseSellerView>(fx.sellers.map((s) => [s.address.toLowerCase(), s]));
+const resourceStore = new Map<string, ResourceRecord>(fx.resources.map((r) => [r.id, r]));
 const listeners = new Set<(m: SseMessage) => void>();
 let seq = 0;
 const missionRequests = (missionId: string): ResourceRequestRecord[] => [...missionRequestStore.values()].filter((r) => r.missionId === missionId);
@@ -263,7 +271,20 @@ export function createMockApi(): OverflowApi {
     pauseMissionAgent: () =>
       Promise.reject(new ApiError(501, "not_wired", `${fx.MOCK_LABEL}: pausing changes contract state and the mock has no chain`)),
 
-    listResources: (missionId) => delay({ resources: fx.resources, filtered: false, missionId }),
+    listResources: (missionId) => delay({ resources: [...resourceStore.values()], filtered: false, missionId }),
+    updateResource: (id, body) => {
+      const current = resourceStore.get(id);
+      if (!current) return Promise.reject(notFound("resource", id));
+      if (!current.simulated) return Promise.reject(new ApiError(409, "not_simulated", `resource ${id} is not a SIMULATED listing; judge controls only edit simulated sellers' listings (${fx.MOCK_LABEL})`, { id }));
+      const resource: ResourceRecord = {
+        ...current,
+        ...(body.priceAtomic !== undefined ? { priceAtomic: body.priceAtomic } : {}),
+        ...(body.license !== undefined ? { license: body.license } : {}),
+        ...(body.seats !== undefined ? { seats: body.seats } : {}),
+      };
+      resourceStore.set(id, resource);
+      return delay({ resource });
+    },
 
     proposePurchases: (missionId) => {
       const mission = missionStore.get(missionId);
@@ -484,6 +505,18 @@ export function createMockApi(): OverflowApi {
       reconState.lastRun = { ...run, exceptionIds: alreadyOpen ? [] : run.exceptionIds };
       return delay({ run: reconState.lastRun });
     },
+
+    listSellers: () => delay({ sellers: [...sellerStore.values()].sort((a, b) => a.index - b.index), simulated: true as const, note: `${fx.MOCK_LABEL}: SIMULATED sellers; the behaviour applies to the next order and lives in memory. Orders run only against the local Anvil fork.` }),
+    setSellerBehaviour: (address, behaviour) => {
+      const current = sellerStore.get(address.toLowerCase());
+      if (!current) return Promise.reject(new ApiError(404, "unknown_seller", `${address} is not one of the SIMULATED recourse sellers (${fx.MOCK_LABEL})`, { address }));
+      const seller: RecourseSellerView = { ...current, behaviour, label: fx.SELLER_BEHAVIOUR_LABEL[behaviour] };
+      sellerStore.set(address.toLowerCase(), seller);
+      return delay({ seller });
+    },
+    runOrder: (body) =>
+      Promise.reject(new ApiError(501, "not_wired", `${fx.MOCK_LABEL}: SIMULATED orders run only against a local Anvil fork with the seller keys (RecoursePort is not wired); nothing was run for ${body.listingId}`, { port: "RecoursePort (SIMULATED orders on local Anvil)", lands: "anvil:provision + the service" })),
+    getNetwork: () => delay(fx.network),
 
     subscribe: (onMessage) => {
       const timers: ReturnType<typeof setTimeout>[] = [];

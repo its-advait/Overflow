@@ -36,6 +36,11 @@ import {
   type ResourceRecord,
   type ResourceRequestRecord,
   type SampleRecord,
+  NetworkInfoSchema,
+  RecourseSellerViewSchema,
+  type NetworkInfo,
+  type RecourseSellerView,
+  type SellerBehaviour,
 } from "@overflow/schemas";
 import { buildTreeFromChunks, getProof, GoldenVectorsSchema, pickSampleIndices, simulatedBytes32 } from "@overflow/recourse-crypto";
 import vectorsJson from "@overflow/recourse-crypto/vectors.json";
@@ -1329,4 +1334,40 @@ export const serviceStatus: ServiceStatus = ServiceStatusSchema.parse({
   chainId: 84532,
   session: { organizationId: ORGANIZATION_ID, principal: "controller:mock" },
   indexer: { state: "idle", reason: `${MOCK_LABEL}: fixtures, no indexer` },
+});
+
+// Judge controls (SIMULATED) -------------------------------------------------
+/** The service's labels per behaviour (apps/service/src/recourse/seller-sim.ts). */
+export const SELLER_BEHAVIOUR_LABEL: Record<SellerBehaviour, string> = {
+  honest: "SIMULATED honest seller",
+  ghost: "SIMULATED ghost seller (never reveals)",
+  swap: "SIMULATED swap seller (swaps a chunk the sample misses; knows the sample to keep the demo deterministic)",
+};
+
+/** The three SIMULATED recourse sellers of the local Anvil run, in RECOURSE_SELLER_KEYS order, in their default behaviours. */
+export const sellers: RecourseSellerView[] = parseAll(RecourseSellerViewSchema, [
+  { index: 0, address: SELLERS.northstar.address, behaviour: "honest", label: SELLER_BEHAVIOUR_LABEL.honest, flagged: false, simulated: true },
+  { index: 1, address: SELLERS.pacific.address, behaviour: "ghost", label: SELLER_BEHAVIOUR_LABEL.ghost, flagged: false, simulated: true },
+  // Voltara's cheat is on record (CheatRecorded), so the factory refuses its next order.
+  { index: 2, address: SELLERS.voltara.address, behaviour: "swap", label: SELLER_BEHAVIOUR_LABEL.swap, flagged: true, simulated: true },
+]);
+
+/** What GET /api/settings/network would read on the fork: the mock treasury's facts, behind the MOCK badge, never shown as live. */
+export const network: NetworkInfo = NetworkInfoSchema.parse({
+  chainId: 84532,
+  network: "local Anvil fork",
+  rpc: "http://127.0.0.1:8545",
+  treasury: TREASURY_ADDRESS,
+  escrowFactory: addr("fac70e01"),
+  owner: addr("0e0e0e01"),
+  floorAtomic: "0",
+  reservationWindowSeconds: "600",
+  reservedTotalAtomic: "0",
+  nodeCount: "4",
+  token: { address: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", name: "USDC", version: "2", decimals: 6, domainSeparator: "0x71f17a3b2ff373b803d70a5a07c046c1a2bc8e89c09ef722fcb047abe94c9818" },
+  relayer: addr("2e1a7e01"),
+  blockNumber: "50050758",
+  readAt: "2026-10-25T12:45:04.056Z",
+  deployBlock: "50050697",
+  deployedAt: "2026-10-25T12:40:32.989Z",
 });

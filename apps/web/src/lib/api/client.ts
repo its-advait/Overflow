@@ -41,6 +41,14 @@ import type {
   ConfirmMissionResponse,
   UpdateRequestBody,
   UpdateRequestResponse,
+  NetworkInfo,
+  RunOrderBody,
+  RunOrderResponse,
+  SellerBehaviour,
+  SellerResponse,
+  SellersResponse,
+  UpdateResourceBody,
+  UpdateResourceResponse,
 } from "./contracts";
 
 export type { ActivityEvent, AgentRecord, PurchaseRecord };
@@ -82,6 +90,8 @@ export interface OverflowApi {
   pauseMissionAgent(missionId: string, agentId: string): Promise<PauseMissionAgentResponse>;
 
   listResources(missionId?: string): Promise<ResourcesResponse>;
+  /** Judge control: price, license flag or seats of a SIMULATED listing; the next Oracle/Fusion run and the next order read it. */
+  updateResource(id: string, body: UpdateResourceBody): Promise<UpdateResourceResponse>;
 
   proposePurchases(missionId: string): Promise<ProposeResponse>;
   /** Requires an Idempotency-Key; replaying the same key returns the stored result. */
@@ -113,6 +123,15 @@ export interface OverflowApi {
   getTreasury(): Promise<TreasuryResponse>;
   getReconciliation(): Promise<ReconciliationResponse>;
   runReconciliation(): Promise<RunReconciliationResponse>;
+
+  // Judge controls over the SIMULATED recourse sellers (local Anvil fork only; 501 elsewhere).
+  listSellers(): Promise<SellersResponse>;
+  /** What this SIMULATED seller does on its next order; in memory on the service. */
+  setSellerBehaviour(address: string, behaviour: SellerBehaviour): Promise<SellerResponse>;
+  /** Runs one SIMULATED order now with the seller's current behaviour; answers the runner's steps, never a status. */
+  runOrder(body: RunOrderBody): Promise<RunOrderResponse>;
+  /** Treasury owner, floor, reservation window, token domain, relayer and deploy facts, read from the chain. */
+  getNetwork(): Promise<NetworkInfo>;
 
   /** Subscribe to GET /events. Returns an unsubscribe function. */
   subscribe(onMessage: (m: SseMessage) => void, query?: SseQuery): () => void;

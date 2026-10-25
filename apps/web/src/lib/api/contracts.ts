@@ -21,8 +21,15 @@ import {
   IsoDateTimeSchema,
   LedgerAccountSchema,
   MissionRecordSchema,
+  NetworkInfoSchema,
   PurchaseGroupSchema,
   NodePaymentsResponseSchema,
+  RecourseSellerViewSchema,
+  RunOrderBodySchema,
+  RunOrderResponseSchema,
+  SellersResponseSchema,
+  SetSellerBehaviourBodySchema,
+  UpdateResourceBodySchema,
   PurchaseRecordSchema,
   ReconciliationRunSchema,
   ResourceRecordSchema,
@@ -414,3 +421,13 @@ export type SseMessage =
   | { type: "activity"; id: string; event: z.infer<typeof ActivityEventSchema> }
   | { type: "indexer"; status: IndexerStatus }
   | { type: "heartbeat" };
+
+// Judge controls (docs/SPEC.md "A judge's own scenario"): shapes shared with the service through @overflow/schemas.
+// GET /api/settings/sellers, PUT /api/settings/sellers/:address, POST /api/settings/orders, GET /api/settings/network,
+// PUT /api/resources/:id. Everything a seller control touches is SIMULATED; the network block is read from the chain.
+export { NetworkInfoSchema, RunOrderBodySchema, RunOrderResponseSchema, SellersResponseSchema, SetSellerBehaviourBodySchema, UpdateResourceBodySchema };
+export type { NetworkInfo, OrderOutcomeView, RecourseSellerView, RunOrderBody, RunOrderResponse, SellerBehaviour, SellersResponse, SetSellerBehaviourBody, UpdateResourceBody } from "@overflow/schemas";
+export const SellerResponseSchema = z.object({ seller: RecourseSellerViewSchema });
+export type SellerResponse = z.infer<typeof SellerResponseSchema>;
+export const UpdateResourceResponseSchema = z.object({ resource: ResourceRecordSchema });
+export type UpdateResourceResponse = z.infer<typeof UpdateResourceResponseSchema>;

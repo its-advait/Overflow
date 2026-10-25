@@ -32,6 +32,11 @@ import {
   UpdateRequestResponseSchema,
   type SseMessage,
   type SseQuery,
+  NetworkInfoSchema,
+  RunOrderResponseSchema,
+  SellerResponseSchema,
+  SellersResponseSchema,
+  UpdateResourceResponseSchema,
 } from "./contracts";
 import { ActivityEventSchema, ControllerRequestSchema } from "@overflow/schemas";
 import { API_BASE, ApiError, type OverflowApi } from "./client";
@@ -104,6 +109,7 @@ export function createHttpApi(base: string = API_BASE): OverflowApi {
       }),
 
     listResources: (missionId) => request(base, ResourcesResponseSchema, `/api/resources${qs({ missionId })}`),
+    updateResource: (id, body) => request(base, UpdateResourceResponseSchema, `/api/resources/${enc(id)}`, { method: "PUT", body }),
 
     proposePurchases: (missionId) =>
       request(base, ProposeResponseSchema, "/api/purchases/propose", { method: "POST", body: { missionId } }),
@@ -135,6 +141,12 @@ export function createHttpApi(base: string = API_BASE): OverflowApi {
     getTreasury: () => request(base, TreasuryResponseSchema, "/api/treasury"),
     getReconciliation: () => request(base, ReconciliationResponseSchema, "/api/reconciliation"),
     runReconciliation: () => request(base, RunReconciliationResponseSchema, "/api/reconciliation/run", { method: "POST" }),
+
+    listSellers: () => request(base, SellersResponseSchema, "/api/settings/sellers"),
+    setSellerBehaviour: (address, behaviour) =>
+      request(base, SellerResponseSchema, `/api/settings/sellers/${enc(address)}`, { method: "PUT", body: { behaviour } }),
+    runOrder: (body) => request(base, RunOrderResponseSchema, "/api/settings/orders", { method: "POST", body }),
+    getNetwork: () => request(base, NetworkInfoSchema, "/api/settings/network"),
 
     subscribe: (onMessage, query = {}) => subscribeSse(base, onMessage, query),
   };
