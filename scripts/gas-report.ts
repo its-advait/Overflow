@@ -22,6 +22,7 @@ const ROWS: ReadonlyArray<{ key: string; label: string; note: string }> = [
   { key: "reveal", label: "revealKey()", note: "seller reveals the delivery key" },
   { key: "accept", label: "accept()", note: "buyer-node signature, payout of price + bond to the seller" },
   { key: "refund", label: "claimTimeoutRefund()", note: "missed reveal: whole balance back to the treasury" },
+  { key: "sweep", label: "sweep()", note: "USDC that arrived after the order closed: whole balance back to the treasury" },
 ];
 
 execFileSync("forge", ["test", "--match-path", "test/gas/GasReport.t.sol"], { cwd: contractsDir, stdio: "inherit" });

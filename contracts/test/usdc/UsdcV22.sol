@@ -21,6 +21,9 @@ interface IUSDC {
     function configureMinter(address minter, uint256 minterAllowedAmount) external returns (bool);
     function mint(address to, uint256 amount) external returns (bool);
     function blacklist(address account) external;
+    function unBlacklist(address account) external;
+    function pause() external;
+    function unpause() external;
     function balanceOf(address account) external view returns (uint256);
     function name() external view returns (string memory);
     function version() external view returns (string memory);

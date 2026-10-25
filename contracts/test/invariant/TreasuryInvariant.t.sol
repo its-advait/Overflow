@@ -60,6 +60,8 @@ contract TreasuryHandler is Test {
     uint256 public settles;
     uint256 public reserves;
     uint256 public escrowsFunded;
+    uint256 public sweeps;
+    bool public sweptMoreThanLate; // a sweep moved USDC that no late reservation explains (must stay false)
 
     constructor(
         OverflowTreasury treasury_,
@@ -334,6 +336,18 @@ contract TreasuryHandler is Test {
         _track(e);
     }
 
+    /// Anyone returns USDC that reached a closed escrow (a late-executed reservation) to the treasury.
+    function sweepEscrow(uint256 seed) external {
+        (OverflowEscrow e, bool ok) = _escrow(seed);
+        if (!ok) return;
+        try e.sweep() returns (uint256 s) {
+            sweeps++;
+            if (s > lateDeposits[address(e)]) sweptMoreThanLate = true;
+            else lateDeposits[address(e)] -= s;
+        } catch {}
+        _track(e);
+    }
+
     /// SIMULATED proven cheat: an existing escrow records a cheat against a seller, standing in for a successful
     /// complainMismatch/complainPromise (those paths are proven in EscrowMismatch/EscrowPromise tests).
     function flagSeller(uint256 seed) external {
@@ -398,22 +412,40 @@ contract TreasuryInvariantTest is EscrowBaseTest {
         for (uint256 i; i < 400; i++) {
             uint256 s = uint256(keccak256(abi.encode("coverage walk", i)));
             uint256 a = s % 16;
-            if (a == 0) handler.settle(s >> 8, s >> 16, s >> 24);
-            else if (a == 1) handler.reserve(s >> 8, s >> 16, s >> 24, s >> 32);
-            else if (a == 2) handler.executeReservation(s >> 8);
-            else if (a == 3) handler.release(s >> 8);
-            else if (a == 4) handler.warp(s >> 8);
-            else if (a == 5) handler.ownerPause(s >> 8, s >> 16);
-            else if (a == 6) handler.pauseChild(s >> 8);
-            else if (a == 7) handler.delegate(s >> 8, s >> 16, s >> 24, (s >> 32) % 2 == 0);
-            else if (a == 8) handler.fundTreasury(s >> 8);
-            else if (a == 9) handler.createEscrow(s >> 8, s >> 16, s >> 24, s >> 32);
-            else if (a == 10) handler.markFunded(s >> 8);
-            else if (a == 11) handler.reveal(s >> 8, (s >> 16) % 3 != 0);
-            else if (a == 12) handler.accept(s >> 8, s >> 16);
-            else if (a == 13) handler.finalize(s >> 8);
-            else if (a == 14) handler.timeoutRefund(s >> 8);
-            else handler.flagSeller(s >> 8);
+            if (a == 0) {
+                handler.settle(s >> 8, s >> 16, s >> 24);
+            } else if (a == 1) {
+                handler.reserve(s >> 8, s >> 16, s >> 24, s >> 32);
+            } else if (a == 2) {
+                handler.executeReservation(s >> 8);
+            } else if (a == 3) {
+                handler.release(s >> 8);
+            } else if (a == 4) {
+                handler.warp(s >> 8);
+            } else if (a == 5) {
+                handler.ownerPause(s >> 8, s >> 16);
+            } else if (a == 6) {
+                handler.pauseChild(s >> 8);
+            } else if (a == 7) {
+                handler.delegate(s >> 8, s >> 16, s >> 24, (s >> 32) % 2 == 0);
+            } else if (a == 8) {
+                handler.fundTreasury(s >> 8);
+            } else if (a == 9) {
+                handler.createEscrow(s >> 8, s >> 16, s >> 24, s >> 32);
+            } else if (a == 10) {
+                handler.markFunded(s >> 8);
+            } else if (a == 11) {
+                handler.reveal(s >> 8, (s >> 16) % 3 != 0);
+            } else if (a == 12) {
+                handler.accept(s >> 8, s >> 16);
+            } else if (a == 13) {
+                handler.finalize(s >> 8);
+            } else if (a == 14) {
+                handler.timeoutRefund(s >> 8);
+            } else {
+                handler.flagSeller(s >> 8);
+                handler.sweepEscrow(s >> 16);
+            }
         }
         assertGt(handler.settles(), 8, "settles");
         assertGt(handler.reserves(), 3, "reserves");
@@ -500,8 +532,10 @@ contract TreasuryInvariantTest is EscrowBaseTest {
             IOverflowEscrow.Status s = e.status();
             if (s == IOverflowEscrow.Status.Settled || s == IOverflowEscrow.Status.Refunded) {
                 assertEq(uint256(handler.lastStatus(address(e))), uint256(s), "terminal is final");
-                // only a reservation approved while the order was open and executed after it closed may land here
+                // only a reservation approved while the order was open and executed after it closed may land here,
+                // and sweep() returns exactly that to the treasury
                 assertEq(_bal(address(e)), handler.lateDeposits(address(e)), "zero balance after terminal");
+                assertFalse(handler.sweptMoreThanLate(), "sweep moved only late deposits");
             }
         }
     }

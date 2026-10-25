@@ -4,6 +4,9 @@ pragma solidity 0.8.28;
 import {Test} from "forge-std/Test.sol";
 import {OverflowTreasury} from "../../src/OverflowTreasury.sol";
 import {IOverflowTreasury} from "../../src/IOverflowTreasury.sol";
+import {OverflowEscrow} from "../../src/OverflowEscrow.sol";
+import {OverflowEscrowFactory} from "../../src/OverflowEscrowFactory.sol";
+import {IOverflowEscrow} from "../../src/IOverflowEscrow.sol";
 import {IUSDC} from "../usdc/UsdcV22.sol";
 
 /// Live Base Sepolia USDC (0x036C...) through a freshly deployed treasury on a fork. Skipped unless the chain id
@@ -148,5 +151,50 @@ contract UsdcGateForkTest is Test {
         treasury.release(digest);
         assertEq(treasury.reservedTotal(), 0);
         assertEq(treasury.getNode(1).spent, U / 20, "executed reservation stays charged");
+    }
+
+    /// A reservation approved for an open order and executed by live USDC only after the order closed: the USDC
+    /// lands in the closed escrow and anyone can sweep exactly that amount back to the treasury.
+    function test_fork_lateReservationIntoClosedEscrow_isSwept() public {
+        OverflowEscrowFactory factory = new OverflowEscrowFactory();
+        vm.prank(owner);
+        treasury.setEscrowFactory(address(factory));
+        IOverflowEscrow.OrderTerms memory t;
+        t.orderId = keccak256("fork late order");
+        t.buyer = address(treasury);
+        t.seller = makeAddr("simulatedSeller");
+        t.token = address(USDC);
+        t.amount = U / 20;
+        t.manifestHash = keccak256("manifest");
+        t.rootPlain = keccak256("rootPlain");
+        t.rootCipher = keccak256("rootCipher");
+        t.keyCommitment = keccak256("key");
+        t.revealDeadline = uint64(block.timestamp + 120);
+        t.challengeWindow = 60;
+        t.chunkCount = 1;
+        t.termsHash = factory.termsHashOf(t);
+        OverflowEscrow e = OverflowEscrow(factory.create(t));
+
+        Auth memory a = _auth(address(e), U / 20, block.timestamp + 300);
+        vm.prank(facilitator);
+        bytes32 digest = treasury.reserve(a.to, a.value, a.validAfter, a.validBefore, a.nonce, a.sig);
+        vm.warp(t.revealDeadline);
+        e.claimTimeoutRefund(); // nobody funded, nobody revealed
+        assertEq(uint256(e.status()), uint256(IOverflowEscrow.Status.Refunded));
+
+        uint256 before = USDC.balanceOf(address(treasury));
+        _direct(facilitator, a); // live USDC executes the reserved authorization into the closed escrow
+        assertEq(USDC.balanceOf(address(e)), U / 20);
+        vm.prank(attacker);
+        assertEq(e.sweep(), U / 20);
+        assertEq(USDC.balanceOf(address(treasury)), before, "exact late amount back");
+        assertEq(USDC.balanceOf(attacker), 0);
+        assertEq(USDC.balanceOf(t.seller), 0);
+        assertEq(uint256(e.status()), uint256(IOverflowEscrow.Status.Refunded));
+        vm.expectRevert(IOverflowEscrow.NothingToSweep.selector);
+        e.sweep();
+        vm.warp(a.validBefore);
+        treasury.release(digest);
+        assertEq(treasury.getNode(1).spent, U / 20, "executed late: allowance stays charged");
     }
 }

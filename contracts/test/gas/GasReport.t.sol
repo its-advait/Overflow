@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {UsdcV22} from "../usdc/UsdcV22.sol";
 import {EscrowBaseTest} from "../escrow/EscrowBase.t.sol";
 import {OverflowEscrow} from "../../src/OverflowEscrow.sol";
 import {IOverflowEscrow} from "../../src/IOverflowEscrow.sol";
@@ -63,6 +64,12 @@ contract GasReportTest is EscrowBaseTest {
         vm.warp(t2.revealDeadline);
         vm.startSnapshotGas("refund");
         e2.claimTimeoutRefund();
+        vm.stopSnapshotGas();
+
+        // escrow: sweep of USDC that arrived after the order closed (test shortcut mint stands in for a late reservation)
+        UsdcV22.mint(usdc, usdcOwner, address(e2), AMOUNT);
+        vm.startSnapshotGas("sweep");
+        e2.sweep();
         vm.stopSnapshotGas();
     }
 }

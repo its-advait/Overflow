@@ -397,3 +397,36 @@ The Base Sepolia treasury at `0xd3A74fA991CA0B5627d30EF27dC699C134848291` was ch
 ### Notes
 - Only scrypt keystores are accepted (what `cast wallet import` produces); pbkdf2 files fail loudly as unsupported rather than silently.
 - Alternative considered and rejected: shelling out to `cast wallet sign` per transaction. `cast` cannot sign a raw transaction without broadcasting it, which would bypass the relayer's nonce queue and receipt tracking.
+
+## 2026-10-24: sweep() for late USDC in closed escrows (security patch)
+
+### Problem
+`reserve()` approves an EIP-3009 authorization that USDC may execute later. `EscrowClosed` (T17) stops new `settle()`/`reserve()` calls to a settled or refunded escrow, but it cannot revoke an authorization USDC already accepts, so a facilitator executing a reservation after the order closed strands the USDC in the escrow. The treasury invariant tracked this as `lateDeposits`; the escrow had no path out.
+
+### Built
+- `OverflowEscrow.sweep() external nonReentrant returns (uint256)`: terminal status only (`BadStatus` otherwise), whole token balance to `terms.buyer` (fixed at creation: never the caller, seller or an owner), `NothingToSweep` on zero so a repeat cannot pay twice, `Swept(buyer, amount)` event. No state other than the token balance changes: terminal status, terms, `revealedKey`, the original payout/refund and the agent's spent allowance stay as they were. A transfer USDC rejects bubbles USDC's reason through SafeERC20 and leaves the balance recoverable. Interface: `sweep()`, `NothingToSweep()`, `Swept`. ABI regenerated (`OverflowEscrow.ts` 56 entries).
+- Tests on the real USDC v2.2 harness, principal proof = a genuine late `transferWithAuthorization` of a previously valid `reserve()` authorization:
+  - `Reservations::test_lateReservation_afterSettled_sweptToTreasury`: reserve, fund by a second `settle`, reveal, accept (Settled), `settle()` of the reserved authorization reverts `EscrowClosed`, a tampered copy reverts `invalid signature`, USDC executes the real one into the closed escrow, the seller calls `sweep()` and gains nothing, treasury gets the exact amount, `spent` stays 2 x AMOUNT, repeat sweep `NothingToSweep`, replay `authorization is used or canceled`, `release()` refunds no allowance.
+  - `test_lateReservation_afterTimeoutRefund_sweptToTreasury` (Refunded via missed reveal, stranger sweeps, order not revived) and `EscrowMismatch::test_lateReservation_afterCheatRefund_sweptToTreasury` (Refunded via proven cheat, flagged seller gets nothing).
+  - `test_lateReservation_rejectedTransfer_staysRecoverable`: USDC paused → `Pausable: paused`; treasury blacklisted → `Blacklistable: account is blacklisted`; status and balance untouched; sweep succeeds after `unBlacklist`. (`IUSDC` harness interface gained `unBlacklist`, `pause`, `unpause`.)
+  - `OverflowEscrow.t.sol`: sweep in Created/Funded/Revealed reverts, empty terminal escrow reverts `NothingToSweep`, buyer-only recipient whoever calls, a swept Refunded order rejects every lifecycle call.
+  - Invariants: `EscrowInvariant` handler gains `lateArrival` (terminal only) and `sweep`; `invariant_zeroBalanceAfterTerminal` asserts balance == unswept late arrivals. `TreasuryInvariant` handler gains `sweepEscrow` (also in the coverage walk) and the `sweptMoreThanLate` flag asserted false.
+  - Fork: `test_fork_lateReservationIntoClosedEscrow_isSwept` against live Base Sepolia USDC.
+- `docs/contract-invariants.md`: E2/E3 reworded, new E14, T17 note; `docs/gas.md` row `sweep()` = 55,904 gas.
+
+### Verified (real output, 2026-10-24)
+| Check | Result |
+|---|---|
+| `forge test` | 181 passed, 0 failed, 1 skipped (fork suite off-chain). One run hit a pre-existing flake in `RecourseCrypto.t.sol::test_xorRoundTrip` (`vm.assume` rejected too many inputs); it passed on the next two runs and is unrelated to this patch. |
+| `pnpm contracts:invariant` | EscrowInvariant 256 runs x 12800 calls, TreasuryInvariant 256 runs x 12800 calls, `test_handlerCoverage`: all pass |
+| `pnpm contracts:fork` (live Base Sepolia RPC) | 7 passed including the new late-reservation sweep |
+| `pnpm contracts:gas` / `forge snapshot` | docs/gas.md 10 rows, `.gas-snapshot` refreshed |
+| `pnpm test` / `pnpm typecheck` / `pnpm lint` | 228 passed / exit 0 / exit 0 |
+| Broadcasts, deploys, secrets | none |
+
+### Follow-up for the service engineer
+- Index the escrow `Swept(address buyer, uint256 amount)` event (the facilitator's log poller currently watches treasury logs only) and reconcile each sweep against the purchase ledger: the recovered USDC is a treasury credit for an order that already closed, and the agent's allowance is **not** restored (consumed nonce), so the ledger must show the budget as spent with the USDC returned.
+- Consider having the facilitator call `sweep()` automatically when it observes a `Transfer` into a terminal escrow, and `release()` after `validBefore`, so recovery does not depend on a manual caller.
+
+### Still open (not fixable by sweep)
+- The treasury cannot revoke an approved authorization; preventing the late transfer would need a `cancelAuthorization` path through the ERC-1271 gate.

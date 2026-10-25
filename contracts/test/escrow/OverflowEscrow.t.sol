@@ -459,4 +459,72 @@ contract OverflowEscrowTest is EscrowBaseTest {
         assertTrue(e.DOMAIN_SEPARATOR() != other.DOMAIN_SEPARATOR());
         assertTrue(e.acceptDigest() != other.acceptDigest());
     }
+
+    // ------------------------------------------------------------ sweep (USDC that arrives after the order closed)
+    // The real late path (a reservation executed by USDC after settlement or refund) is proven in
+    // test/unit/Reservations.t.sol and EscrowMismatch.t.sol; these unit tests use a labeled mint as the stand-in.
+
+    function test_sweep_beforeTerminalReverts() public {
+        vm.expectRevert(_badStatus(IOverflowEscrow.Status.Created));
+        e.sweep();
+        _fundViaTreasury(e, t);
+        vm.expectRevert(_badStatus(IOverflowEscrow.Status.Funded));
+        e.sweep();
+        _reveal(e);
+        vm.expectRevert(_badStatus(IOverflowEscrow.Status.Revealed));
+        e.sweep();
+        vm.warp(e.challengeEnd());
+        e.finalizePayout(); // an open order's balance belongs to the payout, not to a sweep
+        assertEq(_bal(seller), AMOUNT + BOND);
+        vm.expectRevert(IOverflowEscrow.NothingToSweep.selector);
+        e.sweep();
+    }
+
+    function test_sweep_paysBuyerWhoeverCalls_andNeverTwice() public {
+        _fundViaTreasury(e, t);
+        _reveal(e);
+        e.accept(_acceptSig(rootPk, e));
+        uint256 treasuryAfterPayout = _bal(address(treasury));
+        UsdcV22.mint(usdc, usdcOwner, address(e), 777); // test shortcut: stands in for a late reservation
+        vm.expectEmit(false, false, false, true, address(e));
+        emit IOverflowEscrow.Swept(address(treasury), 777);
+        vm.prank(seller);
+        assertEq(e.sweep(), 777);
+        assertEq(_bal(seller), AMOUNT + BOND, "seller: original payout only");
+        assertEq(_bal(address(treasury)), treasuryAfterPayout + 777);
+        vm.prank(attacker);
+        vm.expectRevert(IOverflowEscrow.NothingToSweep.selector);
+        e.sweep();
+        UsdcV22.mint(usdc, usdcOwner, address(e), 5);
+        vm.prank(attacker);
+        assertEq(e.sweep(), 5);
+        assertEq(_bal(attacker), 0);
+        assertEq(_bal(address(treasury)), treasuryAfterPayout + 782);
+        assertEq(uint256(e.status()), uint256(IOverflowEscrow.Status.Settled));
+    }
+
+    function test_sweep_doesNotReviveOrder() public {
+        vm.warp(t.revealDeadline);
+        e.claimTimeoutRefund(); // Created -> Refunded with nothing to return
+        UsdcV22.mint(usdc, usdcOwner, address(e), AMOUNT + BOND); // test shortcut: looks fully funded
+        assertEq(e.sweep(), AMOUNT + BOND);
+        assertEq(uint256(e.status()), uint256(IOverflowEscrow.Status.Refunded));
+        bytes memory closed = _badStatus(IOverflowEscrow.Status.Refunded);
+        vm.expectRevert(closed);
+        e.markFunded();
+        vm.prank(seller);
+        vm.expectRevert(closed);
+        e.revealKey(KEY);
+        bytes memory sig = _acceptSig(rootPk, e);
+        vm.expectRevert(closed);
+        e.accept(sig);
+        vm.expectRevert(closed);
+        e.finalizePayout();
+        vm.expectRevert(closed);
+        e.claimTimeoutRefund();
+        vm.expectRevert(closed);
+        e.complainPromise(0, _plain(0), _proof(_leaves(4, 0), 0));
+        assertEq(_bal(seller), 0);
+        assertEq(e.revealedKey(), bytes32(0));
+    }
 }

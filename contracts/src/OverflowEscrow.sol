@@ -164,6 +164,28 @@ contract OverflowEscrow is IOverflowEscrow, ReentrancyGuardTransient {
         emit Refunded(reason);
     }
 
+    // ---------------------------------------------------------------- late arrivals
+
+    /// @notice Recover USDC that landed after the order closed: a reservation the treasury approved while the order
+    /// was open can still be executed by USDC later, and `EscrowClosed` cannot revoke an authorization USDC already
+    /// holds. Permissionless, and the recipient is always `terms.buyer` (the treasury): never the caller, the seller
+    /// or an owner. Nothing else changes: the terminal status, the terms, the revealed key and the original payout or
+    /// refund stay as they were, and the agent's spent allowance is not restored (docs/SPEC.md: refunds restore
+    /// treasury USDC, not allowance).
+    /// @dev Reverts `BadStatus` before a terminal state (an open order's balance belongs to `_payout`/`_refund`) and
+    /// `NothingToSweep` on a zero balance, so a repeated call cannot pay twice. A transfer USDC rejects (blacklist,
+    /// pause) reverts through SafeERC20 and leaves the balance in place for a later call. `nonReentrant` matches the
+    /// other transferring entry points even though USDC does not call back.
+    function sweep() external nonReentrant returns (uint256 swept) {
+        if (status != Status.Settled && status != Status.Refunded) revert BadStatus(status);
+        IERC20 token = IERC20(_t.token);
+        swept = token.balanceOf(address(this));
+        if (swept == 0) revert NothingToSweep();
+        address buyer_ = _t.buyer;
+        token.safeTransfer(buyer_, swept);
+        emit Swept(buyer_, swept);
+    }
+
     // ---------------------------------------------------------------- views
 
     function terms() external view returns (OrderTerms memory) {

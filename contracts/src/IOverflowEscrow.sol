@@ -52,6 +52,7 @@ interface IOverflowEscrow {
     error ChunkMatches();
     error PromiseKept();
     error NoPromise();
+    error NothingToSweep();
 
     event OrderFunded(uint256 balance);
     event KeyRevealed(bytes32 key, uint64 challengeEnd);
@@ -59,6 +60,8 @@ interface IOverflowEscrow {
     event PaidOut(address seller, uint256 amount, uint256 bond);
     event Refunded(string reason);
     event CheatProven(address indexed seller, uint256 index);
+    /// USDC that arrived after the order closed was returned to the buyer.
+    event Swept(address buyer, uint256 amount);
 
     function initialize(OrderTerms calldata t) external; // factory only, once
 
@@ -75,6 +78,7 @@ interface IOverflowEscrow {
         bytes32[] calldata plainProof
     ) external;
     function complainPromise(uint256 i, bytes calldata plainChunk, bytes32[] calldata plainProof) external;
+    function sweep() external returns (uint256 swept); // terminal only; pays the buyer, whoever calls
 
     function terms() external view returns (OrderTerms memory);
     function buyer() external view returns (address);

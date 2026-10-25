@@ -162,4 +162,28 @@ contract EscrowMismatchTest is EscrowBaseTest {
         );
         assertEq(treasury.getNode(1).spent, AMOUNT, "no new charge");
     }
+
+    /// A reservation approved while the order was open and executed by USDC only after the cheat refund: anyone
+    /// sweeps it back to the treasury; the flagged seller receives nothing and the refund itself is unchanged.
+    function test_lateReservation_afterCheatRefund_sweptToTreasury() public {
+        Auth memory late = _auth(rootPk, address(e), AMOUNT);
+        treasury.reserve(late.to, late.value, late.validAfter, late.validBefore, late.nonce, late.sig);
+        uint256 treasuryBefore = _bal(address(treasury));
+        _fundedAndRevealed();
+        vm.prank(attacker);
+        _complainBad();
+        assertEq(uint256(e.status()), uint256(IOverflowEscrow.Status.Refunded));
+        assertEq(_bal(address(treasury)), treasuryBefore + BOND);
+        assertEq(factory.provenCheats(seller), 1);
+
+        _directToUsdc(attacker, late); // the reserved authorization still executes through USDC
+        assertEq(_bal(address(e)), AMOUNT);
+        assertEq(_bal(address(treasury)), treasuryBefore + BOND - AMOUNT);
+        vm.prank(seller);
+        assertEq(e.sweep(), AMOUNT);
+        assertEq(_bal(address(treasury)), treasuryBefore + BOND, "late amount back, refund untouched");
+        assertEq(_bal(seller), 0, "flagged seller gets nothing");
+        assertEq(uint256(e.status()), uint256(IOverflowEscrow.Status.Refunded));
+        assertEq(treasury.getNode(1).spent, 2 * AMOUNT, "both authorizations stay charged");
+    }
 }

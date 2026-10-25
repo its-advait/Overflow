@@ -12,9 +12,10 @@ transaction. Treasury depth is 1 (root node pays); every extra delegation level 
 | release() | 56,011 | after validBefore, unexecuted: walks the node chain to refund spent |
 | escrow create() | 420,958 | factory: terms check, CREATE2 clone, initialize |
 | fund: settle() to escrow | 155,912 | treasury pays the order amount through the escrow payee rule |
-| fund: markFunded() | 69,134 | escrow confirms balance >= price + bond |
+| fund: markFunded() | 69,156 | escrow confirms balance >= price + bond |
 | revealKey() | 62,855 | seller reveals the delivery key |
-| accept() | 100,705 | buyer-node signature, payout of price + bond to the seller |
-| claimTimeoutRefund() | 61,463 | missed reveal: whole balance back to the treasury |
+| accept() | 100,780 | buyer-node signature, payout of price + bond to the seller |
+| claimTimeoutRefund() | 61,549 | missed reveal: whole balance back to the treasury |
+| sweep() | 55,904 | USDC that arrived after the order closed: whole balance back to the treasury |
 
 Source of truth: `contracts/snapshots/GasReportTest.json` (regenerated on every run, not committed).

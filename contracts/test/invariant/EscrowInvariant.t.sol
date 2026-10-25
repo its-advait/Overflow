@@ -17,6 +17,7 @@ contract EscrowHandler is Test {
     bytes32 immutable key;
 
     uint256 public minted; // total USDC ever sent to the escrow
+    uint256 public late; // arrived after the terminal state and not yet swept
     uint256 public terminalTransitions;
     IOverflowEscrow.Status public lastStatus;
 
@@ -83,13 +84,29 @@ contract EscrowHandler is Test {
         vm.warp(block.timestamp + bound(dt, 0, 3 hours));
     }
 
-    /// Extra USDC lands only while the order is live (a transfer after the terminal state is outside the
-    /// escrow's control and outside the invariant).
+    /// Extra USDC while the order is live: surplus that the payout or refund returns to the buyer.
     function topUp(uint256 amt) external {
         if (_terminal(e.status())) return;
         amt = bound(amt, 1, 1e6);
         UsdcV22.mint(usdc, usdcOwner, address(e), amt);
         minted += amt;
+    }
+
+    /// USDC arriving after the terminal state (stands in for a reservation USDC executes late): only sweep() may
+    /// move it, and only to the buyer.
+    function lateArrival(uint256 amt) external {
+        if (!_terminal(e.status())) return;
+        amt = bound(amt, 1, 1e6);
+        UsdcV22.mint(usdc, usdcOwner, address(e), amt);
+        minted += amt;
+        late += amt;
+    }
+
+    function sweep() external {
+        try e.sweep() returns (uint256 s) {
+            late -= s;
+        } catch {}
+        _track();
     }
 }
 
@@ -121,9 +138,11 @@ contract EscrowInvariantTest is EscrowBaseTest {
         if (_terminal(handler.lastStatus())) assertEq(uint256(e.status()), uint256(handler.lastStatus()));
     }
 
-    /// Zero USDC left once settled or refunded.
+    /// Once settled or refunded the escrow holds only what arrived afterwards and has not been swept yet; a sweep
+    /// takes all of it, so the balance is zero whenever nothing is pending.
     function invariant_zeroBalanceAfterTerminal() public view {
-        if (_terminal(e.status())) assertEq(_bal(address(e)), 0);
+        if (_terminal(e.status())) assertEq(_bal(address(e)), handler.late());
+        else assertEq(handler.late(), 0);
     }
 
     /// Funds only ever move to the seller or the buyer (treasury): nothing leaks anywhere else.
