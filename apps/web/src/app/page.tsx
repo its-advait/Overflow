@@ -1,27 +1,27 @@
-import { Wallet } from "lucide-react";
-import { CHAIN_ID, USDC_DECIMALS } from "@overflow/schemas";
-import { Button } from "@/components/ui/button";
+import { Construction } from "lucide-react";
+import { EmptyState } from "@/components/shared/empty-state";
+import { PageHeader } from "@/components/shell/page-header";
+import { OverviewStats } from "@/components/overview/overview-stats";
 
 /**
- * Scaffold page. Nothing here reflects chain state; it only proves the toolchain
- * (Tailwind, shadcn/ui, lucide-react, workspace packages) is wired together.
+ * Overview. The stat cards read the ledger and the mission through the typed
+ * client; everything else waits for its own prompt. Nothing on this page is a
+ * local flag: balances come from GET /api/ledger (or the MOCK fixtures).
  */
-export default function Home() {
+export default function OverviewPage() {
   return (
-    <main className="mx-auto flex min-h-screen max-w-2xl flex-col items-start justify-center gap-6 px-4 py-16">
-      <span className="rounded-md border border-border bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">
-        SCAFFOLD: no live data
-      </span>
-      <h1 className="flex items-center gap-3 text-3xl font-semibold tracking-tight">
-        <Wallet className="size-7" aria-hidden />
-        Overflow
-      </h1>
-      <p className="text-muted-foreground">
-        A team of AI agents shares one USDC budget on Base Sepolia (chain {CHAIN_ID}, USDC has{" "}
-        {USDC_DECIMALS} decimals), buys digital resources over x402, and pays sellers through
-        per-order escrow that releases only on verifiable delivery.
-      </p>
-      <Button disabled>Dashboard coming soon</Button>
-    </main>
+    <>
+      <PageHeader
+        title="Overview"
+        description="Treasury balance, budget utilization and what the agents are doing right now."
+      />
+      <OverviewStats />
+      <EmptyState
+        className="mt-6"
+        icon={Construction}
+        title="Activity, Blocked lane and agent tree land in later prompts"
+        description="Each will read confirmed chain events and service responses only."
+      />
+    </>
   );
 }

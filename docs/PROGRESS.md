@@ -1090,3 +1090,36 @@ Required: `BASE_SEPOLIA_RPC_URL`, `SERVICE_URL=http://localhost:4000`, `SELLER_U
 
 ### Open issues
 - The live deployment waits for the operator (funding + password entry). Phase 3 (Recourse sellers) proceeds in code and unit tests; its on-chain DONE WHEN runs after the deploy and funding.
+
+## 2026-10-25: web design system, shell, typed API client and mocks
+
+### Built
+- `apps/web/src/app/globals.css`: Tailwind v4 `@theme` tokens `canvas, surface, surface-raised, border, text, text-muted, blue, cyan, violet, success, warning, danger`; shadcn's semantic variables alias them so stock components inherit the palette. Dark-only (`:root` and `.dark` share one set; `html.dark` kept for shadcn's `dark:` utilities). Fixed the scaffold's self-referential `--font-sans` so Geist Sans actually applies; Geist Mono is reserved for addresses, hashes and ids.
+- Shell (`src/components/shell/`): `AppShell` (sidebar + top bar + `main`), `Sidebar` with the eight nav items from one `NAV` list (`nav.ts`), `TopBar` with the Base Sepolia badge (`CHAIN_ID`), `TreasuryBalance` (the ledger's `usdc-treasury` net from `GET /api/ledger`, labelled "Treasury · ledger"; there is no balance route and nothing is fabricated), the `MockBadge` when `NEXT_PUBLIC_USE_MOCKS=1`, and a `slot` the shell fills with `ScriptedBadge` when `NEXT_PUBLIC_SCRIPTED=1`. Below `lg` the sidebar becomes a Sheet drawer behind a menu button.
+- Shared components (`src/components/shared/`): `Money` (integer `formatUsdc`, bigint sign handling, string thousands grouping, four sizes, never a float), `Address` / `TxHash` / `Mono` (monospace, middle truncation, `CopyButton` that shows "copied" only after the clipboard promise resolves, Basescan link via `explorerUrl`), `StatusPill` with an exhaustive `Record<PurchaseStatus, …>` and `EscrowStatusPill` over `ESCROW_STATUSES`, `SimulatedBadge` / `Simulated`, `EmptyState`, `ErrorState` (renders the service error envelope: status, code, message, requestId), `Skeleton` / `SkeletonRows` / `SkeletonStat`, and `MoneyActionPreview`: payer, amount, destination and expected outcome are rendered before any button, and the confirm button is disabled until all four are present and a handler is given. It calls nothing itself.
+- shadcn (base-nova) components added via the CLI: badge, card, separator, skeleton, sheet, tooltip, table.
+- Typed client (`src/lib/api/`): `contracts.ts` has a Zod request/response schema for every route (`GET /`, missions create/plan/run/pause-agent, resources, purchases propose/authorize/get, escrow, agents list/pause, activity, exceptions list/decide, controller requests, ledger, reconciliation get/run, SSE `/events` message union), composed from `@overflow/schemas`; `client.ts` is the `OverflowApi` interface plus `ApiError`; `http.ts` is the fetch implementation (JSON, `Idempotency-Key` on authorize, every response parsed, error envelope → `ApiError`); `mock.ts` serves fixtures with 250 ms latency; `index.ts` exports `api = createApi()` switching on `NEXT_PUBLIC_USE_MOCKS`. `src/lib/api.ts` re-exports it. `src/lib/use-api.ts` is a small `useApiQuery` hook whose `loading` is derived from the request key, so stale results are never shown.
+- Mocks (`src/lib/mocks/fixtures.ts`): every record is parsed through its schema at module load. One active mission (250 USDC), three agents (orchestrator root + finance + research), five SIMULATED listings, six purchases including the merged one (`purchaseGroupId`, two allocations summing to 12 USDC), one escrow in each of the five contract states, decoded chain transactions, eight balanced ledger rows (owner funding, four fundings, one department-split settlement, one refund), 17 activity events (incl. `oracle.recommendation`, `fusion.decision`, `policy.blocked` with `decodedRevert: "OverBudget(3)"`), one open `PAUSE_REQUEST` with its prepared controller request, a `ReconciliationRun` with status `ok`, and the Oracle decisions + Fusion outcome behind the merge. Addresses and hashes are zero-padded placeholders except the real USDC token and the deployed treasury address.
+- Pages: Overview (`OverviewStats` reads treasury, in-escrow and data-expense balances from the ledger) plus placeholder pages for Missions, Agents, Purchases, Escrow, Activity, Ledger, Settings (`PlaceholderPage` from the same `NAV` list, each an `EmptyState` saying what it will show); `/dev/components` demos every shared component with fixture data, every `StatusPill` variant, the error envelope, both badges, two `MoneyActionPreview` cards (one complete, one missing its destination; neither has a handler) and a live `api.getLedger()` call through the mock client rendered in a table.
+- `apps/web/.env.example` (`NEXT_PUBLIC_USE_MOCKS`, `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_SCRIPTED`); web `tsconfig.json` now sets `noUncheckedIndexedAccess`; web depends on `zod` and `@overflow/fusion` (for `MergeDecisionSchema`).
+
+### Fusion wiring check
+Confirmed, no change needed: `apps/service/src/orchestration/oracle-port.ts` `propose()` runs `recommend()` per open request, then `fuse()` on the shareable survivors, `payingNode` and `allocate` per plan, and `POST /api/purchases/propose` (`api/routes/purchases.ts`) returns `{ purchases, decisions, merges }`; covered by `api/routes/fusion.test.ts`. Unrelated open gap: production `createApp` (`apps/service/src/index.ts`) still passes no `orderTerms`, so propose answers 501 once a plan exists.
+
+### Mock rules
+- Mock writes never report a chain outcome: `authorizePurchase` returns `RESERVED` with `submission.outcome = "unknown"`, `pauseMissionAgent` answers 501, approving the onchain `PAUSE_REQUEST` answers 409 (`onchain_approval_only`), and `proposePurchases` returns a `PROPOSED` row with no digest and no transactions.
+- The MOCK badge appears in the top bar and in every `PageHeader` whenever the mock client is active; the demo page forces it on.
+
+### Verified (real output, 2026-10-25)
+| Check | Result |
+|---|---|
+| `pnpm --filter @overflow/web typecheck` | exit 0 |
+| `pnpm --filter @overflow/web lint` | exit 0 |
+| `NEXT_PUBLIC_USE_MOCKS=1 pnpm --filter @overflow/web build` | exit 0, 10 app routes prerendered static (`/`, 7 nav pages, `/dev/components`, `/_not-found`) |
+| `pnpm typecheck` (root) | exit 0, all workspaces Done |
+| Chrome against `next dev -p 3100` with mocks + scripted on | `/dev/components` and `/` render on the dark theme with Base Sepolia, MOCK and SCRIPTED badges, treasury +225.50 USDC from the mock ledger; no console errors |
+
+### Open issues
+- `OracleDecisionSchema`, `PayerSchema`/`FusionOutcomeSchema`, `SubmissionSchema` and `IndexerStatusSchema` are mirrored in `apps/web/src/lib/api/contracts.ts` because they live in service modules the web cannot import. Move them into `packages/schemas` (or a shared api-contracts module) so the two cannot drift.
+- `apps/web` has no vitest project yet; `Money`'s grouping and the mock ledger balance sums are only exercised by the demo page.
+- The seven nav pages are placeholders; `next dev` writes an `AGENTS.md` into `apps/web` (Next 16 `agentRules`), deleted here and worth disabling in `next.config.ts` if it keeps reappearing.
