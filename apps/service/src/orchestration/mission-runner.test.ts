@@ -19,6 +19,7 @@ const SELLER_URL = "http://seller.test";
 const SEARCH = "0x2222222222222222222222222222222222222222" as const;
 const SCRAPE = "0x3333333333333333333333333333333333333333" as const;
 const TX = `0x${"ab".repeat(32)}` as Hex;
+const REFUSED_DIGEST = `0x${"d2".repeat(32)}` as Hex;
 const NOW = 1_800_000_000;
 const key = (label: string) => privateKeyToAccount(keccak256(toBytes(label)));
 const keys = { root: key("root"), rootSource: "test", children: { research: key("research"), finance: key("finance"), verification: key("verification") } };
@@ -99,7 +100,7 @@ describe("mission runner: signed delegation, tool loops, policy refusals", () =>
         settled.push(input);
         // SIMULATED treasury policy: the research node may pay the search payee; the attacker is PayeeNotAllowed(2).
         if (input.payload.payload.authorization.to.toLowerCase() === ATTACKER.toLowerCase()) {
-          return { outcome: "blocked", decoded: { name: "PayeeNotAllowed", args: ["2"], decoded: "PayeeNotAllowed(2)", reason: "payee not allowed for this node" }, ...(input.forceBroadcast ? { txHash: TX } : {}) };
+          return { outcome: "blocked", decoded: { name: "PayeeNotAllowed", args: ["2"], decoded: "PayeeNotAllowed(2)", reason: "payee not allowed for this node" }, digest: REFUSED_DIGEST, ...(input.forceBroadcast ? { txHash: TX } : {}) };
         }
         return { outcome: "paid", txHash: TX, blockNumber: "9", nodeId: "2", payer: TREASURY, digest: `0x${"d1".repeat(32)}` as Hex };
       },
@@ -164,6 +165,7 @@ describe("mission runner: signed delegation, tool loops, policy refusals", () =>
     expect(blocked.decodedRevert).toBe("PayeeNotAllowed(2)");
     expect(blocked.agentId).toBe("agent-research");
     expect(blocked.txHash).toBe(TX); // demoMode forced the broadcast
+    expect(blocked.message).toContain(`[reverted onchain] [facilitator:${REFUSED_DIGEST}]`); // source reference for the audit trail
     expect(kinds("payment.authorized")).toHaveLength(2);
     // Only the research key ever signed; the authorizations name the treasury as payer.
     expect(settled.every((s) => s.payload.payload.authorization.from.toLowerCase() === TREASURY.toLowerCase())).toBe(true);

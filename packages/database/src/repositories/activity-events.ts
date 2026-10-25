@@ -1,4 +1,4 @@
-import { ActivityEventSchema, type ActivityEvent } from "@overflow/schemas";
+import { ActivityEventSchema, type ActivityEvent, type ActivityKind } from "@overflow/schemas";
 import { and, asc, desc, eq, gt, gte, ne } from "drizzle-orm";
 import type { Executor } from "../client";
 import { withDbErrors } from "../errors";
@@ -6,6 +6,16 @@ import { activityEvents } from "../schema";
 import { iso, newId, nowIso, nul, opt, parseOne, type WithOptional } from "./base";
 
 export type ActivityEventInsert = WithOptional<ActivityEvent, "id" | "at" | "simulated">;
+
+/** Optional narrowing every list applies on top of its own scope (the Blocked lane asks for `policy.blocked`). */
+export interface ActivityListOptions {
+  kind?: ActivityKind | undefined;
+}
+
+const scoped = (scope: ReturnType<typeof eq> | undefined, opts: ActivityListOptions) => {
+  const byKind = opts.kind ? eq(activityEvents.kind, opts.kind) : undefined;
+  return scope && byKind ? and(scope, byKind) : (scope ?? byKind);
+};
 
 const toRecord = (r: typeof activityEvents.$inferSelect): ActivityEvent =>
   parseOne(ActivityEventSchema, {
@@ -55,30 +65,35 @@ export function activityEventsRepository(db: Executor) {
     },
 
     /** Oldest first, one mission's events (orchestration runs are read back this way). */
-    async listByMission(missionId: string, limit = 500): Promise<ActivityEvent[]> {
+    async listByMission(missionId: string, limit = 500, opts: ActivityListOptions = {}): Promise<ActivityEvent[]> {
       const rows = await db
         .select()
         .from(activityEvents)
-        .where(eq(activityEvents.missionId, missionId))
+        .where(scoped(eq(activityEvents.missionId, missionId), opts))
         .orderBy(asc(activityEvents.at), asc(activityEvents.id))
         .limit(limit);
       return rows.map(toRecord);
     },
 
     /** Newest first, one agent's events (the agent panel's refusals and requests). */
-    async listByAgent(agentId: string, limit = 100): Promise<ActivityEvent[]> {
+    async listByAgent(agentId: string, limit = 100, opts: ActivityListOptions = {}): Promise<ActivityEvent[]> {
       const rows = await db
         .select()
         .from(activityEvents)
-        .where(eq(activityEvents.agentId, agentId))
+        .where(scoped(eq(activityEvents.agentId, agentId), opts))
         .orderBy(desc(activityEvents.at), desc(activityEvents.id))
         .limit(limit);
       return rows.map(toRecord);
     },
 
     /** Newest first. */
-    async listRecent(limit = 100): Promise<ActivityEvent[]> {
-      const rows = await db.select().from(activityEvents).orderBy(desc(activityEvents.at)).limit(limit);
+    async listRecent(limit = 100, opts: ActivityListOptions = {}): Promise<ActivityEvent[]> {
+      const rows = await db
+        .select()
+        .from(activityEvents)
+        .where(scoped(undefined, opts))
+        .orderBy(desc(activityEvents.at), desc(activityEvents.id))
+        .limit(limit);
       return rows.map(toRecord);
     },
 

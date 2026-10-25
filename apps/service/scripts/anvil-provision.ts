@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,9 +15,14 @@ import { assertAnvil, redact, rpc } from "../src/recourse/anvil.js";
 //      with viem (never `forge script --broadcast`, which would overwrite the real
 //      Base Sepolia broadcast record; `pnpm contracts:export` is never run);
 //   3. setEscrowFactory, createRoot(root node key, 100 USDC cap, 20 USDC per call, 30 days);
-//   4. mint USDC to the treasury (100) and to each SIMULATED seller (10, for bonds) by
+//   4. setAllow the two SIMULATED direct-API payees (search, scrape) so the mission runner's
+//      sub-agents can pay them; the SIMULATED attacker payee is never allowlisted (the
+//      prompt-injection demo expects PayeeNotAllowed(0));
+//   5. mint USDC to the treasury (100) and to each SIMULATED seller (10, for bonds) by
 //      impersonating USDC's masterMinter, falling back to a storage write;
-//   5. write apps/service/.anvil/deployments.json and .anvil/service.env (both gitignored).
+//   6. write apps/service/.anvil/deployments.json and .anvil/service.env (both gitignored),
+//      the latter with the agent keys, the payees, the attacker and DEMO_MODE + a fresh DEMO_TOKEN
+//      so the injection and bypass refusals land onchain (locally) and reach the Blocked lane.
 // Accounts are Anvil's public dev mnemonic ("test test ... junk"); no key is hardcoded and
 // none is printed. Usage: pnpm --filter @overflow/service anvil:provision
 // ---------------------------------------------------------------------------
@@ -60,14 +66,20 @@ async function main(): Promise<void> {
   const usdcCode = await pub.getCode({ address: USDC.address });
   if (!usdcCode || usdcCode === "0x") throw new Error(`refused: no USDC code at ${USDC.address}; Anvil must fork Base Sepolia`);
 
-  // Anvil's dev accounts by index: 0 deployer+owner, 1 relayer, 2 root node key, 3..5 SIMULATED sellers.
+  // Anvil's dev accounts by index: 0 deployer+owner, 1 relayer, 2 root node key, 3..5 SIMULATED recourse sellers,
+  // 6..8 sub-agent node keys (research, finance, verification; gasless, they only sign), 9 search payee (also the
+  // facilitator demo's payee), 10 scrape payee, 11 SIMULATED attacker payee (never allowlisted). Payees hold no ETH.
   const acct = (i: number) => mnemonicToAccount(ANVIL_MNEMONIC, { addressIndex: i });
   const [deployer, relayer, rootNode, honest, ghost, swap] = [0, 1, 2, 3, 4, 5].map(acct);
+  const searchPayee = acct(9).address;
+  const scrapePayee = acct(10).address;
+  const attacker = acct(11).address;
   const wallet = createWalletClient({ account: deployer!, chain: baseSepolia, transport: http(RPC) });
   const privateKey = (i: number): Hex => toHex(acct(i).getHdKey().privateKey!);
   log(`anvil ${redact(RPC)} chain ${chainId}, USDC ${USDC.address}`);
   log(`deployer/owner ${deployer!.address}  relayer ${relayer!.address}  root node key ${rootNode!.address}`);
   log(`SIMULATED sellers: honest ${honest!.address}  ghost ${ghost!.address}  swap ${swap!.address}`);
+  log(`SIMULATED direct-API payees: search ${searchPayee}  scrape ${scrapePayee}; SIMULATED attacker ${attacker} (never allowlisted)`);
 
   const deploy = async (name: string, args: readonly unknown[]): Promise<{ address: Address; hash: Hex; block: bigint }> => {
     const a = artifact(name);
@@ -94,6 +106,10 @@ async function main(): Promise<void> {
   txs["createRoot"] = await send(`treasury.createRoot(root node key, cap ${ROOT_CAP}, per call ${ROOT_MAX_PER_CALL})`, treasury.address, overflowTreasuryAbi, "createRoot", [rootNode!.address, ROOT_CAP, ROOT_MAX_PER_CALL, expiry]);
   const nodeId = await pub.readContract({ address: treasury.address, abi: overflowTreasuryAbi, functionName: "nodeOfKey", args: [rootNode!.address] });
   log(`root node id ${nodeId} for key ${rootNode!.address}`);
+  txs["allowSearch"] = await send("treasury.setAllow(search payee, true)", treasury.address, overflowTreasuryAbi, "setAllow", [searchPayee, true]);
+  txs["allowScrape"] = await send("treasury.setAllow(scrape payee, true)", treasury.address, overflowTreasuryAbi, "setAllow", [scrapePayee, true]);
+  const attackerAllowed = (await pub.readContract({ address: treasury.address, abi: overflowTreasuryAbi, functionName: "allowlist", args: [attacker] })) as boolean;
+  if (attackerAllowed) throw new Error("refused: the SIMULATED attacker is allowlisted; the injection demo must be refused with PayeeNotAllowed(0)");
 
   // USDC for the demo: impersonate masterMinter (Anvil only), else write the balance slot directly.
   const mint = async (to: Address, amount: bigint, label: string): Promise<void> => {
@@ -147,7 +163,9 @@ async function main(): Promise<void> {
   writeFileSync(deploymentsPath, `${JSON.stringify({ simulated: true, note: "LOCAL ANVIL FORK of Base Sepolia; not a real deployment", ...deployments }, null, 2)}\n`);
   log(`wrote ${deploymentsPath}`);
 
-  // Service env for the run: Anvil dev keys (public mnemonic) for the relayer, the root node and the sellers. Never printed.
+  // Service env for the run: Anvil dev keys (public mnemonic) for the relayer, the root node, the sub-agents and the
+  // sellers, the payees, the attacker, and DEMO_MODE with a fresh random token. Never printed. CLAUDE_MODEL and
+  // ANTHROPIC_API_KEY are not written here: the live mission run takes them from the shell.
   const envPath = resolve(OUT_DIR, "service.env");
   const lines = [
     "# Generated by anvil-provision for the LOCAL Anvil fork. Gitignored. Keys are Anvil's public dev accounts.",
@@ -155,7 +173,14 @@ async function main(): Promise<void> {
     `OVERFLOW_DEPLOYMENTS_PATH=${deploymentsPath}`,
     `RELAYER_PRIVATE_KEY=${privateKey(1)}`,
     `AGENT_ROOT_KEY=${privateKey(2)}`,
+    `AGENT_KEYS=${privateKey(6)},${privateKey(7)},${privateKey(8)}`,
     `RECOURSE_SELLER_KEYS=${privateKey(3)},${privateKey(4)},${privateKey(5)}`,
+    `PAYEE_SEARCH_ADDRESS=${searchPayee}`,
+    `PAYEE_SCRAPE_ADDRESS=${scrapePayee}`,
+    `DEMO_PAYEE_ADDRESS=${searchPayee}`,
+    `ATTACKER_ADDRESS=${attacker}`,
+    "DEMO_MODE=true",
+    `DEMO_TOKEN=${randomBytes(16).toString("hex")}`,
     "RECOURSE_ANVIL_RUN=1",
     "INDEXER_POLL_MS=1000",
     "EVENTS_POLL_MS=1000",
@@ -166,6 +191,7 @@ async function main(): Promise<void> {
   chmodSync(envPath, 0o600);
   log(`wrote ${envPath} (names: ${lines.slice(1, -1).map((l) => l.split("=")[0]).join(", ")})`);
   log("next: set -a; source apps/service/.anvil/service.env; set +a; pnpm --filter @overflow/service dev");
+  log("      (add CLAUDE_MODEL and ANTHROPIC_API_KEY in the shell for the live mission run: pnpm --filter @overflow/service mission:run -- --force-injection-beat)");
 }
 
 main().catch((e) => {

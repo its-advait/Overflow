@@ -210,7 +210,9 @@ async function callPaidApi(input: z.infer<typeof CallPaidApiInput>, ctx: ToolCon
     const decoded = body.success && body.data.decoded?.name ? `${body.data.decoded.name}(${(body.data.decoded.args ?? []).join(",")})` : "payment_blocked";
     const reason = body.success ? body.data.decoded?.reason : undefined;
     const txHash = body.success && body.data.txHash && /^0x[0-9a-fA-F]{64}$/.test(body.data.txHash) ? (body.data.txHash as `0x${string}`) : undefined;
-    await emit(ctx, { kind: "policy.blocked", message: `treasury refused ${formatUsdc(amountAtomic ?? "0")} USDC for ${url}: ${decoded}${reason ? ` (${reason})` : ""}${txHash ? " [reverted onchain]" : " [simulation]"}`, decodedRevert: decoded, ...(txHash ? { txHash } : {}) });
+    // Source reference for the audit trail: the authorization digest the facilitator refused ([facilitator:<digest>]).
+    const digest = body.success && body.data.digest && /^0x[0-9a-fA-F]{64}$/.test(body.data.digest) ? body.data.digest : undefined;
+    await emit(ctx, { kind: "policy.blocked", message: `treasury refused ${formatUsdc(amountAtomic ?? "0")} USDC for ${url}: ${decoded}${reason ? ` (${reason})` : ""}${txHash ? " [reverted onchain]" : " [simulation]"}${digest ? ` [facilitator:${digest}]` : ""}`, decodedRevert: decoded, ...(txHash ? { txHash } : {}) });
     return { content: `Payment blocked by treasury policy: ${decoded}${reason ? `. ${reason}` : ""}. This payee cannot be paid from your node.`, isError: true, payment: { outcome: "blocked", decoded, url, ...(txHash ? { txHash } : {}), ...(amountAtomic ? { amountAtomic } : {}) } };
   }
   if (res.status === 502) {

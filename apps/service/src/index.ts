@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { serve } from "@hono/node-server";
-import { createDatabase, seed } from "@overflow/database";
+import { createDatabase, createRepositories, seed } from "@overflow/database";
 import { oracleModelFromEnv } from "@overflow/oracle";
 import { resolveSigner } from "@overflow/payment-client/keystore";
 import { CHAIN_ID, loadDeployments, PACKAGE_NAME as SCHEMAS } from "@overflow/schemas";
@@ -12,6 +12,7 @@ import { viemTreasuryRead } from "./chain/treasury-read.js";
 import { createActivityBus, createIndexer, createLogSource, readTreasurySnapshot, resolveIndexerConfig, type Indexer } from "./chain/index.js";
 import { loadEnv, readConfig } from "./config";
 import { createFacilitatorApp } from "./facilitator/app";
+import { bridgeFacilitatorRefusals } from "./facilitator/activity-bridge";
 import { createBus, createLogPoller } from "./facilitator/events";
 import { facilitatorViaApp } from "./facilitator/in-process.js";
 import { createRelayer } from "./facilitator/relayer";
@@ -99,6 +100,8 @@ async function main(): Promise<void> {
 
   // Chain indexer + ledger reconciliation: read-only, over the activity bus the API streams.
   const activityBus = createActivityBus();
+  // The SIMULATED bypass's USDC refusal has no other path into the audit trail (no agent tool, no logs); bridge it.
+  bridgeFacilitatorRefusals({ facilitatorBus, repos: createRepositories(database.db), activityBus, log });
   const indexerConfig = await resolveIndexerConfig();
   let indexer: Indexer | undefined;
   let reconciliation: Reconciliation | undefined;

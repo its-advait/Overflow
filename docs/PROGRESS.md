@@ -1474,3 +1474,29 @@ Verified (real output): `pnpm -r typecheck` exit 0; `pnpm lint` exit 0; `pnpm te
 - `GET /api/treasury` reads the chain on every request; a busy overview with SSE refetches means one `eth_blockNumber` + two `eth_call`s per committed event. A short cache keyed on block would be the next step if the public RPC rate-limits.
 - "Spent this mission" is the books' data-expense; a mission whose purchases paid a direct x402 seller (no escrow) is booked the same way, but any purchase not yet in the ledger (indexer lag) reads 0 until the next poll.
 - `next dev` wrote `apps/web/AGENTS.md` again (deleted).
+
+## 2026-10-25: refusals in the activity feed (service half of the Blocked lane)
+
+Prompt: an audit view with refusals in their own lane; DONE WHEN the injection and bypass refusals appear in the Blocked lane with correct reasons, live. The web half (`feat(web): activity and blocked lane`) follows in the next commit; this commit makes every refusal reachable from `GET /api/activity`.
+
+### Built
+- `apps/service/src/facilitator/activity-bridge.ts`: subscribes to the facilitator's in-memory feed and records a `BypassRejected` (the SIMULATED attacker's authorization sent straight to USDC, refused after USDC asked the treasury over ERC-1271) as one `policy.blocked` row: `decodedRevert` `Error(FiatTokenV2: invalid signature)` (or the decoded custom error), the reverted tx hash, `simulated: true`, message ending in `[facilitator:<digest>]`; published on the activity bus so `/events` streams it. Before this, the bypass refusal lived only on `GET /facilitator/events`. `Reverted` is deliberately not bridged: the callers that know the agent and mission (`orchestration/tools.ts`, `orchestration/delegation.ts`) already write their own attributed row, so bridging would double-count. `BypassSucceeded` only logs a WARNING; the indexer's `usdc.transfer` row and the reconciliation difference already surface a real transfer. Wired in `index.ts` right after the activity bus is created.
+- `GET /api/activity?kind=<ActivityKind>`: optional narrowing that combines with `purchaseId` / `missionId` / `agentId`; repository lists take `{ kind }` and `listRecent` now tie-breaks by id like the others. Web client contract and mock pass `kind` through.
+- `orchestration/tools.ts`: a seller's 402 refusal message now ends with ` [facilitator:<digest>]` when the facilitator returned the authorization digest, so the audit trail can point at the exact refused authorization. The paywall's `simulated: true` is left alone: it labels the SIMULATED seller, not the refusal, and the live-model row must stay unlabelled (only the forced probe is `simulated`).
+- `apps/service/scripts/anvil-provision.ts`: also `setAllow`s the SIMULATED search and scrape payees (Anvil accounts 9 and 10), refuses if the SIMULATED attacker (account 11) is allowlisted, and writes `AGENT_KEYS` (accounts 6-8), `PAYEE_SEARCH_ADDRESS`, `PAYEE_SCRAPE_ADDRESS`, `DEMO_PAYEE_ADDRESS`, `ATTACKER_ADDRESS`, `DEMO_MODE=true` and a random `DEMO_TOKEN` into the gitignored `service.env`. `CLAUDE_MODEL` and `ANTHROPIC_API_KEY` come from the shell. README and `.env.example` updated.
+
+### Verified (real output)
+| Check | Result |
+| --- | --- |
+| `pnpm -r typecheck` | clean |
+| `pnpm lint` | clean |
+| `pnpm test` | 92 files passed, 1 skipped; 751 tests passed, 1 skipped |
+| `activity-bridge.test.ts` | BypassRejected row + stream; Reverted/BypassSucceeded/chain events insert nothing; fallback decode |
+| `app.test.ts` | `kind=policy.blocked` alone and with `agentId`; unknown kind 400 |
+| `mission-runner.test.ts` | the forced `/premium-intel` refusal message carries `[reverted onchain] [facilitator:<digest>]` |
+
+### Not yet run
+- The live Anvil run (anvil-up, provision, service with `DEMO_MODE`, `pnpm demo:facilitator`, `mission:run --force-injection-beat`) and the web Blocked lane. Both are the next commit's DONE WHEN check; nothing here claims they passed.
+
+### Limits
+- Refusals from callers outside the service that hit `/settle` or `/verify` directly (e.g. `facilitator-demo.ts` step 2b) have no agent to attribute and still appear only on `GET /facilitator/events`. Follow-up: attribute by recovered payer -> node -> agent.

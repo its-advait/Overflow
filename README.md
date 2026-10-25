@@ -80,6 +80,8 @@ set -a; source apps/service/.anvil/service.env; set +a
 pnpm --filter @overflow/service dev                # boots, indexes, then runs the three SIMULATED orders (RECOURSE_ANVIL_RUN=1)
 ```
 
+The same provisioning readies the two attack demos on the fork: it allowlists the SIMULATED search and scrape payees (never the SIMULATED attacker), writes `AGENT_KEYS`, `ATTACKER_ADDRESS`, `DEMO_PAYEE_ADDRESS` and `DEMO_MODE=true` with a fresh `DEMO_TOKEN` into `service.env`. With `CLAUDE_MODEL` and `ANTHROPIC_API_KEY` set in the shell, `pnpm --filter @overflow/service mission:run -- --force-injection-beat` runs a mission whose `/premium-intel` attempt reverts onchain (locally) with `PayeeNotAllowed(0)`, and `pnpm demo:facilitator` sends the bypass straight to USDC; both refusals land in `GET /api/activity?kind=policy.blocked` and the web app's Blocked lane.
+
 Then `GET /api/escrow` lists the orders and `GET /api/escrow/:id` shows each one's terms, live chain state, chain events, the pre-funding sample with its rule-based judgment, the complaint with both proofs, and which escrow calls the contract would accept right now. The run refuses any RPC that does not answer `anvil_nodeInfo`, so `RECOURSE_ANVIL_RUN=1` against Base Sepolia only logs a refusal. Keys in `service.env` are Anvil's public dev accounts; the file is gitignored.
 
 In the web app, `/escrow` lists the orders and `/escrow/<purchase id or address>` is the judge's page: state diagram, terms with live countdowns, the sample, the evidence (both Merkle proofs re-verified in the browser) and the calls the contract would accept. Point it at the service with `NEXT_PUBLIC_API_URL=http://localhost:4000` (or `NEXT_PUBLIC_USE_MOCKS=1` for the golden-vector fixtures).

@@ -1,6 +1,7 @@
 import { MergeDecisionSchema } from "@overflow/fusion";
 import {
   ActivityEventSchema,
+  ActivityKindSchema,
   AddressSchema,
   AgentRecordSchema,
   AtomicAmountSchema,
@@ -251,6 +252,8 @@ export const ActivityQuerySchema = z.object({
   purchaseId: IdSchema.optional(),
   missionId: IdSchema.optional(),
   agentId: IdSchema.optional(),
+  /** Narrow to one kind (the Blocked lane asks for policy.blocked); combines with the filters above. */
+  kind: ActivityKindSchema.optional(),
 });
 export type ActivityQuery = z.infer<typeof ActivityQuerySchema>;
 export const ActivityResponseSchema = z.object({ events: z.array(ActivityEventSchema) });

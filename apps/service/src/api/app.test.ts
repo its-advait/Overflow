@@ -143,6 +143,19 @@ describe("REST API", () => {
       expect(act.status).toBe(200);
     });
 
+    it("filters activity by kind, alone and together with an agent", async () => {
+      await handle.repos.activityEvents.insert({ kind: "policy.blocked", message: "treasury refused 0.50 USDC for /premium-intel: PayeeNotAllowed(0) [simulation]", decodedRevert: "PayeeNotAllowed(0)", agentId: "agent-research" });
+      await handle.repos.activityEvents.insert({ kind: "agent.tool_call", message: "agent-research called call_paid_api", agentId: "agent-research" });
+      await handle.repos.activityEvents.insert({ kind: "policy.blocked", message: "SIMULATED attacker bypass: USDC refused transferWithAuthorization sent outside settle()", decodedRevert: "Error(FiatTokenV2: invalid signature)", simulated: true });
+      const blocked = await json(await app.request("/api/activity?kind=policy.blocked"));
+      expect(blocked.events.map((e: { decodedRevert?: string }) => e.decodedRevert)).toEqual(["Error(FiatTokenV2: invalid signature)", "PayeeNotAllowed(0)"]);
+      const research = await json(await app.request("/api/activity?kind=policy.blocked&agentId=agent-research"));
+      expect(research.events).toHaveLength(1);
+      expect(research.events[0].decodedRevert).toBe("PayeeNotAllowed(0)");
+      expect((await json(await app.request("/api/activity?agentId=agent-research"))).events).toHaveLength(2);
+      expect((await app.request("/api/activity?kind=not.a.kind")).status).toBe(400);
+    });
+
     it("has no /api/execute and no unknown routes", async () => {
       const res = await post("/api/execute", { to: ATTACKER, data: "0xdeadbeef" });
       expect(res.status).toBe(404);

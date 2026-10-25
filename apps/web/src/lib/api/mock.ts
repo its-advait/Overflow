@@ -390,6 +390,7 @@ export function createMockApi(): OverflowApi {
       if (query.purchaseId) events = events.filter((e) => e.purchaseId === query.purchaseId);
       if (query.missionId) events = events.filter((e) => e.missionId === query.missionId);
       if (query.agentId) events = events.filter((e) => e.agentId === query.agentId);
+      if (query.kind) events = events.filter((e) => e.kind === query.kind);
       return delay({ events: events.slice(0, query.limit ?? 100) });
     },
     listExceptions: (query = {}) => {
