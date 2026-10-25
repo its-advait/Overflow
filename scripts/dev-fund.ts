@@ -3,13 +3,17 @@
  * In the demo the controller funds the treasury through Coinbase Wallet instead; this script
  * SIMULATES that step and must never be presented as the controller's action.
  *
- * Signing: shells out to `cast send --account <keystore> --password-file <path>` so no private key
- * is ever loaded into this process.
+ * Signing: a 64-hex DEPLOYER_PRIVATE_KEY in .env is used in-process via @overflow/payment-client/keystore
+ * (never logged); otherwise shells out to `cast send --account <keystore> --password-file <path>` so no
+ * private key is loaded into this process.
  *
  * Usage: pnpm dev:fund <usdc amount, e.g. 5 or 0.50>
  */
 import { spawnSync } from "node:child_process";
-import { erc20Abi } from "viem";
+import { createWalletClient, erc20Abi, http } from "viem";
+import type { PrivateKeyAccount } from "viem/accounts";
+import { baseSepolia } from "viem/chains";
+import { resolveSigner } from "@overflow/payment-client/keystore";
 import { atomicToBigInt, explorerUrl, formatUsdc, loadDeployments, toAtomic } from "@overflow/schemas";
 import { assertChainId, deployerAddress, loadEnv, publicClient, requireEnv } from "./lib/env.js";
 
@@ -45,14 +49,75 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  console.log(`sending ${formatUsdc(amount)} USDC from ${funder} to treasury ${d.treasury} via cast (${account})`);
+  const txHash = /^0x[0-9a-fA-F]{64}$/.test(process.env["DEPLOYER_PRIVATE_KEY"] ?? "")
+    ? await sendWithEnvKey(client, d.token, d.treasury, amount, funder, rpc)
+    : sendWithCast(d.token, d.treasury, amount, funder, account, passwordFile, rpc);
+  const after = await client.readContract({
+    address: d.token,
+    abi: erc20Abi,
+    functionName: "balanceOf",
+    args: [d.treasury],
+  });
+  console.log(`tx ${explorerUrl("tx", txHash)}`);
+  console.log(`treasury balance now ${formatUsdc(after)} USDC`);
+}
+
+type Client = ReturnType<typeof publicClient>;
+
+/** Signs transfer(treasury, amount) in-process with the 64-hex DEPLOYER_PRIVATE_KEY; the key is never printed. */
+async function sendWithEnvKey(
+  client: Client,
+  token: `0x${string}`,
+  treasury: `0x${string}`,
+  amount: bigint,
+  funder: `0x${string}`,
+  rpc: string,
+): Promise<`0x${string}`> {
+  const signer = resolveSigner({ keyOrAddress: process.env["DEPLOYER_PRIVATE_KEY"], label: "DEPLOYER" });
+  // Same runtime object; the cast only bridges the two abitype instances pnpm installs for TS 5 and TS 7.
+  const acct = signer.account as unknown as PrivateKeyAccount;
+  if (acct.address.toLowerCase() !== funder.toLowerCase()) {
+    console.error(`DEPLOYER_PRIVATE_KEY derives ${acct.address}, but DEPLOYER_ADDRESS says ${funder}`);
+    process.exit(2);
+  }
+  const wallet = createWalletClient({ account: acct, chain: baseSepolia, transport: http(rpc) });
+  console.log(`sending ${formatUsdc(amount)} USDC from ${funder} to treasury ${treasury} (${signer.source})`);
+  const { request } = await client.simulateContract({
+    address: token,
+    abi: erc20Abi,
+    functionName: "transfer",
+    args: [treasury, amount],
+    account: acct,
+  });
+  const hash = await wallet.writeContract(request);
+  console.log(`transfer sent ${hash}`);
+  const receipt = await client.waitForTransactionReceipt({ hash, timeout: 120_000 });
+  if (receipt.status !== "success") {
+    console.error(`transfer reverted in block ${receipt.blockNumber}: ${explorerUrl("tx", hash)}`);
+    process.exit(1);
+  }
+  console.log(`confirmed in block ${receipt.blockNumber}`);
+  return hash;
+}
+
+/** Signs through the Foundry keystore via cast; no private key enters this process. */
+function sendWithCast(
+  token: `0x${string}`,
+  treasury: `0x${string}`,
+  amount: bigint,
+  funder: `0x${string}`,
+  account: string,
+  passwordFile: string | undefined,
+  rpc: string,
+): `0x${string}` {
+  console.log(`sending ${formatUsdc(amount)} USDC from ${funder} to treasury ${treasury} via cast (${account})`);
   const res = spawnSync(
     "cast",
     [
       "send",
-      d.token,
+      token,
       "transfer(address,uint256)",
-      d.treasury,
+      treasury,
       amount.toString(),
       "--account",
       account,
@@ -72,14 +137,7 @@ async function main(): Promise<void> {
     console.error(`transfer reverted: ${receipt.transactionHash}`);
     process.exit(1);
   }
-  const after = await client.readContract({
-    address: d.token,
-    abi: erc20Abi,
-    functionName: "balanceOf",
-    args: [d.treasury],
-  });
-  console.log(`tx ${explorerUrl("tx", receipt.transactionHash)}`);
-  console.log(`treasury balance now ${formatUsdc(after)} USDC`);
+  return receipt.transactionHash;
 }
 
 main().catch((err) => {

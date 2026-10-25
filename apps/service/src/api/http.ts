@@ -1,10 +1,12 @@
 import { AlreadySubmittedError, InvalidEscrowTransitionError, NotFoundError, RequestNotPendingError, UniqueViolationError } from "@overflow/database";
+import { ExtractionError } from "@overflow/oracle";
 import { QuoteMismatchError } from "@overflow/payment-client";
 import { InvalidTransitionError } from "@overflow/schemas";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z, ZodError } from "zod";
 import { ExceptionAlreadyDecidedError, OnchainApprovalRequiredError, SelfResolutionError } from "../exceptions/service.js";
+import { NoOpenRequestsError, OracleUnavailableError } from "../orchestration/oracle-port.js";
 import { ActivePurchaseExistsError, TransitionEvidenceError } from "../orchestration/purchase-service.js";
 import { NotWiredError } from "./ports.js";
 import type { Session } from "./session.js";
@@ -65,6 +67,12 @@ export function toApiError(e: unknown): ApiError {
   if (e instanceof AlreadySubmittedError) return new ApiError(409, "already_submitted", e.message, { id: e.id, existing: e.existing });
   if (e instanceof RequestNotPendingError) return new ApiError(409, "not_pending", e.message, { id: e.id, status: e.status });
   if (e instanceof NotWiredError) return new ApiError(501, "not_wired", e.message, { port: e.port, lands: e.lands });
+  if (e instanceof OracleUnavailableError) return new ApiError(503, "oracle_unavailable", e.message, { reason: e.reason });
+  if (e instanceof ExtractionError) {
+    // Both attempts are already audited as oracle.model_call rows; the response carries their hashes.
+    return new ApiError(502, "oracle_extraction_failed", e.message, { issues: e.issues, modelCalls: e.modelCalls });
+  }
+  if (e instanceof NoOpenRequestsError) return new ApiError(409, "no_open_requests", e.message, { missionId: e.missionId });
   return new ApiError(500, "internal_error", "internal error");
 }
 

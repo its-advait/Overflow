@@ -13,7 +13,9 @@
     "gas": "tsx gas-report.ts",
     "demo-facilitator": "tsx facilitator-demo.ts",
     "demo-adapters": "tsx adapter-demo.ts",
-    "coinbase-spike": "tsx coinbase-spike.ts"
+    "coinbase-spike": "tsx coinbase-spike.ts",
+    "allow-payee": "tsx allow-payee.ts",
+    "dev-fund-gas": "tsx dev-fund-gas.ts"
   },
   "dependencies": {
     "@overflow/payment-client": "workspace:*",

@@ -1,5 +1,7 @@
+import Anthropic from "@anthropic-ai/sdk";
 import { serve } from "@hono/node-server";
 import { createDatabase, seed } from "@overflow/database";
+import { oracleModelFromEnv } from "@overflow/oracle";
 import { resolveSigner } from "@overflow/payment-client/keystore";
 import { CHAIN_ID, loadDeployments, PACKAGE_NAME as SCHEMAS } from "@overflow/schemas";
 import { createApp } from "./api/index.js";
@@ -13,7 +15,17 @@ import { facilitatorViaApp } from "./facilitator/in-process.js";
 import { createRelayer } from "./facilitator/relayer";
 import { MemoryStore } from "./facilitator/store";
 import { createReconciliation, type Reconciliation } from "./ledger/index.js";
-import { ORCHESTRATION_STATUS } from "./orchestration/index.js";
+import {
+  AGENT_KEYS_LIMITATION,
+  createMissionRunner,
+  orchestrationStatus,
+  relayViaApp,
+  resolveAgentKeys,
+  resolveRolePolicies,
+  seedCatalog,
+  type MissionRunner,
+  type OracleModel,
+} from "./orchestration/index.js";
 import { createSweepReconciler, MemoryExceptions, MemoryLedger, MemoryPurchaseIndex } from "./reconciliation/sweeps";
 import { createSellerApp, resolveSellerConfig, sellersStatus } from "./sellers/index.js";
 
@@ -45,12 +57,23 @@ async function main(): Promise<void> {
   if (config.demoMode) log("[boot] DEMO_MODE=true: /demo/bypass and forceBroadcast enabled (x-demo-token required); SIMULATED flows are labeled");
 
   // Database: DATABASE_URL selects Postgres; otherwise PGlite at PGLITE_DATA_DIR (or in-memory). Migrate, then seed
-  // the SIMULATED demo company and its agents (idempotent).
+  // the SIMULATED demo company and its agents (idempotent), then the SIMULATED seller catalog into `resources`.
   const database = await createDatabase({ log: console.log });
   await database.migrate();
   log(`[database] migrations applied (dialect=${database.dialect}, from ${database.migrationsFolder})`);
   const seeded = await seed(database.db);
   log(`[seed] organization "${seeded.organization.name}" (SIMULATED) agents=${seeded.agents.length}`);
+  const catalog = await seedCatalog(database.db);
+  log(`[catalog] SIMULATED catalog: ${catalog.total} listings (${catalog.inserted} inserted, ${catalog.existing} existing) from ${catalog.catalogPath}`);
+
+  // Oracle extraction model: only with ANTHROPIC_API_KEY and CLAUDE_MODEL; otherwise plan answers 503.
+  let oracle: OracleModel | null = null;
+  if (process.env["ANTHROPIC_API_KEY"] && process.env["CLAUDE_MODEL"]?.trim()) {
+    oracle = { client: new Anthropic(), model: oracleModelFromEnv() };
+    log(`[oracle] extraction model ${oracle.model}`);
+  } else {
+    log("[oracle] idle: ANTHROPIC_API_KEY / CLAUDE_MODEL not set; POST /api/missions/:id/plan answers 503");
+  }
 
   // Facilitator: the one relayer, the treasury log poller and the settle/reserve/release routes.
   const facilitatorBus = createBus();
@@ -115,11 +138,39 @@ async function main(): Promise<void> {
     facilitator: facilitatorViaApp(facilitatorApp, { demoToken: config.demoToken, log }),
   });
 
+  // Mission runner: the orchestrator (AGENT_ROOT_KEY) signs CreateChild/PauseChild for the three sub-agents
+  // (AGENT_KEYS) and relays them through the facilitator app in-process. Agents never send transactions.
+  let runner: MissionRunner | undefined;
+  let runnerStatus: string;
+  const agentKeys = resolveAgentKeys();
+  if (!agentKeys.ok) runnerStatus = `idle: ${agentKeys.reason}`;
+  else if (!oracle) runnerStatus = "idle: CLAUDE_MODEL / ANTHROPIC_API_KEY unset";
+  else {
+    const policies = resolveRolePolicies(sellerConfig.payees, process.env, sellerConfig.attacker);
+    runner = createMissionRunner({
+      db: database.db,
+      bus: activityBus,
+      model: { client: oracle.client as Parameters<typeof createMissionRunner>[0]["model"]["client"], model: oracle.model },
+      treasury: boot.treasury,
+      chain: client,
+      relay: relayViaApp(facilitatorApp),
+      keys: agentKeys.keys,
+      policies,
+      sellerUrl: sellerConfig.sellerUrl,
+      demoMode: config.demoMode,
+      log,
+    });
+    runnerStatus = `live: orchestrator ${agentKeys.keys.root.address} (${agentKeys.keys.rootSource}); sub-agents research ${agentKeys.keys.children.research.address}, finance ${agentKeys.keys.children.finance.address}, verification ${agentKeys.keys.children.verification.address}; ${AGENT_KEYS_LIMITATION}`;
+  }
+  log(`[orchestration] mission runner ${runnerStatus}`);
+
   const { app } = createApp({
     db: database.db,
     bus: activityBus,
     ...(reconciliation ? { ports: { reconciliation: { run: (trigger) => reconciliation!.run(trigger) } } } : {}),
     treasury: boot.treasury,
+    oracle,
+    ...(runner ? { runner } : {}),
     indexerStatus: () => indexer?.status() ?? { state: "idle", reason: indexerConfig.ok ? "not started" : indexerConfig.reason },
     status: {
       treasury: boot.treasury,
@@ -127,7 +178,7 @@ async function main(): Promise<void> {
       database: { dialect: database.dialect, migrationsFolder: database.migrationsFolder, migrated: true },
       modules: {
         api: "ready",
-        orchestration: ORCHESTRATION_STATUS,
+        orchestration: `${orchestrationStatus({ model: oracle?.model ?? null, treasury: boot.treasury, orderTermsWired: false })}; mission runner ${runnerStatus}`,
         facilitator: `live: relayer ${account.address} (${signer.source}); routes at / and /facilitator`,
         sellers: sellersStatus(sellerConfig, true),
         chain: chainStatus,

@@ -5,10 +5,12 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { createActivityBus, type ActivityBus, type IndexerStatus } from "../chain/bus.js";
 import { createExceptionService } from "../exceptions/service.js";
+import type { MissionRunner } from "../orchestration/mission-runner.js";
+import { createOraclePort, notWiredOrderTerms, type OracleModel, type OrderTermsPort } from "../orchestration/oracle-port.js";
 import { createPurchaseService } from "../orchestration/purchase-service.js";
 import type { ApiDeps } from "./deps.js";
 import { ApiError, errorResponse, type ApiEnv } from "./http.js";
-import { defaultPorts, type Ports } from "./ports.js";
+import { defaultPorts, type OrchestrationPort, type Ports } from "./ports.js";
 import { activityRoutes } from "./routes/activity.js";
 import { agentRoutes } from "./routes/agents.js";
 import { controllerRequestRoutes } from "./routes/controller-requests.js";
@@ -31,8 +33,14 @@ export interface CreateAppOptions {
   bus?: ActivityBus | undefined;
   /** Real indexer state. Default: idle, "no indexer attached". */
   indexerStatus?: (() => IndexerStatus) | undefined;
-  /** The deployed treasury (from deployments/base-sepolia.json). Without it, onchain exceptions answer 501: no address is invented. */
+  /** The deployed treasury (from deployments/base-sepolia.json). Without it, onchain exceptions and propose answer 501: no address is invented. */
   treasury?: Address | undefined;
+  /** Oracle extraction model (Anthropic client + CLAUDE_MODEL). null/omitted: plan answers 503. */
+  oracle?: OracleModel | null | undefined;
+  /** Source of an order's seller/escrow/terms (the Recourse seller). Default: not wired, propose answers 501 once a listing is chosen. */
+  orderTerms?: OrderTermsPort | undefined;
+  /** Mission runner (orchestrator + three sub-agents). Omitted: POST /api/missions/:id/run answers 501. */
+  runner?: MissionRunner | undefined;
 }
 
 /**
@@ -41,6 +49,20 @@ export interface CreateAppOptions {
  * sign; only the contracts move USDC. The API does EMIT prepared calldata
  * (controller requests) for the controller to approve in Coinbase Wallet.
  */
+/** Oracle + Fusion from the Oracle port; runMission/pauseAgent from the mission runner when one is wired. */
+function withRunner(port: OrchestrationPort, runner: MissionRunner | undefined): OrchestrationPort {
+  if (!runner) return port;
+  let seq = 0;
+  return {
+    ...port,
+    async runMission(mission, opts) {
+      const runId = `run-${mission.id}-${++seq}-${Date.now()}`;
+      return { runId, done: runner.run(mission, opts) };
+    },
+    pauseAgent: (mission, agentId) => runner.pauseAgent(mission, agentId),
+  };
+}
+
 export function createApp(opts: CreateAppOptions) {
   const base = defaultPorts();
   const bus = opts.bus ?? createActivityBus();
@@ -52,7 +74,17 @@ export function createApp(opts: CreateAppOptions) {
     bus,
     indexerStatus: opts.indexerStatus ?? (() => ({ state: "idle", reason: "no indexer attached" })),
     ports: {
-      orchestration: opts.ports?.orchestration ?? base.orchestration,
+      orchestration:
+        opts.ports?.orchestration ??
+        withRunner(
+          createOraclePort({
+            db: opts.db,
+            model: opts.oracle ?? null,
+            treasury: opts.treasury ?? null,
+            orderTerms: opts.orderTerms ?? notWiredOrderTerms(),
+          }),
+          opts.runner,
+        ),
       adapters: opts.ports?.adapters ?? base.adapters,
       policy: opts.ports?.policy ?? base.policy,
       reconciliation: opts.ports?.reconciliation ?? base.reconciliation,

@@ -2,7 +2,7 @@
   "name": "@overflow/fusion",
   "version": "0.0.0",
   "private": true,
-  "description": "Fuses agent proposals, policy and oracle verdicts into settlement decisions",
+  "description": "Fusion: merges agents' requests into one purchase only when a real listing satisfies all of them and its license allows sharing. Deterministic rules, LCA payer, exact integer allocations. Never signs or pays.",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
@@ -14,6 +14,7 @@
     "test": "vitest run"
   },
   "devDependencies": {
+    "@overflow/datasets": "workspace:*",
     "@types/node": "^26.6.5"
   },
   "dependencies": {

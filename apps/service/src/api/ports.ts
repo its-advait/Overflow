@@ -10,7 +10,8 @@ import type {
   ResourceRequestRecord,
 } from "@overflow/schemas";
 import type { Hex } from "viem";
-import type { ProposeInput } from "../orchestration/purchase-service.js";
+import type { ProposeResult } from "../orchestration/oracle-port.js";
+import type { MissionRunResult, RunOptions } from "../orchestration/mission-runner.js";
 
 // ---------------------------------------------------------------------------
 // Ports: what the API needs from parts of the system that later prompts build.
@@ -28,12 +29,20 @@ export class NotWiredError extends Error {
   }
 }
 
-/** Oracle + Fusion (P4.1 / P4.2). */
+/** Oracle + Fusion (wired: orchestration/oracle-port.ts). */
 export interface OrchestrationPort {
   /** Extracts structured requirements for a mission and persists them as resource_requests. */
   planMission(mission: MissionRecord): Promise<ResourceRequestRecord[]>;
-  /** Oracle ranks, Fusion merges; returns proposals the PurchaseService persists as PROPOSED. */
-  propose(mission: MissionRecord): Promise<ProposeInput[]>;
+  /** Oracle recommends per open request, Fusion merges compatible ones; returns proposals the PurchaseService persists as PROPOSED plus the Oracle decisions and Fusion merges. */
+  propose(mission: MissionRecord): Promise<ProposeResult>;
+  /**
+   * Mission runner (orchestration/mission-runner.ts): the orchestrator signs CreateChild for three sub-agents
+   * (relayed gaslessly), runs their tool loops and reports. Resolves when the run has been accepted; the run's
+   * progress is the activity feed. Default: NotWiredError (no agent keys / chain).
+   */
+  runMission(mission: MissionRecord, opts: RunOptions): Promise<{ runId: string; done: Promise<MissionRunResult> }>;
+  /** The orchestrator signs PauseChild for one of its sub-agents (the controller's owner pause is separate). */
+  pauseAgent(mission: MissionRecord, agentId: string): Promise<{ txHash: Hex; nodeId: number }>;
 }
 
 export interface PreparedPayment {
@@ -86,16 +95,9 @@ export interface Ports {
   reconciliation: ReconciliationPort;
 }
 
-export function defaultPorts(): Ports {
+/** Defaults for the ports later prompts build. The orchestration port is always real (createApp builds createOraclePort). */
+export function defaultPorts(): Omit<Ports, "orchestration"> {
   return {
-    orchestration: {
-      planMission: async () => {
-        throw new NotWiredError("OrchestrationPort.planMission (Oracle)", "P4.1");
-      },
-      propose: async () => {
-        throw new NotWiredError("OrchestrationPort.propose (Oracle + Fusion)", "P4.2");
-      },
-    },
     adapters: {},
     // No chain reader yet: only escrow payTo passes checkQuote.
     policy: { allowlistedPayees: async () => [] },

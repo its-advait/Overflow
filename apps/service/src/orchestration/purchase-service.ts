@@ -123,6 +123,8 @@ export interface TransitionResult {
   event: ActivityEvent;
   /** The escrow_orders row after `evidence.escrow` was applied; undefined when no row exists yet or none was requested. */
   escrow?: EscrowOrder | undefined;
+  /** propose() only: the idempotencyKey already had a purchase; nothing was written and `event` is the original one. */
+  replayed?: boolean | undefined;
 }
 
 export interface PurchaseServiceOptions {
@@ -132,6 +134,8 @@ export interface PurchaseServiceOptions {
 
 export interface ProposeInput {
   purchase: PurchaseInsert;
+  /** Fusion merge of two or more requests: a purchase_groups row is written in the same transaction and linked. */
+  group?: { payingNodeId: number; requestIds: string[]; mergeReason: string } | undefined;
   reason: string;
   source: TransitionSource;
   agentId?: string | undefined;
@@ -149,8 +153,10 @@ export function createPurchaseService(db: Executor, options: PurchaseServiceOpti
   return {
     /**
      * Records a PROPOSED purchase (idempotent on idempotencyKey) and its
-     * `purchase.proposed` event. A second active purchase for the same
-     * (mission, resource) throws ActivePurchaseExistsError.
+     * `purchase.proposed` event. A repeat of the same key returns the stored
+     * purchase and its original event without writing anything. A second
+     * active purchase for the same (mission, resource) throws
+     * ActivePurchaseExistsError.
      */
     async propose(input: ProposeInput): Promise<TransitionResult> {
       const source = TransitionSourceSchema.parse(input.source);
@@ -158,7 +164,25 @@ export function createPurchaseService(db: Executor, options: PurchaseServiceOpti
       try {
         result = await db.transaction(async (tx) => {
           const repos = createRepositories(tx);
-          const purchase = await repos.purchases.create(input.purchase);
+          const existing = await repos.purchases.getByIdempotencyKey(input.purchase.idempotencyKey);
+          if (existing) {
+            const events = await repos.activityEvents.listByPurchase(existing.id);
+            const event = events.find((e) => e.kind === "purchase.proposed") ?? events[0];
+            if (!event) throw new NotFoundError("activity_events", existing.id);
+            return { purchase: existing, event, replayed: true };
+          }
+          let purchaseGroupId = input.purchase.purchaseGroupId;
+          if (input.group) {
+            const group = await repos.purchaseGroups.insert({
+              missionId: input.purchase.missionId,
+              resourceId: input.purchase.resourceId,
+              payingNodeId: input.group.payingNodeId,
+              requestIds: input.group.requestIds,
+              mergeReason: input.group.mergeReason,
+            });
+            purchaseGroupId = group.id;
+          }
+          const purchase = await repos.purchases.create({ ...input.purchase, ...(purchaseGroupId ? { purchaseGroupId } : {}) });
           const event = await repos.activityEvents.insert({
             kind: "purchase.proposed",
             message: `proposed ${purchase.amountAtomic} atomic USDC for resource ${purchase.resourceId}: ${input.reason} [${source.kind}:${source.reference}]`,
@@ -175,7 +199,7 @@ export function createPurchaseService(db: Executor, options: PurchaseServiceOpti
         }
         throw e;
       }
-      publish(result.event);
+      if (!result.replayed) publish(result.event);
       return result;
     },
 

@@ -126,6 +126,19 @@ export const ActivityKindSchema = z.enum([
   "reconciliation.difference",
   // Oracle audit: one per model call, carrying the prompt hash and output hash (SPEC "Oracle" guardrails).
   "oracle.model_call",
+  // Oracle decision per resource request: chosen listing, rejections and summary. It authorizes no payment.
+  "oracle.recommendation",
+  // Fusion decision per candidate group: merge or not, the failing rule, the paying node. It authorizes no payment.
+  "fusion.decision",
+  // Orchestration: one event per sub-agent tool call and per tool result (agentId set), the agent's final
+  // report, the orchestrator's signed CreateChild/PauseChild and its relay receipt, and mission run start/finish.
+  // None of these move money; payments show up only as treasury.* / policy.blocked events.
+  "agent.tool_call",
+  "agent.tool_result",
+  "agent.report",
+  "delegation.signed",
+  "delegation.relayed",
+  "mission.run",
 ]);
 export type ActivityKind = z.infer<typeof ActivityKindSchema>;
 

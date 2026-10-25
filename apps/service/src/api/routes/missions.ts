@@ -21,6 +21,13 @@ const CreateMissionBody = z.object({
 const MissionResponse = z.object({ mission: MissionRecordSchema });
 const PlanResponse = z.object({ mission: MissionRecordSchema, requests: z.array(ResourceRequestRecordSchema) });
 const IdParams = z.object({ id: IdSchema });
+const RunBody = z.object({
+  /** DEMO_MODE only: replay the injected /premium-intel attempt as a labeled SIMULATED step if the live model declined it. */
+  forceInjectionBeat: z.boolean().default(false),
+});
+const RunResponse = z.object({ mission: MissionRecordSchema, runId: IdSchema, note: z.string() });
+const PauseAgentParams = z.object({ id: IdSchema, agentId: IdSchema });
+const PauseAgentResponse = z.object({ txHash: z.string(), nodeId: z.number().int(), agentId: IdSchema });
 
 export function missionRoutes(deps: ApiDeps) {
   const app = new Hono<ApiEnv>();
@@ -69,10 +76,29 @@ export function missionRoutes(deps: ApiDeps) {
   app.post("/:id/plan", async (c) => {
     const { id } = parseParams(c, IdParams);
     const mission = await loadMission(deps, c.get("session").organizationId, id);
-    // Oracle extracts and persists the requests (P4.1); 501 until wired.
+    // Oracle extracts and persists the requests (orchestration/oracle-port.ts); 503 when no model is configured.
     const requests = await deps.ports.orchestration.planMission(mission);
     const updated = (await deps.repos.missions.setStatus(mission.id, "planning")) ?? mission;
     return respond(c, PlanResponse, { mission: updated, requests });
+  });
+
+  // The orchestrator delegates to three sub-agents by signature and runs them. 202: the run continues in the
+  // background and every step is an activity event (GET /api/activity?missionId=, /events). Nothing here pays.
+  app.post("/:id/run", async (c) => {
+    const { id } = parseParams(c, IdParams);
+    const body = await parseBody(c, RunBody.partial().optional()).catch(() => ({ forceInjectionBeat: false }));
+    const mission = await loadMission(deps, c.get("session").organizationId, id);
+    const { runId, done } = await deps.ports.orchestration.runMission(mission, { forceInjectionBeat: body?.forceInjectionBeat ?? false });
+    void done.catch(() => undefined); // failures are written as mission.run events by the runner
+    const updated = (await deps.repos.missions.getById(mission.id)) ?? mission;
+    return respond(c, RunResponse, { mission: updated, runId, note: "run accepted; follow GET /api/activity?missionId= or /events" }, 202);
+  });
+
+  app.post("/:id/agents/:agentId/pause", async (c) => {
+    const { id, agentId } = parseParams(c, PauseAgentParams);
+    const mission = await loadMission(deps, c.get("session").organizationId, id);
+    const result = await deps.ports.orchestration.pauseAgent(mission, agentId);
+    return respond(c, PauseAgentResponse, { ...result, agentId });
   });
 
   return app;
