@@ -234,6 +234,19 @@ export const overflowTreasuryAbi = [
   },
   {
     "type": "function",
+    "name": "escrowFactory",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "floor",
     "inputs": [],
     "outputs": [
@@ -502,6 +515,19 @@ export const overflowTreasuryAbi = [
   },
   {
     "type": "function",
+    "name": "setEscrowFactory",
+    "inputs": [
+      {
+        "name": "factory",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "setFloor",
     "inputs": [
       {
@@ -641,6 +667,19 @@ export const overflowTreasuryAbi = [
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "EscrowFactorySet",
+    "inputs": [
+      {
+        "name": "factory",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
       }
     ],
     "anonymous": false
@@ -795,6 +834,27 @@ export const overflowTreasuryAbi = [
   },
   {
     "type": "error",
+    "name": "EscrowAmountMismatch",
+    "inputs": [
+      {
+        "name": "escrow",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "expected",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "actual",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "Expired",
     "inputs": [
       {
@@ -849,6 +909,17 @@ export const overflowTreasuryAbi = [
         "name": "node",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "PayeeFlagged",
+    "inputs": [
+      {
+        "name": "seller",
+        "type": "address",
+        "internalType": "address"
       }
     ]
   },

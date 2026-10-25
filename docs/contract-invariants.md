@@ -2,7 +2,7 @@
 
 Properties OverflowTreasury must hold after every transaction, with the code path that enforces each and the
 test that exercises it. Tests run against Circle's compiled USDC v2.2 (`contracts/test/fixtures/usdc-v2_2`),
-not a mock. Items marked **P1.5+** come from the spec but are not implemented yet; they are listed so the
+not a mock. Items marked **P1.5+** come from the spec but are not implemented yet (reservations); they are listed so the
 invariant suite grows against this file.
 
 ## OverflowTreasury (`contracts/src/OverflowTreasury.sol`)
@@ -22,7 +22,8 @@ invariant suite grows against this file.
 | T11 | Only two paths move USDC out: `settle()` via a flagged authorization, and the owner's `withdraw()`. No other function transfers tokens. | Contract surface. | `test_NotOwner_all_owner_functions`, `test_owner_setAllow_event_and_withdraw` |
 | T12 | `settle()` is not reentrant. | OpenZeppelin `ReentrancyGuardTransient`. | Structural; USDC does not call back except the view `isValidSignature` |
 | T13 | **P1.5+** The balance is at least `floor + reservedTotal` after every call, and `isValidSignature` is also valid for a live, unexpired reservation of that exact digest. | Not implemented. | None yet |
-| T14 | **P1.5+** A payee is either on the global allowlist or a factory-made escrow whose seller is not flagged. | Not implemented (`PayeeNotAllowed(0)` only). | None yet |
+| T14 | A payee is either on the global allowlist, or an escrow made by `escrowFactory` whose `buyer()` is this treasury, whose `seller()` has `provenCheats == 0`, and whose `amount()` equals `value` exactly. Any payee with a proven cheat (direct payee or escrow seller) reverts `PayeeFlagged(seller)`. | Step 4 of `_authorize`: `allowlist[to]` then the flag check, else `isEscrow` / `buyer()` / `provenCheats` / `amount()` in that order (`PayeeNotAllowed(0)`, `PayeeFlagged`, `EscrowAmountMismatch`). `setEscrowFactory` is owner-only; a zero factory disables escrow payees. | `TreasuryEscrowPayee.t.sol`: `test_agentFundsEscrowThroughSettle`, `test_wrongAmountReverts`, `test_escrowWithDifferentBuyerReverts`, `test_flaggedSeller_escrowPathReverts`, `test_flaggedSeller_directPathReverts`, `test_escrowPayee_requiresFactorySet` |
+| T15 | **Restricted nodes and escrows:** when the payee is an escrow, every restricted node on the path is checked against `nodeAllow[n][escrow.seller()]`, not the escrow address. Allowlisting a seller at delegation time therefore covers every per-order escrow of that seller, and an escrow whose seller is not allowed reverts `PayeeNotAllowed(n)` for the first restricted ancestor. | Step 5 uses `payee = escrow.seller()` (or `to` for a direct payment). | `test_restrictedNode_paysOnlyEscrowsOfAllowedSellers`, `test_restrictedNode_directSellerPaymentUsesSameAllow` |
 
 ## Escrow (`contracts/src/OverflowEscrow.sol`, `OverflowEscrowFactory.sol`, `MerkleLib.sol`)
 
@@ -39,7 +40,7 @@ treasury is the buyer. The invariant suite is `contracts/test/invariant/EscrowIn
 | E6 | No refund after settlement and no settlement after a refund; the timeout refund needs `revealDeadline` to have passed with no reveal. | `claimTimeoutRefund` requires `Created`/`Funded` and `RevealWindowOpen`; payout paths require `Revealed`. | `test_timeoutRefund_beforeDeadlineReverts`, `test_timeoutRefund_afterRevealReverts`, `test_terminalStatesAreExclusive` |
 | E7 | `accept` pays only on a signature from a node of `terms.buyer`, bound to this escrow: EIP-712 `{OverflowEscrow, 1, chainId, escrow}` over `Accept(bytes32 orderId)`, signer must satisfy `treasury.nodeOfKey(signer) != 0`. | `acceptDigest`, `ECDSA.recoverCalldata`, `NotBuyerNode`. | `test_payout_viaAccept`, `test_payout_viaAccept_childNode`, `test_accept_nonNodeReverts`, `test_accept_signatureForAnotherEscrowReverts` |
 | E8 | A complaint without a structurally valid proof reverts: `i < chunkCount`, chunk length exactly 160, proof length exactly `expectedProofLength(i, chunkCount)`, leaves hashed with prefix `0x00` and nodes with `0x01` (an internal node can't pose as a leaf). Tier 1 then reverts `NotImplemented`. | `complainMismatch`/`complainPromise` + `MerkleLib`. | `test_complaint_*` incl. `test_complaint_internalNodeAsLeafReverts`, `MerkleLib.t.sol` golden vectors shared with `packages/recourse-crypto` |
-| E9 | **P1.5+** A flagged seller never receives a new payment (`provenCheats` on the factory, `PayeeFlagged` in the treasury). | `recordCheat` is escrow-only; the treasury check is not implemented. | `test_recordCheat_onlyEscrows` |
+| E9 | A flagged seller never receives a new payment: `provenCheats` on the factory, `PayeeFlagged` in the treasury on both the direct and the escrow path (T14). | `recordCheat` is escrow-only; `_authorize` step 4 reads `provenCheats`. | `test_recordCheat_onlyEscrows`, `test_flaggedSeller_escrowPathReverts`, `test_flaggedSeller_directPathReverts`, `test_flaggedSeller_otherSellersUnaffected` |
 
 ## How to extend
 

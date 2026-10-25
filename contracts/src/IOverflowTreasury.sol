@@ -47,6 +47,8 @@ interface IOverflowTreasury {
     error KeyInUse();
     error NotAncestor();
     error NotOwner();
+    error PayeeFlagged(address seller);
+    error EscrowAmountMismatch(address escrow, uint256 expected, uint256 actual);
 
     event NodeCreated(
         uint256 indexed id, uint256 indexed parent, address key, uint256 cap, uint256 maxPerCall, uint256 expiry
@@ -56,6 +58,7 @@ interface IOverflowTreasury {
     event NodeUnpaused(uint256 indexed id);
     event CapRaised(uint256 indexed id, uint256 oldCap, uint256 newCap);
     event AllowSet(address indexed payee, bool allowed);
+    event EscrowFactorySet(address indexed factory);
 
     // payments
     function settle(
@@ -80,6 +83,7 @@ interface IOverflowTreasury {
     function setAllow(address payee, bool allowed) external;
     function setFloor(uint256 newFloor) external;
     function withdraw(address to, uint256 amount) external;
+    function setEscrowFactory(address factory) external;
 
     // views
     function getNode(uint256 id) external view returns (Node memory);
@@ -90,6 +94,7 @@ interface IOverflowTreasury {
     function nodeAllow(uint256 id, address payee) external view returns (bool);
     function usedDelegation(bytes32 structHash) external view returns (bool);
     function floor() external view returns (uint256);
+    function escrowFactory() external view returns (address);
     function owner() external view returns (address);
     function TOKEN() external view returns (address);
     function DELEGATION_DOMAIN_SEPARATOR() external view returns (bytes32);

@@ -2,6 +2,8 @@
 pragma solidity 0.8.28;
 
 import {IOverflowTreasury} from "./IOverflowTreasury.sol";
+import {IOverflowEscrow} from "./IOverflowEscrow.sol";
+import {IOverflowEscrowFactory} from "./IOverflowEscrowFactory.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 import {SafeERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -39,7 +41,8 @@ contract OverflowTreasury is IOverflowTreasury, ReentrancyGuardTransient {
     bytes32 public constant CREATE_CHILD_TYPEHASH = keccak256(
         "CreateChild(uint256 parentId,address key,uint256 cap,uint256 maxPerCall,uint256 expiry,bool restricted,bytes32 payeesHash,uint256 nonce,uint256 deadline)"
     );
-    bytes32 public constant PAUSE_CHILD_TYPEHASH = keccak256("PauseChild(uint256 target,uint256 nonce,uint256 deadline)");
+    bytes32 public constant PAUSE_CHILD_TYPEHASH =
+        keccak256("PauseChild(uint256 target,uint256 nonce,uint256 deadline)");
 
     bytes32 private constant EIP712_DOMAIN_TYPEHASH =
         keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
@@ -60,6 +63,8 @@ contract OverflowTreasury is IOverflowTreasury, ReentrancyGuardTransient {
     address public immutable owner;
 
     uint256 public floor;
+    /// Factory whose escrows are valid payees (zero = escrows disabled).
+    address public escrowFactory;
     uint256 private _nodeCount;
 
     mapping(uint256 => Node) private _nodes;
@@ -139,8 +144,25 @@ contract OverflowTreasury is IOverflowTreasury, ReentrancyGuardTransient {
         id = nodeOfKey[signer];
         if (id == 0) revert UnknownAgent(signer);
 
-        // 4. Global payee allowlist.
-        if (!allowlist[to]) revert PayeeNotAllowed(0);
+        // 4. Payee: global allowlist, or a factory escrow bought by this treasury with an unflagged seller and
+        //    the exact order amount. Flagged sellers revert on both paths. `payee` is what restricted nodes
+        //    are checked against in step 5: the direct payee, or the escrow's seller.
+        address payee = to;
+        if (allowlist[to]) {
+            if (escrowFactory != address(0) && IOverflowEscrowFactory(escrowFactory).provenCheats(to) != 0) {
+                revert PayeeFlagged(to);
+            }
+        } else {
+            if (escrowFactory == address(0) || !IOverflowEscrowFactory(escrowFactory).isEscrow(to)) {
+                revert PayeeNotAllowed(0);
+            }
+            IOverflowEscrow escrow = IOverflowEscrow(to);
+            if (escrow.buyer() != address(this)) revert PayeeNotAllowed(0);
+            payee = escrow.seller();
+            if (IOverflowEscrowFactory(escrowFactory).provenCheats(payee) != 0) revert PayeeFlagged(payee);
+            uint256 amount = escrow.amount();
+            if (value != amount) revert EscrowAmountMismatch(to, amount, value);
+        }
 
         // 5. Check and charge every node from the signer up to the root.
         uint256 n = id;
@@ -149,7 +171,7 @@ contract OverflowTreasury is IOverflowTreasury, ReentrancyGuardTransient {
             if (node.paused) revert Paused(n);
             if (block.timestamp >= node.expiry) revert Expired(n);
             if (value > node.maxPerCall) revert OverPerCall(n);
-            if (node.restricted && !nodeAllow[n][to]) revert PayeeNotAllowed(n);
+            if (node.restricted && !nodeAllow[n][payee]) revert PayeeNotAllowed(n);
             if (node.spent + value > node.cap) revert OverBudget(n);
             node.spent += value;
             n = node.parent;
@@ -297,6 +319,12 @@ contract OverflowTreasury is IOverflowTreasury, ReentrancyGuardTransient {
 
     function setFloor(uint256 newFloor) external onlyOwner {
         floor = newFloor;
+    }
+
+    /// @inheritdoc IOverflowTreasury
+    function setEscrowFactory(address factory) external onlyOwner {
+        escrowFactory = factory;
+        emit EscrowFactorySet(factory);
     }
 
     function withdraw(address to, uint256 amount) external onlyOwner {

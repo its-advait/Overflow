@@ -223,3 +223,24 @@ existing `run-latest.json`: `packages/schemas/deployments/base-sepolia.json`, `s
 - Tier 2/3 complaint logic (decrypt and compare, source signature and timestamp, bond to the buyer, `recordCheat` call) is not implemented; the stubs revert `NotImplemented` after the structural checks.
 - The chunk keystream (`k_i`, keystream blocks, XOR) is not in `recourse-crypto` yet; only the Merkle and key-commitment helpers are.
 - Base Sepolia deploy of the treasury (previous section) is still pending the keystore password; `Deploy.s.sol` does not deploy the escrow contracts yet (its hook is marked).
+
+## 2026-10-24: treasury pays per-order escrows
+
+### Built
+- `OverflowTreasury.setEscrowFactory(address)` (owner only, `EscrowFactorySet`), `escrowFactory` view; zero disables escrow payees.
+- `_authorize` step 4: a payee passes if `allowlist[to]`, or if all of `factory.isEscrow(to)`, `escrow.buyer() == address(this)`, `factory.provenCheats(escrow.seller()) == 0` and `value == escrow.amount()`. Failures: `PayeeNotAllowed(0)` (not an escrow, factory unset, other buyer), `PayeeFlagged(seller)` (flag, checked before the amount), `EscrowAmountMismatch(escrow, expected, actual)` (new error, so the Blocked lane can name the cause instead of a generic `PayeeNotAllowed(0)`). Direct payees with `provenCheats > 0` also revert `PayeeFlagged(to)`. Check order 1-8 of the spec is unchanged.
+- Step 5: restricted nodes are checked against the escrow's seller (`nodeAllow[n][escrow.seller()]`), so a delegation that allows a seller covers every per-order escrow of that seller. Documented as T15 in `docs/contract-invariants.md`; T14 and E9 now point at the implementation.
+- `OverflowEscrow` gains `buyer()`, `seller()`, `amount()` getters (the treasury uses them). Treasury ABI re-exported (57 entries).
+- `contracts/test/unit/TreasuryEscrowPayee.t.sol` (12 tests, real USDC): agent funds an escrow through `settle()` with no `setAllow`, then `markFunded`; wrong amount (both directions, no partial charge); escrow with a different buyer; flagged seller on the escrow path, on a fresh order, and on the direct path; other sellers unaffected; factory unset; owner-only `setEscrowFactory` with event; restricted child pays an escrow of its allowed seller, rejects another seller's escrow (also through an unrestricted grandchild), and an allowlist of `payeeA` does not admit the escrow.
+
+### Verified (real output, 2026-10-24)
+| Check | Result |
+|---|---|
+| `forge build` | success |
+| `forge test` | 124 passed, 0 failed (51 existing treasury tests untouched and green, 12 new, 41 escrow, 6 Merkle, 3 invariants, 8 USDC, 3 adversarial) |
+| `forge snapshot` | refreshed; `test_depth1_root_pays` 315,391 -> 317,607 gas (one `escrowFactory` SLOAD on the allowlisted path) |
+| `pnpm typecheck` / `pnpm test` / `pnpm lint` | exit 0 / 6 files, 112 tests / exit 0 |
+
+### Open issues
+- The live Base Sepolia treasury (`0xd3A7…8291`) predates `setEscrowFactory`; it must be redeployed together with the escrow factory (P1.6 `Deploy.s.sol` hook) before escrow payments can run on chain.
+- Reservations (`reserve`/`release`, `reservedTotal` in the floor check) remain P1.5+.

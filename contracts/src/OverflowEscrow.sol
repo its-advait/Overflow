@@ -128,6 +128,18 @@ contract OverflowEscrow is IOverflowEscrow, ReentrancyGuardTransient {
         return _t;
     }
 
+    function buyer() external view returns (address) {
+        return _t.buyer;
+    }
+
+    function seller() external view returns (address) {
+        return _t.seller;
+    }
+
+    function amount() external view returns (uint256) {
+        return _t.amount;
+    }
+
     /// EIP-712 domain of this clone: {OverflowEscrow, 1, chainId, this}. Binds Accept to the escrow address.
     function DOMAIN_SEPARATOR() public view returns (bytes32) {
         return keccak256(abi.encode(EIP712_DOMAIN_TYPEHASH, NAME_HASH, VERSION_HASH, block.chainid, address(this)));

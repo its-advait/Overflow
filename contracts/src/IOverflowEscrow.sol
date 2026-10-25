@@ -74,6 +74,9 @@ interface IOverflowEscrow {
     function complainPromise(uint256 i, bytes calldata plainChunk, bytes32[] calldata plainProof) external;
 
     function terms() external view returns (OrderTerms memory);
+    function buyer() external view returns (address);
+    function seller() external view returns (address);
+    function amount() external view returns (uint256);
     function status() external view returns (Status);
     function challengeEnd() external view returns (uint64);
     function revealedKey() external view returns (bytes32);
