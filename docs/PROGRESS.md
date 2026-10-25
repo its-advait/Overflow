@@ -391,3 +391,38 @@
 - `unpause`, `setFloor`, `withdraw`, `setEscrowFactory` have no exception type or calldata builder; `buildControllerCall` refuses them.
 - A cap raised to a different value than requested leaves the request pending (by design); the UI should show it with a reject action.
 - The Coinbase Wallet `send_calls` flow that consumes `{ target, data, value }` is the web app's job (P4.5); the live check needs a deployment.
+
+## 2026-10-24: synthetic datasets and catalog
+
+### Built
+- `packages/datasets` (`@overflow/datasets`): deterministic generator for four SIMULATED EV-registration datasets and the six-listing seller catalog. `rows.ts` makes every number a pure function of (state, period, brand): base volume x brand share (bps) x linear growth x seasonality, plus keccak-derived noise, integer arithmetic only, so the California file equals the national file's CA rows and annual rows are exact monthly sums. 8 states (`CA TX FL NY WA NJ IL GA`), 2 fictional brands (`Voltara`, `Kestrel`), rows `month,state,brand,units,simulated` / `year,state,brand,units,simulated` (34 bytes max, under the 86-byte record limit). `listings.ts` holds the dataset and listing specs; `generate.ts` turns rows into signed 160-byte records (`buildRecordChunk`), `rootPlain`, a manifest and `data/catalog.json`; `catalog.ts` has `CatalogEntrySchema` (= `ResourceListingSchema` + `id`, `title`, `simulated: true`, `exercises`, `dataset` files), `CatalogFileSchema`, `parseCatalog`, `serializeCatalog`, `loadCatalog` (default `<repo>/data/catalog.json`, override `OVERFLOW_CATALOG_PATH`); `signer.ts` resolves `SOURCE_SIGNER_KEY` or the simulated default `keccak256("overflow.simulated.source-signer")` (address `0x5a0C6b05F691791F272F84Dcff00fdCda52433Bd`, the golden vectors' source signer).
+- `scripts/generate-datasets.mts` + root `pnpm datasets:generate` (root `tsx` devDependency; `.mts` because the root package is CommonJS). Loads `.env`, warns when a custom key is used, writes 13 files under `data/` and prints every `manifestHash`.
+- `data/`: `catalog.json`; `datasets/<productId>/{rows.csv, records.bin, manifest.json}` for `ev-registrations-national-monthly-2024-2026` (528 rows), `-california-monthly-2024-2026` (66), `-national-annual-2024-2026` (48; 2026 is year-to-date through September), `-national-monthly-2021-2022` (384). 1026 signed records, 164,160 bytes of records in total. `data/README.md` documents the labels, conventions and the rule each listing exercises.
+- Listings (prices via `toAtomic`): national monthly company-use 12 USDC (satisfies both Fusion agents); California monthly 5 (geography); national annual 6 (resolution); national monthly 2021-2022 4 (dates, the cheapest and wrong); the national monthly set again from `sim-seller-b` at 13 (duplicate, same `manifestHash`); a single-user / 1-seat variant at 10 (license). All `simulated: true`, `format: csv`, `asOf: 2026-10-15`, `dateRange` 2024-01-01..2026-09-30 (or 2021-01-01..2022-12-31).
+- `packages/recourse-crypto/src/manifest.ts`: `MANIFEST_HASH_ABI` = `bytes32 rootPlain, uint256 chunkCount, address sourceKey, uint64 minTimestamp, bytes32 headerHash` (`headerHash = keccak256(bytes(header))`), `computeManifestHash`, `DatasetManifestSchema` (requires `simulated: true` and exactly `chunkCount` leaves), `RECORD_FORMAT`, `verifyManifest` (`schema` / `root-mismatch` / `hash-mismatch`). README gains a "Manifest" section.
+- `.env.example` rewords `SOURCE_SIGNER_KEY`; root README points at `data/README.md`.
+
+### Design choices
+- Region codes `US` (national aggregate claim) and `US-<state>` (state detail present in the rows); a national listing lists both, the California listing only `US-CA`. Oracle's extractor maps names to codes; Fusion's geography rule checks set containment.
+- `manifestHash` is over fixed ABI fields and is buyer-independent (`rootPlain`, `chunkCount`, promised `sourceKey` and `minTimestamp`, header), so the catalog entry pins the promised source and the three listings selling the same bytes share one hash. That equality is Fusion's "same product" signal; license and seats are listing terms.
+- The 2024-2026 datasets end at 2026-09 (the last complete month before today) rather than 2026-12: a feed observed on 2026-10-24 cannot contain October. Requests saying "2024-2026" must be clamped to the present before the coverage check.
+- Record timestamp = first second of the month after the period (publication), so `minTimestamp` is 2024-02-01 for the fresh sets and 2021-02-01 for the stale one; a promise of `minTimestamp >= 2024-02-01` is broken by the wrong-dates set, giving `complainPromise` a real target.
+- The committed data uses the simulated default key so anyone can regenerate it byte for byte; a custom `SOURCE_SIGNER_KEY` is honoured with a warning.
+
+### Stubbed or simulated
+- Everything under `data/` and both sellers (`sim-seller-a`, `sim-seller-b`) are SIMULATED and labeled in the catalog, the manifests, every row and the titles.
+- Nothing loads the catalog into `resources` or serves the files over the seller routes yet (Oracle and sellers prompts).
+
+### Verified (real output, 2026-10-24)
+| Check | Result |
+|---|---|
+| `pnpm install` | exit 0, `+ tsx 4.23.15` at the root |
+| `pnpm datasets:generate` twice | 13 files in ~200 ms; `shasum` of `catalog.json` and all 12 dataset files identical across runs |
+| `pnpm typecheck` | exit 0, 9 workspaces Done (includes `scripts/generate-datasets.mts` through the datasets tsconfig) |
+| `pnpm test` (vitest from the root) | 37 files / 310 tests passed (new: datasets 9: byte-identical regeneration of all 13 files, signer resolution, 6 entries validate against `ResourceListingSchema` + `CatalogEntrySchema`, prices/licenses/seats, shared vs distinct `manifestHash`es, per-listing coverage vs decoded `records.bin` (regions, dates, granularity, fields, chunk count, every signer recovers to the registry address, timestamps >= `minTimestamp`, leaves Merkle to `rootPlain`, `computeManifestHash` == catalog), CA == national CA rows and annual == monthly sums, stale `minTimestamp`, row purity; recourse-crypto manifest 5) |
+| `pnpm --filter @overflow/service build` | tsup success, migrations copied |
+
+### Open issues
+- `pnpm --filter <pkg> test` fails at startup for every package (pre-existing): vitest inside a package picks up the root `projects` config and cannot find `apps/service` relative to the package. Run `pnpm test` from the root, or `npx vitest run packages/<pkg>`.
+- Request date ranges must be clamped to the present (listings end 2026-09-30); the Oracle extractor owns that.
+- `data/` is not yet read by the service: seeding `resources` from `catalog.json` and serving `records.bin`/`manifest.json` from the seller routes are later prompts. `loadCatalog()` is ready for both.

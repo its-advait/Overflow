@@ -13,10 +13,12 @@
     "lint": "pnpm -r --if-present lint",
     "test": "vitest run",
     "contracts:build": "forge build --root contracts",
-    "contracts:test": "forge test --root contracts"
+    "contracts:test": "forge test --root contracts",
+    "datasets:generate": "tsx scripts/generate-datasets.mts"
   },
   "devDependencies": {
     "typescript": "^5.9.3",
-    "vitest": "^4.0.0"
+    "vitest": "^4.0.0",
+    "tsx": "^4.23.15"
   }
 }

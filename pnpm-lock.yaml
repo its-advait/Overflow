@@ -166,6 +166,9 @@ importers:
 
   .:
     devDependencies:
+      tsx:
+        specifier: ^4.23.15
+        version: 4.23.15
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -313,6 +316,25 @@ importers:
       tsx:
         specifier: ^4.23.15
         version: 4.23.15
+
+  packages/datasets:
+    dependencies:
+      '@overflow/recourse-crypto':
+        specifier: workspace:*
+        version: link:../recourse-crypto
+      '@overflow/schemas':
+        specifier: workspace:*
+        version: link:../schemas
+      viem:
+        specifier: ^2.57.10
+        version: 2.57.10(typescript@5.9.3)(zod@4.6.7)
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@types/node':
+        specifier: ^26.6.5
+        version: 26.6.5
 
   packages/fusion:
     dependencies:

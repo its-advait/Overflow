@@ -78,6 +78,17 @@ API: `hashLeaf`, `hashPair`, `buildTree`, `buildTreeFromChunks`, `getProof`, `ex
 
 `commitDataset({ plainChunks, sellerSecret, orderId, buyer })` returns `rootPlain`, `rootCipher`, `keyCommitment`, `chunkCount`, plus `perBuyerKey`, both chunk arrays, both leaf arrays and both trees. The seller publishes the three roots in the escrow terms and the full list of plain leaves plus `chunkCount` in the manifest. Buyers run `verifyCiphertext(cipherChunks, rootCipher, chunkCount)` and `verifyPlainLeaves(plainLeaves, rootPlain, chunkCount)` before funding; both require exactly `chunkCount` entries.
 
+## Manifest
+
+One manifest per dataset (`data/datasets/<productId>/manifest.json`, schema `DatasetManifestSchema`): `simulated: true`, `productId`, `title`, `header` (CSV header line), `fields`, `granularity`, `chunkCount`, `rootPlain`, every `plainLeaf`, `sourceKey`, `minTimestamp`, `manifestHash`, `recordFormat`. `rootPlain` is buyer-independent, so the manifest is shared by every order; `rootCipher` and `keyCommitment` stay in the per-order terms.
+
+```
+manifestHash = keccak256(abi.encode(bytes32 rootPlain, uint256 chunkCount, address sourceKey, uint64 minTimestamp, bytes32 headerHash))
+headerHash   = keccak256(bytes(header))
+```
+
+Fixed ABI fields, never JSON. API: `MANIFEST_HASH_ABI`, `computeManifestHash`, `headerHash`, `verifyManifest` (leaves Merkle to `rootPlain` and the hash recomputes; returns `schema`, `root-mismatch` or `hash-mismatch` otherwise), `RECORD_FORMAT`.
+
 ## Sampling
 
 - `pickSampleIndices(n, count, randomBytes)`: unique indices, `candidate_j = keccak256(randomBytes ‖ uint256 j) mod n`, skipping repeats, in draw order.

@@ -8,3 +8,4 @@ export * from "./commit";
 export * from "./sample";
 export * from "./complaint";
 export * from "./vectors";
+export * from "./manifest";
