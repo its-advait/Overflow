@@ -34,6 +34,15 @@ interface IOverflowTreasury {
 
     // PauseChild(uint256 target,uint256 nonce,uint256 deadline) signed by a STRICT ANCESTOR node key of target.
 
+    /// A payment that passed every settle() check and was charged, but is submitted to USDC by a third party
+    /// (e.g. Coinbase's facilitator). isValidSignature accepts its digest while block.timestamp < validBefore.
+    struct Reservation {
+        uint256 nodeId;
+        uint256 value;
+        uint256 validBefore;
+        bytes32 nonce;
+    }
+
     error UnknownAgent(address signer);
     error PayeeNotAllowed(uint256 node);
     error OverPerCall(uint256 node);
@@ -49,6 +58,10 @@ interface IOverflowTreasury {
     error NotOwner();
     error PayeeFlagged(address seller);
     error EscrowAmountMismatch(address escrow, uint256 expected, uint256 actual);
+    error ReservationTooLong();
+    error ReservationActive();
+    error NoReservation();
+    error ReservationLive();
 
     event NodeCreated(
         uint256 indexed id, uint256 indexed parent, address key, uint256 cap, uint256 maxPerCall, uint256 expiry
@@ -59,6 +72,16 @@ interface IOverflowTreasury {
     event CapRaised(uint256 indexed id, uint256 oldCap, uint256 newCap);
     event AllowSet(address indexed payee, bool allowed);
     event EscrowFactorySet(address indexed factory);
+    event Reserved(
+        bytes32 indexed digest,
+        uint256 indexed id,
+        address indexed to,
+        uint256 value,
+        uint256 validBefore,
+        bytes32 nonce
+    );
+    event ReservationReleased(bytes32 indexed digest, bool refunded);
+    event ReservationWindowSet(uint256 secondsMax);
 
     // payments
     function settle(
@@ -69,6 +92,15 @@ interface IOverflowTreasury {
         bytes32 nonce,
         bytes calldata signature
     ) external;
+    function reserve(
+        address to,
+        uint256 value,
+        uint256 validAfter,
+        uint256 validBefore,
+        bytes32 nonce,
+        bytes calldata signature
+    ) external returns (bytes32 digest);
+    function release(bytes32 digest) external; // anyone, after validBefore
     function isValidSignature(bytes32 digest, bytes calldata signature) external view returns (bytes4);
 
     // tree
@@ -84,6 +116,7 @@ interface IOverflowTreasury {
     function setFloor(uint256 newFloor) external;
     function withdraw(address to, uint256 amount) external;
     function setEscrowFactory(address factory) external;
+    function setReservationWindow(uint256 secondsMax) external;
 
     // views
     function getNode(uint256 id) external view returns (Node memory);
@@ -95,6 +128,9 @@ interface IOverflowTreasury {
     function usedDelegation(bytes32 structHash) external view returns (bool);
     function floor() external view returns (uint256);
     function escrowFactory() external view returns (address);
+    function reservedTotal() external view returns (uint256);
+    function reservationWindow() external view returns (uint256);
+    function getReservation(bytes32 digest) external view returns (Reservation memory);
     function owner() external view returns (address);
     function TOKEN() external view returns (address);
     function DELEGATION_DOMAIN_SEPARATOR() external view returns (bytes32);

@@ -326,6 +326,47 @@ export const overflowTreasuryAbi = [
   },
   {
     "type": "function",
+    "name": "getReservation",
+    "inputs": [
+      {
+        "name": "digest",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct IOverflowTreasury.Reservation",
+        "components": [
+          {
+            "name": "nodeId",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "value",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "validBefore",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "nonce",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "isValidSignature",
     "inputs": [
       {
@@ -478,6 +519,19 @@ export const overflowTreasuryAbi = [
   },
   {
     "type": "function",
+    "name": "release",
+    "inputs": [
+      {
+        "name": "digest",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "remaining",
     "inputs": [
       {
@@ -486,6 +540,76 @@ export const overflowTreasuryAbi = [
         "internalType": "uint256"
       }
     ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "reservationWindow",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "reserve",
+    "inputs": [
+      {
+        "name": "to",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "value",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "validAfter",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "validBefore",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "nonce",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "signature",
+        "type": "bytes",
+        "internalType": "bytes"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "digest",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "reservedTotal",
+    "inputs": [],
     "outputs": [
       {
         "name": "",
@@ -532,6 +656,19 @@ export const overflowTreasuryAbi = [
     "inputs": [
       {
         "name": "newFloor",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setReservationWindow",
+    "inputs": [
+      {
+        "name": "secondsMax",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -791,6 +928,81 @@ export const overflowTreasuryAbi = [
     "anonymous": false
   },
   {
+    "type": "event",
+    "name": "ReservationReleased",
+    "inputs": [
+      {
+        "name": "digest",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "refunded",
+        "type": "bool",
+        "indexed": false,
+        "internalType": "bool"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "ReservationWindowSet",
+    "inputs": [
+      {
+        "name": "secondsMax",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "Reserved",
+    "inputs": [
+      {
+        "name": "digest",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "id",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "to",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "value",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "validBefore",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "nonce",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
     "type": "error",
     "name": "BadDelegation",
     "inputs": []
@@ -871,6 +1083,11 @@ export const overflowTreasuryAbi = [
   },
   {
     "type": "error",
+    "name": "NoReservation",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "NotAncestor",
     "inputs": []
   },
@@ -937,6 +1154,21 @@ export const overflowTreasuryAbi = [
   {
     "type": "error",
     "name": "ReentrancyGuardReentrantCall",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ReservationActive",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ReservationLive",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ReservationTooLong",
     "inputs": []
   },
   {

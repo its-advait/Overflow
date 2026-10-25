@@ -12,6 +12,7 @@ import {SafeERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeE
 interface IUSDC {
     function DOMAIN_SEPARATOR() external view returns (bytes32);
     function balanceOf(address account) external view returns (uint256);
+    function authorizationState(address authorizer, bytes32 nonce) external view returns (bool);
     /// @dev bytes-signature overload, selector 0xcf092995 (ecrecover first, then ERC-1271 fallback).
     function transferWithAuthorization(
         address from,
@@ -65,7 +66,13 @@ contract OverflowTreasury is IOverflowTreasury, ReentrancyGuardTransient {
     uint256 public floor;
     /// Factory whose escrows are valid payees (zero = escrows disabled).
     address public escrowFactory;
+    /// Sum of live reservations; the floor check counts it so reserved USDC is never promised twice.
+    uint256 public reservedTotal;
+    /// Max seconds a reservation's validBefore may lie in the future (default 10 minutes).
+    uint256 public reservationWindow = 600;
     uint256 private _nodeCount;
+
+    mapping(bytes32 digest => Reservation) private _reservations;
 
     mapping(uint256 => Node) private _nodes;
     mapping(address key => uint256) public nodeOfKey;
@@ -96,9 +103,7 @@ contract OverflowTreasury is IOverflowTreasury, ReentrancyGuardTransient {
         bytes calldata signature
     ) external nonReentrant {
         // 1. Exact digest USDC will compute for this authorization (from = this treasury).
-        bytes32 structHash =
-            keccak256(abi.encode(TWA_TYPEHASH, address(this), to, value, validAfter, validBefore, nonce));
-        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", IUSDC(TOKEN).DOMAIN_SEPARATOR(), structHash));
+        bytes32 digest = _twaDigest(to, value, validAfter, validBefore, nonce);
 
         // 2. Signer (OZ ECDSA: low-s enforced, reverts on malformed sigs).
         address signer = ECDSA.recoverCalldata(digest, signature);
@@ -120,9 +125,54 @@ contract OverflowTreasury is IOverflowTreasury, ReentrancyGuardTransient {
         emit Paid(id, to, value, nonce);
     }
 
-    /// @notice ERC-1271. Valid ONLY when called by USDC for a digest flagged inside settle().
-    /// View + TLOAD only (TSTORE is illegal under STATICCALL). The treasury therefore can never sign
-    /// permits or anything else outside a settle() in progress.
+    /// @inheritdoc IOverflowTreasury
+    /// @dev Same checks and charges as settle() (steps 1-6), but the token call is left to a third party. The
+    /// stored reservation makes isValidSignature accept exactly this digest until validBefore.
+    function reserve(
+        address to,
+        uint256 value,
+        uint256 validAfter,
+        uint256 validBefore,
+        bytes32 nonce,
+        bytes calldata signature
+    ) external nonReentrant returns (bytes32 digest) {
+        digest = _twaDigest(to, value, validAfter, validBefore, nonce);
+        address signer = ECDSA.recoverCalldata(digest, signature);
+        if (validBefore > block.timestamp + reservationWindow) revert ReservationTooLong();
+        if (_reservations[digest].validBefore != 0) revert ReservationActive();
+
+        uint256 id = _authorize(to, value, digest, signer);
+
+        _reservations[digest] = Reservation({nodeId: id, value: value, validBefore: validBefore, nonce: nonce});
+        reservedTotal += value;
+        emit Reserved(digest, id, to, value, validBefore, nonce);
+    }
+
+    /// @inheritdoc IOverflowTreasury
+    /// @dev If USDC never consumed the nonce, the money never moved, so the charge is reversed up the chain.
+    /// This is the only path that restores an agent's allowance (escrow refunds restore USDC, not allowance).
+    function release(bytes32 digest) external nonReentrant {
+        Reservation memory r = _reservations[digest];
+        if (r.validBefore == 0) revert NoReservation();
+        if (block.timestamp < r.validBefore) revert ReservationLive();
+
+        bool refunded = !IUSDC(TOKEN).authorizationState(address(this), r.nonce);
+        if (refunded) {
+            uint256 n = r.nodeId;
+            while (n != 0) {
+                Node storage node = _nodes[n];
+                node.spent -= r.value;
+                n = node.parent;
+            }
+        }
+        reservedTotal -= r.value;
+        delete _reservations[digest];
+        emit ReservationReleased(digest, refunded);
+    }
+
+    /// @notice ERC-1271. Valid ONLY when called by USDC, and only for a digest flagged inside settle() or
+    /// held by a live reservation. View + TLOAD/SLOAD only (TSTORE is illegal under STATICCALL). The treasury
+    /// therefore can never sign permits or anything else it has not checked and charged.
     function isValidSignature(bytes32 digest, bytes calldata signature) external view returns (bytes4) {
         signature; // unused: USDC already verified the agent's ECDSA sig; we gate on the flagged digest only
         if (msg.sender != TOKEN) return INVALID_1271;
@@ -131,7 +181,10 @@ contract OverflowTreasury is IOverflowTreasury, ReentrancyGuardTransient {
         assembly ("memory-safe") {
             flag := tload(slot)
         }
-        return flag == 1 ? MAGIC_1271 : INVALID_1271;
+        if (flag == 1) return MAGIC_1271;
+        Reservation storage r = _reservations[digest];
+        if (r.validBefore != 0 && block.timestamp < r.validBefore) return MAGIC_1271;
+        return INVALID_1271;
     }
 
     /// @dev Steps 3 to 6 of settle(): signer -> node, global allowlist, walk to the root checking and charging
@@ -177,8 +230,8 @@ contract OverflowTreasury is IOverflowTreasury, ReentrancyGuardTransient {
             n = node.parent;
         }
 
-        // 6. Balance floor.
-        if (IUSDC(TOKEN).balanceOf(address(this)) < value + floor) revert BelowFloor();
+        // 6. Balance floor, counting USDC already promised to live reservations.
+        if (IUSDC(TOKEN).balanceOf(address(this)) < value + floor + reservedTotal) revert BelowFloor();
     }
 
     // ---------------------------------------------------------------- tree
@@ -327,11 +380,22 @@ contract OverflowTreasury is IOverflowTreasury, ReentrancyGuardTransient {
         emit EscrowFactorySet(factory);
     }
 
+    /// @inheritdoc IOverflowTreasury
+    function setReservationWindow(uint256 secondsMax) external onlyOwner {
+        reservationWindow = secondsMax;
+        emit ReservationWindowSet(secondsMax);
+    }
+
     function withdraw(address to, uint256 amount) external onlyOwner {
         IERC20(TOKEN).safeTransfer(to, amount);
     }
 
     // ---------------------------------------------------------------- views
+
+    /// @inheritdoc IOverflowTreasury
+    function getReservation(bytes32 digest) external view returns (Reservation memory) {
+        return _reservations[digest];
+    }
 
     function getNode(uint256 id) external view returns (Node memory) {
         return _nodes[id];
@@ -360,6 +424,17 @@ contract OverflowTreasury is IOverflowTreasury, ReentrancyGuardTransient {
     }
 
     // ---------------------------------------------------------------- internal
+
+    /// EIP-712 digest USDC computes for TransferWithAuthorization with from = this treasury.
+    function _twaDigest(address to, uint256 value, uint256 validAfter, uint256 validBefore, bytes32 nonce)
+        private
+        view
+        returns (bytes32)
+    {
+        bytes32 structHash =
+            keccak256(abi.encode(TWA_TYPEHASH, address(this), to, value, validAfter, validBefore, nonce));
+        return keccak256(abi.encodePacked("\x19\x01", IUSDC(TOKEN).DOMAIN_SEPARATOR(), structHash));
+    }
 
     function _approvalSlot(bytes32 digest) private pure returns (bytes32) {
         return keccak256(abi.encode(APPROVAL_SALT, digest));

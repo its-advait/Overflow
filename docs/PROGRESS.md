@@ -244,3 +244,30 @@ existing `run-latest.json`: `packages/schemas/deployments/base-sepolia.json`, `s
 ### Open issues
 - The live Base Sepolia treasury (`0xd3A7…8291`) predates `setEscrowFactory`; it must be redeployed together with the escrow factory (P1.6 `Deploy.s.sol` hook) before escrow payments can run on chain.
 - Reservations (`reserve`/`release`, `reservedTotal` in the floor check) remain P1.5+.
+
+## 2026-10-24: reservations for third-party facilitators (P1.5)
+
+### Built
+- `reserve(to, value, validAfter, validBefore, nonce, sig) -> digest`: same digest, signer recovery and `_authorize` as `settle()` (every policy check, every ancestor charged), plus `validBefore <= block.timestamp + reservationWindow` (`ReservationTooLong`) and one reservation per digest (`ReservationActive`). Stores `Reservation {nodeId, value, validBefore, nonce}`, `reservedTotal += value`, emits `Reserved(digest, id, to, value, validBefore, nonce)`.
+- Floor check in `_authorize` is now `balance >= value + floor + reservedTotal` for both `settle()` and `reserve()`.
+- `isValidSignature` stays `view`: magic value when `msg.sender == TOKEN` and either the transient settle flag is set or a stored reservation for that exact digest has `block.timestamp < validBefore`.
+- `release(digest)`: anyone, after `validBefore` (`ReservationLive` before, `NoReservation` for unknown or already released). If `USDC.authorizationState(this, nonce)` is false the charge is reversed up the stored node's ancestor chain; always `reservedTotal -= value`, delete, `ReservationReleased(digest, refunded)`.
+- Owner `setReservationWindow(seconds)` (`ReservationWindowSet`), default 600. Views `reservedTotal`, `reservationWindow`, `getReservation(digest)`. The digest computation moved into `_twaDigest` (shared by `settle` and `reserve`); check order 1-8 unchanged.
+- Treasury ABI re-exported (70 entries).
+- `contracts/test/unit/Reservations.t.sol` (16 tests, real USDC v2.2): after `reserve` a third-party address calls `USDC.transferWithAuthorization` directly and it succeeds, replay is refused by USDC's nonce; without `reserve` the same call fails `FiatTokenV2: invalid signature` and then succeeds once reserved; an expired reservation is refused by USDC (`authorization is expired`) and by the 1271 gate, and `release` refunds the budget; a used reservation releases without refund; refund walks the whole ancestor chain; release before `validBefore`, unknown digest and double release revert; duplicate `reserve` reverts and `settle` of a reserved digest cannot double-charge; `ReservationTooLong` with owner widening; disallowed payee, unknown agent, `OverPerCall`, `OverBudget`, `Paused` all revert at `reserve`; the floor counts `reservedTotal` and room returns after release; the 1271 reservation branch is token-only and digest-exact. Escrow integration: a facilitator funds a per-order escrow from a reservation and the seller is paid after reveal + accept; wrong amount and another buyer's escrow revert at `reserve`; seller silent -> timeout refund restores USDC but not allowance, used reservation releases without refund; funding never happens -> `release` restores the budget and the empty escrow still closes; a reservation for one escrow cannot fund another (USDC rejects the changed `to`).
+
+### Live treasury compatibility
+The Base Sepolia treasury at `0xd3A74fA991CA0B5627d30EF27dC699C134848291` was checked by selector against its bytecode: it has `settle` and `isValidSignature` but lacks `reserve`, `release`, `setEscrowFactory`, `reservedTotal` and `setReservationWindow`. It has no proxy, so it cannot be upgraded; it must be replaced by a fresh deployment (with the escrow factory, P1.6 hook in `Deploy.s.sol`). Not done in this task; nothing was broadcast.
+
+### Verified (real output, 2026-10-24)
+| Check | Result |
+|---|---|
+| `forge build` | success |
+| `forge test` | 140 passed, 0 failed across 9 suites (51 original treasury tests unchanged) |
+| `forge snapshot` | refreshed; `test_depth1_root_pays` 317,607 -> 319,816 gas (reservedTotal SLOAD + reservation SLOAD in the gate) |
+| `pnpm typecheck` / `pnpm test` / `pnpm lint` | exit 0 (9 workspaces) / 6 files, 112 tests / exit 0 |
+
+### Open issues
+- Redeploy the treasury + escrow factory to Base Sepolia and record the new addresses (replaces `0xd3A7…8291`).
+- The service's Coinbase-facilitator path must call `reserve()` before handing the authorization to the facilitator, and `release()` after `validBefore`; `Paid` is not emitted for reserved payments, so the ledger must watch USDC `Transfer`/`AuthorizationUsed` instead.
+- Treasury invariants T1, T2, T4, T13/T16 still lack Foundry invariant handlers (only the escrow has them).
