@@ -21,6 +21,8 @@
     "contracts:export": "pnpm --filter @overflow/scripts export",
     "demo:adapters": "pnpm --filter @overflow/scripts demo-adapters",
     "demo:facilitator": "pnpm --filter @overflow/scripts demo-facilitator",
+    "demo:preflight": "pnpm --filter @overflow/service demo:preflight",
+    "demo:reset": "pnpm --filter @overflow/service demo:reset",
     "service": "pnpm --filter @overflow/service dev",
     "spike:seller": "pnpm --filter @overflow/service spike:seller",
     "spike:coinbase": "pnpm --filter @overflow/scripts coinbase-spike",

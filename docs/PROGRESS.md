@@ -1350,3 +1350,22 @@ Confirmed, no change needed: `apps/service/src/orchestration/oracle-port.ts` `pr
 ### Open issues
 - Cases 8-20 still need harnesses (escrow beats via `buildOrder` + recourse-crypto; Fusion/Oracle through `POST /api/purchases/propose`; 16/17/19 through the service flow; 20 through the indexer + reconciliation).
 - No unit tests yet for report/answer-key drift.
+
+## 2026-10-25: demo scripts and submission pack (Cal Hacks 13.0)
+
+### Built
+- `pnpm demo:preflight` (`apps/service/scripts/demo-preflight.ts`, read-only): runs the existing chain preflight (`scripts/preflight.ts`: RPC, contracts, treasury USDC, relayer and seller gas, keys, allowlist), then green/red rows for the service API (`GET /`, `modules.flow`, mission runner), the SIMULATED seller service (`GET /health`, `GET /sellers`), SSE (`GET /events` delivers an event) and the model API (`models.retrieve(CLAUDE_MODEL)`, or the recording file when `DEMO_SCRIPTED=replay`). Exit 0 only when all green.
+- `pnpm demo:reset [--behavior honest|swap|ghost]` (`apps/service/scripts/demo-reset.ts`, reuses deployed contracts): with the service running, sets both SIMULATED sellers' behavior and leaves the database alone (PGlite is single-process); with it stopped, lists stale active reservations from the old database with the exact `POST /release` command, MOVES the PGlite directory aside to `<dir>.bak-<ts>` (never deletes), and migrates + seeds a fresh one (SIMULATED company, agents, catalog). Refuses `DATABASE_URL`.
+- Submission docs: README.md, docs/architecture.md, docs/limitations.md, docs/threat-model.md, docs/metrics.md, docs/DEMO.md, docs/submission/{coinbase,hyphenate,video-shot-list,devpost}.md, written only from PROGRESS, docs/proof/results.md, docs/gas.md and docs/coinbase-feedback.md; unverified items are marked TODO.
+
+### Verified (real output, 2026-10-25)
+| Check | Result |
+|---|---|
+| `pnpm demo:preflight` against the process already on :4000/:4100 (started in an earlier session, before the keys existed) | exit 1, 4 red: chain preflight (funding rows), `modules.flow` idle (SELLER_KEYS empty at that process's boot), mission runner idle (AGENT_KEYS empty at its boot), `GET /sellers` 404; green: `GET /` 200, seller `/health` 200, SSE first event `indexer`, `models.retrieve(claude-opus-5-5)` ok |
+| `pnpm demo:reset --behavior honest` (service running) | both behavior PUTs answered 404 (that process has no Recourse sellers); database untouched |
+| `demo:reset` with the service stopped, scratch `PGLITE_DATA_DIR`, run twice | run 1 created and seeded the directory ("Larkspur Research Partners" SIMULATED, 3 agents, 6 listings); run 2 found no stale reservations, moved the directory to `.bak-1792933584695`, re-seeded |
+| P6.5 replay recording `data/scripted/honest-seller.json` | **does not exist** (live record run blocked on funding; see the entry above) |
+
+### Open issues
+- The :4000 service is stale; restart it after funding so the new keys load, then `demo:reset`, then `demo:preflight`.
+- Stale reservations are released only from the stopped-service path (printed commands), not automatically.

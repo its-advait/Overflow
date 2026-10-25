@@ -14,7 +14,9 @@
     "mission:run": "tsx scripts/run-mission.ts",
     "preflight": "tsx scripts/preflight.ts",
     "recourse:demo": "tsx scripts/recourse-demo.ts",
-    "flow:demo": "tsx scripts/flow-demo.ts"
+    "flow:demo": "tsx scripts/flow-demo.ts",
+    "demo:preflight": "tsx scripts/demo-preflight.ts",
+    "demo:reset": "tsx scripts/demo-reset.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
