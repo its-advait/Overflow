@@ -6,6 +6,7 @@ import {
   LayoutDashboard,
   Lock,
   Settings,
+  ShieldCheck,
   ShoppingBag,
   Target,
 } from "lucide-react";
@@ -61,6 +62,12 @@ export const NAV: readonly NavItem[] = [
     label: "Ledger",
     description: "Double-entry journal reconciled against the chain, split by department.",
     icon: BookOpenText,
+  },
+  {
+    href: "/controller",
+    label: "Controller",
+    description: "Owner calls the agents proposed, approved in Coinbase Wallet; DONE only on the indexed treasury event.",
+    icon: ShieldCheck,
   },
   {
     href: "/settings",

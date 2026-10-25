@@ -1255,8 +1255,12 @@ Confirmed, no change needed: `apps/service/src/orchestration/oracle-port.ts` `pr
 | `/agents` in Chrome | no MOCK / SIMULATED badge, `data-simulated="false"`; header `block 49986176 · 1 node · allowlist 2`; card "Unlabeled node #1 · no agent record for this key · key 0x390CF9…92Ea89 · spent 0.00 · cap 50.00 · remaining() 50.00 · per call 15.00 · expires in 6d 16h · payees: treasury allowlist (2)", bar 0 % |
 | kebab → Raise cap 80 USDC | real `POST /api/exceptions` → 202: result row `PENDING Request created. Nothing has changed onchain. raiseCap(1, 80000000) … request 2fc4f276-0f03-41b8-9d1a-460bff1b8fa0`; panel lists it as `pending` with "Raise cap of node 1 · 80.00 USDC"; card shows "1 PENDING"; `GET /api/controller-requests?status=all` returns the same request, status `pending`; no DONE anywhere (no owner transaction exists) |
 
+### Merge checklist follow-up (2026-10-25)
+- `pnpm contracts:test` on the merged tree: 19 suites, 194 passed, 0 failed, 1 skipped (the live-key fork test). The merge touched no Solidity.
+- `git diff --check` clean (an extra trailing newline in this file removed).
+- The HEAD scaffold's link to `/controller` was lost when main's shell Overview won the page.tsx conflict; the shell nav (`shell/nav.ts`) now lists Controller, so both teams' navigation survives.
+
 ### Not yet done
 - The live PENDING → DONE pause transition needs an owner `pause(id)` transaction: it is proven here with the labelled simulation and will be recorded live after controller Stage B/D (deploy with `OWNER_ADDRESS` = the Coinbase smart wallet, `createRoot` for the CDP key, Wallet MCP approval). The code path is the one already exercised by `completeControllerRequests` (owner-gated `NodePaused`) and the web's `phaseOf`.
 - The retired treasury has one node, so the live view shows one card; three levels appear once the mission runner's `/delegate` children exist on the new treasury.
 - The raise-cap request created above lives in the service's in-memory PGlite and is gone when the service stops; nothing was broadcast.
-
