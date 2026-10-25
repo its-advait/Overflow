@@ -55,6 +55,14 @@ USDC. The demo script signs the same way with `AGENT_ROOT_ACCOUNT=overflow-agent
 `ATTACKER_ADDRESS`. No key is ever printed, exported or written. There are no `/admin` routes: owner actions go
 through the controller.
 
+## Payment adapters (`@overflow/payment-client`)
+
+`OverflowFacilitatorAdapter` and `CoinbaseFacilitatorAdapter` implement the spec's `PaymentAdapter`
+(`getPaymentRequirements`, `preparePayment`, `submitPayment`, `reconcilePayment`). Oracle, Fusion and the UI only
+see a `PaymentStatus`. One authorization per purchase, ever; `reconcilePayment` is the only retry path and reads USDC's
+`authorizationState` before anything else. `pnpm demo:adapters` runs one purchase through each on Base Sepolia
+(`--probe-coinbase` only asks the Coinbase facilitator's `/verify` about a treasury-as-payer authorization).
+
 ## Layout
 
 - `apps/web` Next.js App Router UI (Tailwind, shadcn/ui, lucide-react)

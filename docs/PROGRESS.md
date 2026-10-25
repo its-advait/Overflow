@@ -430,3 +430,27 @@ The Base Sepolia treasury at `0xd3A74fA991CA0B5627d30EF27dC699C134848291` was ch
 
 ### Still open (not fixable by sweep)
 - The treasury cannot revoke an approved authorization; preventing the late transfer would need a `cancelAuthorization` path through the ERC-1271 gate.
+
+## 2026-10-24: payment adapters (P3.x)
+
+### Built
+- `@overflow/schemas`: `PaymentStatusSchema` (purchaseId, path, status, authorizationDigest, nonce, txHash, explorerUrl, authorizationUsed, reason, decodedRevert, checkedAt): the only thing Oracle, Fusion and the UI see.
+- `@overflow/payment-client/src/adapters`: `PaymentAdapter` exactly as in the spec; `PaymentRequirementsSchema` (x402 v2 `accepts` entry), `PreparedPaymentSchema`, `PaymentSubmission`; `PurchaseStore` interface + `MemoryPurchaseStore` (Postgres later); `x402.ts` (402 body or `PAYMENT-REQUIRED` header, exact/eip155:84532/USDC quote only, `PAYMENT-SIGNATURE` payload, `PAYMENT-RESPONSE` decoding); `BaseAdapter` (shared `preparePayment`: refuses a quote whose payTo, amount, asset or network differs from the order (`QuoteMismatchError`), signs one EIP-3009 authorization `from = treasury` with the paying node key, PROPOSED → RESERVED; `AuthorizationInFlightError` on any second prepare; `AlreadySubmittedError` on any second submit; every status write goes through `assertTransition`).
+- `OverflowFacilitatorAdapter`: `submitPayment` marks PAYMENT_PENDING, POSTs `/settle`; success → ESCROW_FUNDED, decoded revert → REJECTED (`decodedRevert` like `PayeeNotAllowed(0)`), facilitator `status: unknown` / 5xx / unreachable / timeout → PAYMENT_UNKNOWN (never a resign), 409 → the facilitator's original result. `reconcilePayment`: prepared digest + nonce first; receipt of a known hash; USDC `authorizationState`; expiry → FAILED_BEFORE_FUNDING. A used nonce without a hash asks the facilitator, which answers 409 with the original record (idempotent, same digest).
+- `CoinbaseFacilitatorAdapter`: validBefore capped inside the reservation window (570 s); `submitPayment` POSTs `/reserve`, then GETs the seller with the x402 payload; `PAYMENT-RESPONSE.success` → ESCROW_FUNDED; a seller/facilitator rejection leaves PAYMENT_PENDING with the reason (the reservation is live until validBefore); timeouts → PAYMENT_UNKNOWN. `reconcilePayment`: `authorizationState` true → ESCROW_FUNDED (Paid is not emitted for reserved payments); unused after expiry → `/release` (RESERVED → RELEASED, PAYMENT_PENDING/UNKNOWN → FAILED_BEFORE_FUNDING; `ReservationLive` → retry later; `NoReservation` → already released).
+- `scripts/adapter-demo.ts` (`pnpm demo:adapters`): SIMULATED local x402 seller; the Coinbase-mode seller verifies and settles through `COINBASE_FACILITATOR_URL` (default https://x402.org/facilitator); `--probe-coinbase` only calls that facilitator's `/verify`. Writes `docs/demo-adapters.md`.
+
+### Verified (real output, 2026-10-24)
+| Check | Result |
+|---|---|
+| `pnpm test` | 16 files / 243 tests (adapters 15: quote parsing, prepare + in-flight rule + quote mismatch, Coinbase window cap, settle success/REJECTED/409, **timeout after broadcast → PAYMENT_UNKNOWN → reconcile finds the used nonce and hash with one digest ever**, expiry, reverted receipt, reserve + seller settle, reserve revert, seller rejection then release after expiry, seller timeout then nonce check, RESERVED → RELEASED with ReservationLive/NoReservation) |
+| `pnpm typecheck` / `pnpm lint` | exit 0 / exit 0 |
+| `pnpm demo:adapters --probe-coinbase` (read-only, throwaway signer) | `https://x402.org/facilitator/verify` → HTTP 200 `{"isValid":false,"invalidReason":"invalid_exact_evm_signature","payer":"0xd3A7…8291"}` |
+| One real purchase per adapter on Base Sepolia | **Not run.** The service cannot boot (no `RELAYER_PASSWORD_FILE`), the live treasury holds 0 USDC and allowlists no payee, and the redeploy with the escrow factory has not happened. |
+
+### P3.4 finding: Coinbase path BLOCKED
+The public x402 facilitator verifies the EIP-3009 signature offchain by recovering an EOA and comparing it with `from`. Our `from` is the treasury contract and the signer is a node key, so `/verify` answers `invalid_exact_evm_signature` before anything reaches USDC. Even an ERC-1271 check from the facilitator would fail by design: the treasury answers INVALID to any caller but USDC. Options: (a) a seller middleware that skips the facilitator's verify and settles directly (USDC asks the treasury; that is what our `reserve()` path is built for), (b) a facilitator that submits `transferWithAuthorization` without pre-verifying contract payers, or (c) Coinbase adding contract-payer support. The adapter already models the rejection: PAYMENT_PENDING with the reason, then `/release` after validBefore restores the agent's allowance.
+
+### Notes
+- A confirmed payment maps to ESCROW_FUNDED on both paths (the spec machine's only post-payment state); for a third-party seller there is no escrow, and `PaymentStatus.path` says so.
+- A `settle` that reverts after the purchase was already PAYMENT_UNKNOWN maps to FAILED_BEFORE_FUNDING (the machine forbids UNKNOWN → REJECTED); from PAYMENT_PENDING it is REJECTED with the decoded error.

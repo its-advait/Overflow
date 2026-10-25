@@ -143,3 +143,26 @@ export const PurchaseOrderSchema = z
     }
   });
 export type PurchaseOrder = z.infer<typeof PurchaseOrderSchema>;
+
+// ---------------------------------------------------------------------------
+// PaymentStatus: what Oracle, Fusion and the UI see from a PaymentAdapter
+// (SPEC "One payment interface, two paths"). Never says which path ran beyond `path`.
+// ---------------------------------------------------------------------------
+
+export const PaymentStatusSchema = z.object({
+  purchaseId: IdSchema,
+  path: PaymentPathSchema,
+  status: PurchaseStatusSchema,
+  /** EIP-712 digest of the one authorization this purchase may ever have. */
+  authorizationDigest: Bytes32Schema.optional(),
+  nonce: Bytes32Schema.optional(),
+  txHash: Bytes32Schema.optional(),
+  explorerUrl: z.string().optional(),
+  /** USDC's authorizationState(treasury, nonce) at `checkedAt`, when it was read. */
+  authorizationUsed: z.boolean().optional(),
+  reason: z.string().optional(),
+  /** Decoded treasury revert for the Blocked lane, e.g. "PayeeNotAllowed(0)". */
+  decodedRevert: z.string().optional(),
+  checkedAt: IsoDateTimeSchema,
+});
+export type PaymentStatus = z.infer<typeof PaymentStatusSchema>;

@@ -6,3 +6,4 @@ export const PACKAGE_NAME = "@overflow/payment-client" as const;
  * never moves USDC; only OverflowTreasury.settle()/reserve() and OverflowEscrow do.
  */
 export * from "./typed-data";
+export * from "./adapters";
