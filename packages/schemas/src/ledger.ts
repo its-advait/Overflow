@@ -21,7 +21,11 @@ export const LedgerAccountSchema = z.enum([
 ]);
 export type LedgerAccount = z.infer<typeof LedgerAccountSchema>;
 
-/** Chain events the ledger books against. Exactly one entry per event. */
+/**
+ * Chain events the ledger books against. Exactly one entry per event. `Swept` is the escrow's own event (USDC
+ * recovered from a closed order back to the treasury). `LateArrival` is derived by the service from a USDC
+ * `Transfer` into an escrow observed after that escrow's terminal event; no contract emits it.
+ */
 export const ChainEventKindSchema = z.enum([
   "Paid",
   "Reserved",
@@ -29,6 +33,8 @@ export const ChainEventKindSchema = z.enum([
   "OrderFunded",
   "PaidOut",
   "Refunded",
+  "Swept",
+  "LateArrival",
 ]);
 export type ChainEventKind = z.infer<typeof ChainEventKindSchema>;
 

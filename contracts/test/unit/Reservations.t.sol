@@ -329,136 +329,37 @@ contract ReservationsTest is EscrowBaseTest {
         assertEq(_bal(address(e2)), 0);
     }
 
-    // ------------------------------------------------------------ late arrivals after the order closed
+    // ------------------------------------------------------------ closed orders (T18, details in ReservationGate.t.sol)
 
-    /// The treasury approved a reservation while the order was open; the facilitator executes it only after the
-    /// escrow settled through a second payment. settle() refuses the closed escrow (EscrowClosed) but USDC still
-    /// honours the reserved authorization, so the USDC lands in the closed escrow. sweep() returns exactly that
-    /// amount to the treasury: the seller keeps only the original payout, the caller gets nothing, the agent's
-    /// allowance stays charged, and neither a replay nor a repeat sweep moves anything.
-    function test_lateReservation_afterSettled_sweptToTreasury() public {
+    /// A reservation approved while the order was open cannot be executed after the order closed: the gate reads
+    /// the escrow's status, USDC reverts, and releaseClosed() refunds the charge at once. settle() of the same
+    /// authorization is refused by EscrowClosed. sweep() stays for USDC that reaches a closed escrow some other way.
+    function test_closedEscrow_reservationCannotExecute_releaseClosedRefunds() public {
         (OverflowEscrow e, IOverflowEscrow.OrderTerms memory t) = _escrow();
-        uint256 treasuryStart = _bal(address(treasury));
-        Auth memory late = _auth(rootPk, address(e), AMOUNT);
-        bytes32 digest = _reserve(late); // approved and charged now, executed later
-        _pay(rootPk, address(e), AMOUNT); // a second authorization funds the order through settle()
+        Auth memory late = _authWindow(rootPk, address(e), AMOUNT, block.timestamp + 9 minutes);
+        bytes32 digest = _reserve(late);
+        _pay(rootPk, address(e), AMOUNT);
         _payBond(e, t);
         e.markFunded();
         _reveal(e);
         e.accept(_acceptSig(rootPk, e));
         assertEq(uint256(e.status()), uint256(IOverflowEscrow.Status.Settled));
-        assertEq(_bal(seller), AMOUNT + BOND);
-        assertEq(_bal(address(e)), 0);
-        assertEq(treasury.getNode(1).spent, 2 * AMOUNT, "both authorizations charged");
 
-        // a tampered copy of the authorization is not a reservation: USDC rejects it (checked before the nonce is spent)
+        assertEq(_isValid(digest, late.sig, address(usdc)), INVALID, "closed order shuts the gate");
         vm.prank(facilitator);
         vm.expectRevert(bytes("FiatTokenV2: invalid signature"));
         usdc.transferWithAuthorization(
-            address(treasury), late.to, late.value + 1, late.validAfter, late.validBefore, late.nonce, late.sig
-        );
-
-        vm.expectRevert(abi.encodeWithSelector(IOverflowTreasury.EscrowClosed.selector, address(e)));
-        _settle(late); // the treasury refuses the closed escrow ...
-        _directToUsdc(facilitator, late); // ... but USDC executes the reserved EIP-3009 authorization
-        assertEq(_bal(address(e)), AMOUNT, "late arrival stranded in the closed escrow");
-        assertEq(uint256(e.status()), uint256(IOverflowEscrow.Status.Settled), "still settled");
-
-        // the seller relays the sweep and gains nothing: the recipient is the buyer, fixed at creation
-        vm.expectEmit(false, false, false, true, address(e));
-        emit IOverflowEscrow.Swept(address(treasury), AMOUNT);
-        vm.prank(seller);
-        uint256 swept = e.sweep();
-        assertEq(swept, AMOUNT);
-        assertEq(_bal(address(e)), 0);
-        assertEq(_bal(seller), AMOUNT + BOND, "seller keeps only the original payout");
-        assertEq(_bal(address(treasury)), treasuryStart - AMOUNT, "one price paid, the late one back");
-        assertEq(uint256(e.status()), uint256(IOverflowEscrow.Status.Settled));
-        assertEq(treasury.getNode(1).spent, 2 * AMOUNT, "sweep restores USDC, never allowance");
-
-        vm.expectRevert(IOverflowEscrow.NothingToSweep.selector);
-        e.sweep(); // nothing left: a repeat cannot pay twice
-        vm.prank(facilitator);
-        vm.expectRevert(bytes("FiatTokenV2: authorization is used or canceled"));
-        usdc.transferWithAuthorization(
             address(treasury), late.to, late.value, late.validAfter, late.validBefore, late.nonce, late.sig
         );
-        vm.warp(late.validBefore);
-        treasury.release(digest);
-        assertEq(treasury.getNode(1).spent, 2 * AMOUNT, "consumed nonce: release refunds no allowance");
+        vm.expectRevert(abi.encodeWithSelector(IOverflowTreasury.EscrowClosed.selector, address(e)));
+        _settle(late);
+        assertEq(_bal(address(e)), 0, "nothing stranded");
+        assertFalse(usdc.authorizationState(address(treasury), late.nonce));
+
+        treasury.releaseClosed(digest);
+        assertEq(treasury.getNode(1).spent, AMOUNT, "only the payment that funded the order stays charged");
         assertEq(treasury.reservedTotal(), 0);
-    }
-
-    /// Reserved while open, refunded on the seller's missed reveal, executed afterwards: a stranger sweeps the
-    /// exact late amount back to the treasury and the order stays closed.
-    function test_lateReservation_afterTimeoutRefund_sweptToTreasury() public {
-        vm.prank(owner);
-        treasury.setEscrowFactory(address(factory));
-        IOverflowEscrow.OrderTerms memory t = _terms(AMOUNT, BOND, 4);
-        t.revealDeadline = uint64(block.timestamp + 5 minutes); // inside the 600 s reservation window
-        t.termsHash = factory.termsHashOf(t);
-        OverflowEscrow e = _create(t);
-        uint256 treasuryStart = _bal(address(treasury));
-        Auth memory late = _authWindow(rootPk, address(e), AMOUNT, block.timestamp + 9 minutes);
-        bytes32 digest = _reserve(late);
-
-        vm.warp(t.revealDeadline); // nobody funded, the seller never revealed
-        e.claimTimeoutRefund();
-        assertEq(uint256(e.status()), uint256(IOverflowEscrow.Status.Refunded));
-        assertEq(_bal(address(e)), 0);
-
-        _directToUsdc(facilitator, late); // executed after the refund, still before validBefore
-        assertEq(_bal(address(e)), AMOUNT);
-        assertEq(_bal(address(treasury)), treasuryStart - AMOUNT);
-
-        vm.prank(attacker);
-        assertEq(e.sweep(), AMOUNT);
-        assertEq(_bal(attacker), 0, "the caller gets nothing");
-        assertEq(_bal(seller), 0, "the seller gets nothing");
-        assertEq(_bal(address(treasury)), treasuryStart, "exact late amount back");
-        assertEq(uint256(e.status()), uint256(IOverflowEscrow.Status.Refunded));
-        vm.expectRevert(_badStatus(IOverflowEscrow.Status.Refunded));
-        e.markFunded(); // not revived
-        vm.warp(late.validBefore);
-        treasury.release(digest);
-        assertEq(treasury.getNode(1).spent, AMOUNT, "the money moved: allowance stays charged");
-    }
-
-    /// USDC refuses the transfer to the buyer (paused, or the treasury blacklisted): sweep reverts with USDC's
-    /// reason, the terminal status and the balance are untouched, and the funds are recovered once USDC allows it.
-    function test_lateReservation_rejectedTransfer_staysRecoverable() public {
-        vm.prank(owner);
-        treasury.setEscrowFactory(address(factory));
-        IOverflowEscrow.OrderTerms memory t = _terms(AMOUNT, 0, 4);
-        t.revealDeadline = uint64(block.timestamp + 5 minutes);
-        t.termsHash = factory.termsHashOf(t);
-        OverflowEscrow e = _create(t);
-        Auth memory late = _authWindow(rootPk, address(e), AMOUNT, block.timestamp + 9 minutes);
-        _reserve(late);
-        vm.warp(t.revealDeadline);
-        e.claimTimeoutRefund();
-        _directToUsdc(facilitator, late);
-        assertEq(_bal(address(e)), AMOUNT);
-
-        vm.prank(usdcOwner);
-        usdc.pause();
-        vm.expectRevert(bytes("Pausable: paused"));
+        vm.expectRevert(IOverflowEscrow.NothingToSweep.selector);
         e.sweep();
-        vm.prank(usdcOwner);
-        usdc.unpause();
-
-        vm.prank(usdcOwner);
-        usdc.blacklist(address(treasury));
-        vm.expectRevert(bytes("Blacklistable: account is blacklisted"));
-        e.sweep();
-        assertEq(_bal(address(e)), AMOUNT, "nothing moved");
-        assertEq(uint256(e.status()), uint256(IOverflowEscrow.Status.Refunded), "nothing changed");
-
-        vm.prank(usdcOwner);
-        usdc.unBlacklist(address(treasury));
-        uint256 before = _bal(address(treasury));
-        assertEq(e.sweep(), AMOUNT);
-        assertEq(_bal(address(treasury)), before + AMOUNT);
-        assertEq(_bal(address(e)), 0);
     }
 }

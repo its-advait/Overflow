@@ -153,9 +153,10 @@ contract UsdcGateForkTest is Test {
         assertEq(treasury.getNode(1).spent, U / 20, "executed reservation stays charged");
     }
 
-    /// A reservation approved for an open order and executed by live USDC only after the order closed: the USDC
-    /// lands in the closed escrow and anyone can sweep exactly that amount back to the treasury.
-    function test_fork_lateReservationIntoClosedEscrow_isSwept() public {
+    /// A reservation approved for an open order, submitted to live USDC only after the order closed: USDC asks the
+    /// treasury, the treasury reads the closed status, USDC reverts "invalid signature" and the nonce stays unused.
+    /// releaseClosed() refunds the charge at once; sweep() still recovers USDC that arrives from outside.
+    function test_fork_closedEscrow_usdcRejectsReservedAuthorization() public {
         OverflowEscrowFactory factory = new OverflowEscrowFactory();
         vm.prank(owner);
         treasury.setEscrowFactory(address(factory));
@@ -178,23 +179,33 @@ contract UsdcGateForkTest is Test {
         Auth memory a = _auth(address(e), U / 20, block.timestamp + 300);
         vm.prank(facilitator);
         bytes32 digest = treasury.reserve(a.to, a.value, a.validAfter, a.validBefore, a.nonce, a.sig);
+        assertTrue(treasury.getReservation(digest).toIsEscrow);
+        vm.prank(address(USDC));
+        assertEq(treasury.isValidSignature(digest, a.sig), MAGIC, "open order");
         vm.warp(t.revealDeadline);
         e.claimTimeoutRefund(); // nobody funded, nobody revealed
         assertEq(uint256(e.status()), uint256(IOverflowEscrow.Status.Refunded));
+        vm.prank(address(USDC));
+        assertEq(treasury.isValidSignature(digest, a.sig), INVALID, "closed order, validBefore still ahead");
 
         uint256 before = USDC.balanceOf(address(treasury));
-        _direct(facilitator, a); // live USDC executes the reserved authorization into the closed escrow
-        assertEq(USDC.balanceOf(address(e)), U / 20);
+        vm.prank(facilitator);
+        vm.expectRevert(bytes("FiatTokenV2: invalid signature"));
+        USDC.transferWithAuthorization(address(treasury), a.to, a.value, a.validAfter, a.validBefore, a.nonce, a.sig);
+        assertFalse(USDC.authorizationState(address(treasury), a.nonce), "nonce unused");
+        assertEq(USDC.balanceOf(address(e)), 0, "nothing stranded");
+        assertEq(USDC.balanceOf(address(treasury)), before);
+
         vm.prank(attacker);
-        assertEq(e.sweep(), U / 20);
-        assertEq(USDC.balanceOf(address(treasury)), before, "exact late amount back");
-        assertEq(USDC.balanceOf(attacker), 0);
-        assertEq(USDC.balanceOf(t.seller), 0);
-        assertEq(uint256(e.status()), uint256(IOverflowEscrow.Status.Refunded));
-        vm.expectRevert(IOverflowEscrow.NothingToSweep.selector);
-        e.sweep();
-        vm.warp(a.validBefore);
-        treasury.release(digest);
-        assertEq(treasury.getNode(1).spent, U / 20, "executed late: allowance stays charged");
+        treasury.releaseClosed(digest);
+        assertEq(treasury.getNode(1).spent, 0, "allowance back before validBefore");
+        assertEq(treasury.reservedTotal(), 0);
+        vm.expectRevert(IOverflowTreasury.NoReservation.selector);
+        treasury.releaseClosed(digest);
+
+        // defense in depth: an external transfer into the closed escrow is still sweepable
+        deal(address(USDC), address(e), U / 50);
+        assertEq(e.sweep(), U / 50);
+        assertEq(USDC.balanceOf(address(treasury)), before + U / 50);
     }
 }

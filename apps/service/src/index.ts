@@ -7,6 +7,7 @@ import { viemChainClient } from "./chain/client";
 import { loadEnv, readConfig } from "./config";
 import { createFacilitatorApp } from "./facilitator/app";
 import { createBus, createLogPoller } from "./facilitator/events";
+import { createSweepReconciler, MemoryExceptions, MemoryLedger, MemoryPurchaseIndex } from "./reconciliation/sweeps";
 import { createRelayer } from "./facilitator/relayer";
 import { MemoryStore } from "./facilitator/store";
 import { ORCHESTRATION_STATUS } from "./orchestration/index.js";
@@ -62,6 +63,22 @@ async function main(): Promise<void> {
   app.route("/", facilitator);
 
   poller.start();
+  if (boot.escrowFactory) {
+    // Books late arrivals into closed escrows and their sweep() recoveries; in-memory ledger until Postgres lands.
+    createSweepReconciler({
+      client,
+      factory: boot.escrowFactory,
+      usdc: deployments.usdc,
+      treasury: boot.treasury,
+      bus,
+      purchases: new MemoryPurchaseIndex(),
+      ledger: new MemoryLedger(),
+      exceptions: new MemoryExceptions(),
+      fromBlock: deployments.deployBlock ? BigInt(deployments.deployBlock) : boot.blockNumber,
+      intervalMs: config.eventsPollMs * 2,
+      log,
+    }).start();
+  }
   serve({ fetch: app.fetch, port: config.port }, (info) => log(`[service] listening on http://localhost:${info.port} (facilitator routes at /)`));
 }
 

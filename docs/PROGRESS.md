@@ -429,7 +429,7 @@ The Base Sepolia treasury at `0xd3A74fA991CA0B5627d30EF27dC699C134848291` was ch
 - Consider having the facilitator call `sweep()` automatically when it observes a `Transfer` into a terminal escrow, and `release()` after `validBefore`, so recovery does not depend on a manual caller.
 
 ### Still open (not fixable by sweep)
-- The treasury cannot revoke an approved authorization; preventing the late transfer would need a `cancelAuthorization` path through the ERC-1271 gate.
+- ~~The treasury cannot revoke an approved authorization~~ Resolved 2026-10-25 (T18): the ERC-1271 gate reads the escrow's status, so a reservation to a closed order is refused by USDC itself; `releaseClosed()` refunds it early. See the hardening section below.
 
 ## 2026-10-24: payment adapters (P3.x)
 
@@ -472,3 +472,35 @@ The public x402 facilitator verifies the EIP-3009 signature offchain by recoveri
 | case (a) with a live reservation | **not provable**: service cannot boot (no `RELAYER_PASSWORD_FILE`), live treasury has no `reserve()` and 0 USDC; no deploy in this task |
 
 Verdict: Coinbase adapter stays BLOCKED, labeled; demo runs the Overflow path. Details and the one ask for Coinbase in `docs/coinbase-feedback.md`.
+
+## 2026-10-25: hardening pass (stale reservations, sweep reconciliation, fuzz determinism)
+
+### A. Prevent stale reserved payments (T18)
+- Path analysed: EIP-3009 `transferWithAuthorization(from = treasury)` → USDC recovers an EOA, fails, falls back to `isValidSignature` on the treasury through a `STATICCALL`. The gate answered MAGIC for any stored reservation until `validBefore`, so an authorization approved while an order was open stayed executable after the order closed; `EscrowClosed` only blocks new `settle()`/`reserve()` calls.
+- Fix (status-aware validation, no cancellation transaction): `reserve()` stores `to` and `toIsEscrow`; `isValidSignature` returns INVALID when the reservation's escrow is `Settled`/`Refunded` (one nested `STATICCALL` to `status()`, legal under USDC's staticcall; still `view`). USDC then reverts `FiatTokenV2: invalid signature` and the nonce stays unused. New `releaseClosed(digest)`: anyone, requires a recognized escrow reservation, a closed order and an unused nonce, refunds the whole ancestor chain and deletes the reservation (shared `_close`, so `release()` afterwards reverts `NoReservation`: exactly one release per reservation). Rejected alternative: USDC `cancelAuthorization` needs a treasury signature over the cancel digest (a new transient-flag path), a transaction at the right moment, and marks the nonce used, which would make `release()` refuse the refund. `sweep()` stays as defense in depth.
+- New errors `NotEscrowReservation`, `EscrowStillOpen(address)`, `AuthorizationUsed`; struct `Reservation` gained `to`, `toIsEscrow` (storage layout change; redeploy pending anyway). ABIs regenerated; the service decodes the new errors.
+- Guarantees that cannot be established: a transfer mined before the closing transaction (including earlier in the same block) is legitimate and cannot be refused (payout/refund already return such surplus to the buyer); only escrow payees have a closure to detect, a direct allowlisted payee has none; the treasury cannot revoke an authorization USDC already executed; the check relies on USDC calling `isValidSignature` at execution time (true for v2.2, confirmed on the fork).
+
+### B. Sweep reconciliation (`apps/service/src/reconciliation/sweeps.ts`)
+- Indexes factory `OrderCreated` to learn escrows, escrow `PaidOut`/`Refunded` as terminal markers, the escrow's real `Swept` event, and USDC `Transfer` logs into recognized escrows after their terminal event. `LateArrival` is a service-derived event from that Transfer (labeled `source: "derived"`, `derivedFrom: "USDC Transfer"`); `Swept` is indexed from the escrow log (`source: "chain"`).
+- Books balanced `JournalEntry`s keyed `late:<tx>:<logIndex>` (debit escrow-deposit / credit usdc-treasury) and `swept:<tx>:<logIndex>` (debit usdc-treasury / credit escrow-deposit, only for the part matching observed treasury arrivals); a sweep larger than the observed arrivals and USDC from a stranger open `reconciliation-difference` exceptions instead of treasury entries. Entries carry `purchaseId` (from a `PurchaseIndex` by escrow), `txHash` and the new `chainEvent` kinds `Swept`/`LateArrival` in `@overflow/schemas`.
+- Confirmation depth (default 3 blocks) before booking; the last 12 blocks are re-scanned every tick and a booked log that vanished gets one reversing entry with `correctsEntryId`; a re-mined log books under its new hash. Idempotent across polls. Never sends a transaction or reads the treasury: spent allowance is untouched by construction (asserted in tests). Recovered status reaches `GET /events` as `Swept` events with `recoveredAtomic`, `outstandingAtomic`, `recovered`.
+- Wired at boot when `escrowFactory` is deployed (in-memory ledger, exceptions and purchase index until Postgres). `ChainClient.getLogs` gained an optional topic filter (`event`/`args`) and address lists.
+
+### C. Fuzz determinism
+- `RecourseCrypto::test_xorRoundTrip` assumed `chunk.length == 160` on random `bytes`, which the fuzzer almost never produces (intermittent "too many rejects"). It now takes `bytes32[5]` and packs them: every run is a valid, uniformly random 160-byte chunk; no input is rejected and coverage is unchanged.
+
+### Verified (real output, 2026-10-25)
+| Check | Result |
+|---|---|
+| `forge test` | 17 suites, 188 passed, 0 failed, 1 skipped (fork suite skipped off-fork) |
+| `pnpm contracts:invariant` | 256 runs x depth 50: all 9 invariants pass, `test_handlerCoverage` and `test_handlerReleaseClosedScenario` pass |
+| `pnpm contracts:fork` (live Base Sepolia USDC) | 7 passed, incl. `test_fork_closedEscrow_usdcRejectsReservedAuthorization` |
+| `forge test --match-test test_xorRoundTrip --fuzz-seed {1..5} --fuzz-runs 2000` | 5/5 PASS, 2000 runs each |
+| `pnpm contracts:gas` | `reserve()` 224,352 (+25.9k: one more storage slot and the `isEscrow` read), `release()` 60,227, `reserve()` to an escrow 242,417, `releaseClosed()` 66,726, `sweep()` 55,904 |
+| `pnpm test` | 17 files, 255 tests (reconciliation: 9 incl. complete, partial both ways, stranger USDC, ignored traffic, confirmation depth, reorg correction once, no tx/no treasury read) |
+| `pnpm typecheck` / `pnpm lint` | exit 0 / exit 0 |
+
+Coinbase status unchanged: the public-facilitator incompatibility and the unproven CDP settlement stay BLOCKED (`docs/coinbase-feedback.md`); passing adapter and reconciliation tests do not prove live settlement.
+
+Follow-ups: a facilitator route for `releaseClosed` (the Coinbase adapter's reconcile can then refund before `validBefore`); a Postgres ledger behind the `Ledger`/`ExceptionSink` interfaces; the reconciler's purchase index fed by the purchase store.

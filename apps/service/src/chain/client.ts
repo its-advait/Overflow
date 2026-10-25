@@ -3,6 +3,7 @@ import {
   createWalletClient,
   http,
   type Abi,
+  type AbiEvent,
   type Address,
   type Hex,
   type Log,
@@ -27,7 +28,8 @@ export interface ChainClient {
   /** Signs with the relayer account and broadcasts; returns the tx hash. */
   sendTransaction(args: { to: Address; data: Hex; nonce: number; gas?: bigint }): Promise<Hex>;
   waitForTransactionReceipt(args: { hash: Hex; timeoutMs: number }): Promise<TransactionReceipt>;
-  getLogs(args: { address: Address; fromBlock: bigint; toBlock: bigint }): Promise<Log[]>;
+  /** Logs of one or more contracts; `event` + `args` add a topic filter (e.g. USDC Transfer to a set of escrows). */
+  getLogs(args: { address: Address | Address[]; fromBlock: bigint; toBlock: bigint; event?: AbiEvent; args?: Record<string, unknown> }): Promise<Log[]>;
 }
 
 export function viemChainClient(rpcUrl: string, account: PrivateKeyAccount): ChainClient {
@@ -43,6 +45,7 @@ export function viemChainClient(rpcUrl: string, account: PrivateKeyAccount): Cha
     getTransactionCount: (address, blockTag) => pub.getTransactionCount({ address, blockTag }),
     sendTransaction: ({ to, data, nonce, gas }) => wallet.sendTransaction({ to, data, nonce, ...(gas !== undefined ? { gas } : {}) }),
     waitForTransactionReceipt: ({ hash, timeoutMs }) => pub.waitForTransactionReceipt({ hash, timeout: timeoutMs }),
-    getLogs: ({ address, fromBlock, toBlock }) => pub.getLogs({ address, fromBlock, toBlock }),
+    getLogs: ({ address, fromBlock, toBlock, event, args }) =>
+      pub.getLogs({ address, fromBlock, toBlock, ...(event ? { event, args } : {}) } as never) as Promise<Log[]>,
   };
 }

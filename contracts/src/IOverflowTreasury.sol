@@ -35,12 +35,15 @@ interface IOverflowTreasury {
     // PauseChild(uint256 target,uint256 nonce,uint256 deadline) signed by a STRICT ANCESTOR node key of target.
 
     /// A payment that passed every settle() check and was charged, but is submitted to USDC by a third party
-    /// (e.g. Coinbase's facilitator). isValidSignature accepts its digest while block.timestamp < validBefore.
+    /// (e.g. Coinbase's facilitator). isValidSignature accepts its digest while block.timestamp < validBefore and,
+    /// when `to` was a factory escrow at reserve time (`toIsEscrow`), only while that escrow is still open.
     struct Reservation {
         uint256 nodeId;
         uint256 value;
         uint256 validBefore;
         bytes32 nonce;
+        address to;
+        bool toIsEscrow;
     }
 
     error UnknownAgent(address signer);
@@ -63,6 +66,9 @@ interface IOverflowTreasury {
     error ReservationActive();
     error NoReservation();
     error ReservationLive();
+    error NotEscrowReservation(); // releaseClosed: the reservation pays a direct payee, not a factory escrow
+    error EscrowStillOpen(address escrow); // releaseClosed: the escrow has not settled or refunded
+    error AuthorizationUsed(); // releaseClosed: USDC already executed the authorization; release() after validBefore
 
     event NodeCreated(
         uint256 indexed id, uint256 indexed parent, address key, uint256 cap, uint256 maxPerCall, uint256 expiry
@@ -102,6 +108,7 @@ interface IOverflowTreasury {
         bytes calldata signature
     ) external returns (bytes32 digest);
     function release(bytes32 digest) external; // anyone, after validBefore
+    function releaseClosed(bytes32 digest) external; // anyone, once the target escrow is closed and the nonce unused
     function isValidSignature(bytes32 digest, bytes calldata signature) external view returns (bytes4);
 
     // tree

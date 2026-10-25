@@ -23,6 +23,8 @@ const ROWS: ReadonlyArray<{ key: string; label: string; note: string }> = [
   { key: "accept", label: "accept()", note: "buyer-node signature, payout of price + bond to the seller" },
   { key: "refund", label: "claimTimeoutRefund()", note: "missed reveal: whole balance back to the treasury" },
   { key: "sweep", label: "sweep()", note: "USDC that arrived after the order closed: whole balance back to the treasury" },
+  { key: "reserveToEscrow", label: "reserve() to an escrow", note: "escrow payee rule plus the stored escrow flag the ERC-1271 gate reads" },
+  { key: "releaseClosed", label: "releaseClosed()", note: "order closed, nonce unused: refunds the node chain before validBefore" },
 ];
 
 execFileSync("forge", ["test", "--match-path", "test/gas/GasReport.t.sol"], { cwd: contractsDir, stdio: "inherit" });

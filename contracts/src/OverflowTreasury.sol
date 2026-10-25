@@ -143,7 +143,11 @@ contract OverflowTreasury is IOverflowTreasury, ReentrancyGuardTransient {
 
         uint256 id = _authorize(to, value, digest, signer);
 
-        _reservations[digest] = Reservation({nodeId: id, value: value, validBefore: validBefore, nonce: nonce});
+        // Remembered so the ERC-1271 gate can refuse this authorization once the order has closed (T18).
+        bool toIsEscrow = escrowFactory != address(0) && IOverflowEscrowFactory(escrowFactory).isEscrow(to);
+        _reservations[digest] = Reservation({
+            nodeId: id, value: value, validBefore: validBefore, nonce: nonce, to: to, toIsEscrow: toIsEscrow
+        });
         reservedTotal += value;
         emit Reserved(digest, id, to, value, validBefore, nonce);
     }
@@ -157,6 +161,25 @@ contract OverflowTreasury is IOverflowTreasury, ReentrancyGuardTransient {
         if (block.timestamp < r.validBefore) revert ReservationLive();
 
         bool refunded = !IUSDC(TOKEN).authorizationState(address(this), r.nonce);
+        _close(digest, r, refunded);
+    }
+
+    /// @inheritdoc IOverflowTreasury
+    /// @dev The escrow has closed, so the gate already refuses this authorization (T18) and USDC can never execute
+    /// it; the charge is reversed now instead of at validBefore. Anyone may call. A used nonce (executed before the
+    /// order closed) is money that moved: that reservation releases through release() without a refund.
+    function releaseClosed(bytes32 digest) external nonReentrant {
+        Reservation memory r = _reservations[digest];
+        if (r.validBefore == 0) revert NoReservation();
+        if (!r.toIsEscrow) revert NotEscrowReservation();
+        if (!_escrowClosed(r.to)) revert EscrowStillOpen(r.to);
+        if (IUSDC(TOKEN).authorizationState(address(this), r.nonce)) revert AuthorizationUsed();
+        _close(digest, r, true);
+    }
+
+    /// Deletes the reservation exactly once (both release paths revert NoReservation afterwards) and refunds the
+    /// charge up the whole ancestor chain when the money never moved.
+    function _close(bytes32 digest, Reservation memory r, bool refunded) private {
         if (refunded) {
             uint256 n = r.nodeId;
             while (n != 0) {
@@ -171,8 +194,9 @@ contract OverflowTreasury is IOverflowTreasury, ReentrancyGuardTransient {
     }
 
     /// @notice ERC-1271. Valid ONLY when called by USDC, and only for a digest flagged inside settle() or
-    /// held by a live reservation. View + TLOAD/SLOAD only (TSTORE is illegal under STATICCALL). The treasury
-    /// therefore can never sign permits or anything else it has not checked and charged.
+    /// held by a live reservation whose escrow (if any) is still open. View + TLOAD/SLOAD + one nested STATICCALL
+    /// to the escrow's status() (legal under STATICCALL; TSTORE is not). The treasury therefore can never sign
+    /// permits or anything else it has not checked and charged, and never a payment into a closed order.
     function isValidSignature(bytes32 digest, bytes calldata signature) external view returns (bytes4) {
         signature; // unused: USDC already verified the agent's ECDSA sig; we gate on the flagged digest only
         if (msg.sender != TOKEN) return INVALID_1271;
@@ -183,8 +207,14 @@ contract OverflowTreasury is IOverflowTreasury, ReentrancyGuardTransient {
         }
         if (flag == 1) return MAGIC_1271;
         Reservation storage r = _reservations[digest];
-        if (r.validBefore != 0 && block.timestamp < r.validBefore) return MAGIC_1271;
-        return INVALID_1271;
+        if (r.validBefore == 0 || block.timestamp >= r.validBefore) return INVALID_1271;
+        if (r.toIsEscrow && _escrowClosed(r.to)) return INVALID_1271; // T18: USDC then reverts "invalid signature"
+        return MAGIC_1271;
+    }
+
+    function _escrowClosed(address escrow) private view returns (bool) {
+        IOverflowEscrow.Status s = IOverflowEscrow(escrow).status();
+        return s == IOverflowEscrow.Status.Settled || s == IOverflowEscrow.Status.Refunded;
     }
 
     /// @dev Steps 3 to 6 of settle(): signer -> node, global allowlist, walk to the root checking and charging

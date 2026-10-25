@@ -77,8 +77,11 @@ contract RecourseCryptoTest is Test {
         assertEq(_root(cipher), ROOT_CIPHER, "rootCipher");
     }
 
-    function test_xorRoundTrip(bytes32 key, uint256 i, bytes memory chunk) public pure {
-        vm.assume(chunk.length == 160);
+    /// The fuzzer draws five full words and the test packs them, so every run is a valid 160-byte chunk with
+    /// uniformly random content (a `vm.assume(chunk.length == 160)` on random `bytes` rejected nearly every input).
+    function test_xorRoundTrip(bytes32 key, uint256 i, bytes32[5] memory words) public pure {
+        bytes memory chunk = abi.encodePacked(words[0], words[1], words[2], words[3], words[4]);
+        assertEq(chunk.length, 160);
         bytes32 ki = RecourseCrypto.chunkKey(key, i);
         bytes memory c = RecourseCrypto.xorChunk(ki, chunk);
         assertEq(RecourseCrypto.xorChunk(ki, c), chunk);

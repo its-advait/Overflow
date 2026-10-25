@@ -359,6 +359,16 @@ export const overflowTreasuryAbi = [
             "name": "nonce",
             "type": "bytes32",
             "internalType": "bytes32"
+          },
+          {
+            "name": "to",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "toIsEscrow",
+            "type": "bool",
+            "internalType": "bool"
           }
         ]
       }
@@ -520,6 +530,19 @@ export const overflowTreasuryAbi = [
   {
     "type": "function",
     "name": "release",
+    "inputs": [
+      {
+        "name": "digest",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "releaseClosed",
     "inputs": [
       {
         "name": "digest",
@@ -1004,6 +1027,11 @@ export const overflowTreasuryAbi = [
   },
   {
     "type": "error",
+    "name": "AuthorizationUsed",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "BadDelegation",
     "inputs": []
   },
@@ -1078,6 +1106,17 @@ export const overflowTreasuryAbi = [
   },
   {
     "type": "error",
+    "name": "EscrowStillOpen",
+    "inputs": [
+      {
+        "name": "escrow",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "Expired",
     "inputs": [
       {
@@ -1100,6 +1139,11 @@ export const overflowTreasuryAbi = [
   {
     "type": "error",
     "name": "NotAncestor",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotEscrowReservation",
     "inputs": []
   },
   {

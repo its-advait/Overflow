@@ -4,8 +4,9 @@ import type { ChainClient } from "../chain/client";
 import type { Decoded } from "./decode";
 
 /**
- * Event feed for GET /events. Chain events come from treasury logs (never from local flags); `Reverted` and
- * `BypassRejected`/`BypassSucceeded` are the only locally sourced kinds and say so in `source`.
+ * Event feed for GET /events. Chain events come from treasury and escrow logs (never from local flags);
+ * `Reverted` and `BypassRejected`/`BypassSucceeded` are the only facilitator-sourced kinds, and `LateArrival` is
+ * the only derived kind (the reconciler infers it from a USDC Transfer into a closed escrow). `source` says which.
  */
 export type ChainEventKind =
   | "Paid"
@@ -17,14 +18,16 @@ export type ChainEventKind =
   | "CapRaised"
   | "AllowSet"
   | "EscrowFactorySet"
-  | "ReservationWindowSet";
+  | "ReservationWindowSet"
+  | "Swept";
 export type LocalEventKind = "Reverted" | "BypassRejected" | "BypassSucceeded";
+export type DerivedEventKind = "LateArrival";
 
 export type FeedEvent = {
   seq: number;
   at: string;
-  kind: ChainEventKind | LocalEventKind;
-  source: "chain" | "facilitator";
+  kind: ChainEventKind | LocalEventKind | DerivedEventKind;
+  source: "chain" | "facilitator" | "derived";
   txHash?: Hex;
   explorerUrl?: string;
   blockNumber?: string;

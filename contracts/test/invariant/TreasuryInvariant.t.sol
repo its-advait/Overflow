@@ -61,6 +61,7 @@ contract TreasuryHandler is Test {
     uint256 public reserves;
     uint256 public escrowsFunded;
     uint256 public sweeps;
+    uint256 public closedReleases; // releaseClosed() succeeded: a reservation to a closed order refunded early
     bool public sweptMoreThanLate; // a sweep moved USDC that no late reservation explains (must stay false)
 
     constructor(
@@ -201,6 +202,28 @@ contract TreasuryHandler is Test {
         try treasury.release(r.digest) {
             r.released = true;
             if (r.executed) executedPending -= r.value;
+        } catch {}
+    }
+
+    /// Anyone refunds a reservation whose order has closed without being paid by it (T18).
+    function releaseClosed(uint256 seed) external {
+        if (reservations.length == 0) return;
+        _releaseClosed(reservations[seed % reservations.length]);
+    }
+
+    /// Sweeps every unreleased reservation through releaseClosed(); only those to closed, unpaid orders succeed.
+    function releaseClosedAll() external {
+        for (uint256 i; i < reservations.length; i++) {
+            _releaseClosed(reservations[i]);
+        }
+    }
+
+    function _releaseClosed(Res storage r) internal {
+        if (r.released) return;
+        try treasury.releaseClosed(r.digest) {
+            r.released = true;
+            closedReleases++;
+            assertFalse(r.executed, "releaseClosed refunded an executed reservation");
         } catch {}
     }
 
@@ -406,6 +429,28 @@ contract TreasuryInvariantTest is EscrowBaseTest {
         );
     }
 
+    /// Coverage guard for T18 through the handler: one order with a 5 minute reveal window, one live reservation
+    /// to it (validBefore +600 s), the window passes, the order refunds, releaseClosed() refunds the charge once.
+    /// The random walk and the fuzzer also call releaseClosedAll(); this scripted path guarantees it is reachable.
+    function test_handlerReleaseClosedScenario() public {
+        handler.createEscrow(0, 5e4, 0, 5 minutes);
+        handler.reserve(1, 5, 0, 600); // targetSeed 5: kind 5 picks escrows[0]
+        uint256 spentBefore = treasury.getNode(1).spent;
+        assertEq(spentBefore, 5e4, "charged at reserve time");
+        handler.releaseClosedAll();
+        assertEq(handler.closedReleases(), 0, "open order: nothing to release early");
+        handler.warp(5 minutes + 1);
+        handler.timeoutRefund(0);
+        handler.releaseClosedAll();
+        assertEq(handler.closedReleases(), 1, "refunded early exactly once");
+        assertEq(treasury.getNode(1).spent, 0, "allowance back");
+        handler.releaseClosedAll();
+        assertEq(handler.closedReleases(), 1, "no second release");
+        invariant_gateOpensOnlyForUsdc();
+        invariant_reservedTotalMatchesLiveReservations();
+        invariant_escrowsAtMostOneTerminal();
+    }
+
     /// Coverage guard, not an invariant: a deterministic 400-step walk must reach the interesting states, so a
     /// handler that silently degenerates into reverts cannot make the invariants pass vacuously.
     function test_handlerCoverage() public {
@@ -420,6 +465,7 @@ contract TreasuryInvariantTest is EscrowBaseTest {
                 handler.executeReservation(s >> 8);
             } else if (a == 3) {
                 handler.release(s >> 8);
+                handler.releaseClosedAll();
             } else if (a == 4) {
                 handler.warp(s >> 8);
             } else if (a == 5) {
@@ -507,12 +553,16 @@ contract TreasuryInvariantTest is EscrowBaseTest {
         assertEq(treasury.reservedTotal(), sum);
     }
 
-    /// The ERC-1271 gate answers MAGIC only to USDC, only for a live reservation digest; never to anyone else and
-    /// never for an unknown digest.
+    /// The ERC-1271 gate answers MAGIC only to USDC, only for a live reservation digest whose order (if the payee
+    /// is a factory escrow) is still open; never to anyone else and never for an unknown digest.
     function invariant_gateOpensOnlyForUsdc() public {
         for (uint256 i; i < handler.reservationCount(); i++) {
-            (bytes32 digest,,,, uint256 validBefore,,,, bool released) = handler.reservations(i);
+            (bytes32 digest, address to,,, uint256 validBefore,,,, bool released) = handler.reservations(i);
             bool live = !released && block.timestamp < validBefore;
+            if (live && factory.isEscrow(to)) {
+                IOverflowEscrow.Status st = OverflowEscrow(to).status();
+                if (st == IOverflowEscrow.Status.Settled || st == IOverflowEscrow.Status.Refunded) live = false;
+            }
             vm.prank(address(usdc));
             assertEq(treasury.isValidSignature(digest, ""), live ? MAGIC : INVALID, "USDC");
             vm.prank(attacker);
@@ -523,8 +573,8 @@ contract TreasuryInvariantTest is EscrowBaseTest {
     }
 
     /// Every escrow reaches at most one terminal state, holds zero USDC afterwards (the treasury refuses closed
-    /// escrows as payees; a pre-approved reservation executed late is the one tracked exception), and a terminal
-    /// status is final.
+    /// escrows as payees and the gate refuses pre-approved reservations once the order closed, T18), and a
+    /// terminal status is final.
     function invariant_escrowsAtMostOneTerminal() public view {
         for (uint256 i; i < handler.escrowCount(); i++) {
             OverflowEscrow e = handler.escrows(i);
@@ -532,9 +582,10 @@ contract TreasuryInvariantTest is EscrowBaseTest {
             IOverflowEscrow.Status s = e.status();
             if (s == IOverflowEscrow.Status.Settled || s == IOverflowEscrow.Status.Refunded) {
                 assertEq(uint256(handler.lastStatus(address(e))), uint256(s), "terminal is final");
-                // only a reservation approved while the order was open and executed after it closed may land here,
-                // and sweep() returns exactly that to the treasury
-                assertEq(_bal(address(e)), handler.lateDeposits(address(e)), "zero balance after terminal");
+                // no treasury authorization reaches a closed order: the handler's lateDeposits counter (kept as the
+                // detector) must stay zero, and so must the balance
+                assertEq(handler.lateDeposits(address(e)), 0, "gate: no reservation executed after closure");
+                assertEq(_bal(address(e)), 0, "zero balance after terminal");
                 assertFalse(handler.sweptMoreThanLate(), "sweep moved only late deposits");
             }
         }

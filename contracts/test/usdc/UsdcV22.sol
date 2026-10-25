@@ -24,6 +24,7 @@ interface IUSDC {
     function unBlacklist(address account) external;
     function pause() external;
     function unpause() external;
+    function transfer(address to, uint256 amount) external returns (bool);
     function balanceOf(address account) external view returns (uint256);
     function name() external view returns (string memory);
     function version() external view returns (string memory);

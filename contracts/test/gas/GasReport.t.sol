@@ -66,10 +66,25 @@ contract GasReportTest is EscrowBaseTest {
         e2.claimTimeoutRefund();
         vm.stopSnapshotGas();
 
-        // escrow: sweep of USDC that arrived after the order closed (test shortcut mint stands in for a late reservation)
+        // escrow: sweep of USDC that arrived after the order closed (test shortcut mint stands in for an external transfer)
         UsdcV22.mint(usdc, usdcOwner, address(e2), AMOUNT);
         vm.startSnapshotGas("sweep");
         e2.sweep();
+        vm.stopSnapshotGas();
+
+        // treasury: reserve to an open order, the order closes, releaseClosed refunds before validBefore
+        IOverflowEscrow.OrderTerms memory t3 = _terms(AMOUNT, BOND, 4);
+        t3.orderId = keccak256("gas releaseClosed order");
+        t3.termsHash = factory.termsHashOf(t3);
+        OverflowEscrow e3 = _create(t3);
+        Auth memory rc = _auth(rootPk, address(e3), AMOUNT);
+        vm.startSnapshotGas("reserveToEscrow");
+        bytes32 closedDigest = treasury.reserve(rc.to, rc.value, rc.validAfter, rc.validBefore, rc.nonce, rc.sig);
+        vm.stopSnapshotGas();
+        vm.warp(t3.revealDeadline);
+        e3.claimTimeoutRefund();
+        vm.startSnapshotGas("releaseClosed");
+        treasury.releaseClosed(closedDigest);
         vm.stopSnapshotGas();
     }
 }
