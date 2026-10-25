@@ -144,10 +144,6 @@ Overflow is proven with a LIVE test and a LIVE demo on Base Sepolia, with live t
 | Direct-to-USDC bypass | USDC refuses with `FiatTokenV2: invalid signature`; nonce unused | Live tx: TODO (Basescan link after the live run) |
 | Controller actions | the controller signs the policy change onchain (caps, payees, pause) | Live tx: TODO (Basescan link after the live run) |
 
-## Built on Leash
-
-Leash (our B@BHacks project, https://github.com/AnthonyOlakangil/leash) is prior work. It contributed the design of the treasury's `settle()` check order, the stateful ERC-1271 gate, gasless signed delegation, ancestor pause and the balance floor (docs/SPEC.md, "Security core carried over from Leash"). It is kept as a read-only reference in `reference/leash` (git-ignored, never imported). This repo's code was written during Cal Hacks 13.0.
-
 ## Docs
 
 - [docs/architecture.md](docs/architecture.md): components, trust boundaries, the 10-step purchase flow, the three financial events
