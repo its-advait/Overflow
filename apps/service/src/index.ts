@@ -7,7 +7,7 @@ import { CHAIN_ID, loadDeployments, PACKAGE_NAME as SCHEMAS } from "@overflow/sc
 import { createApp } from "./api/index.js";
 import { verifyBoot } from "./chain/boot";
 import { viemChainClient } from "./chain/client";
-import { createActivityBus, createIndexer, createLogSource, resolveIndexerConfig, type Indexer } from "./chain/index.js";
+import { createActivityBus, createIndexer, createLogSource, readTreasurySnapshot, resolveIndexerConfig, type Indexer } from "./chain/index.js";
 import { loadEnv, readConfig } from "./config";
 import { createFacilitatorApp } from "./facilitator/app";
 import { createBus, createLogPoller } from "./facilitator/events";
@@ -97,6 +97,7 @@ async function main(): Promise<void> {
   const indexerConfig = await resolveIndexerConfig();
   let indexer: Indexer | undefined;
   let reconciliation: Reconciliation | undefined;
+  let treasuryRead: (() => ReturnType<typeof readTreasurySnapshot>) | undefined;
   let chainStatus: string;
   let ledgerStatus: string;
   if (indexerConfig.ok) {
@@ -113,6 +114,7 @@ async function main(): Promise<void> {
       ...(materiality ? { materialityAtomic: BigInt(materiality) } : {}),
     });
     reconciliation = recon;
+    treasuryRead = () => readTreasurySnapshot(source, { treasury: ic.treasury, usdc: ic.usdc });
     indexer = createIndexer({
       db: database.db,
       source,
@@ -167,7 +169,9 @@ async function main(): Promise<void> {
   const { app } = createApp({
     db: database.db,
     bus: activityBus,
-    ...(reconciliation ? { ports: { reconciliation: { run: (trigger) => reconciliation!.run(trigger) } } } : {}),
+    ...(reconciliation && treasuryRead
+      ? { ports: { reconciliation: { run: (trigger) => reconciliation!.run(trigger) }, treasury: { read: treasuryRead } } }
+      : {}),
     treasury: boot.treasury,
     oracle,
     ...(runner ? { runner } : {}),

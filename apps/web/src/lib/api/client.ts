@@ -32,6 +32,7 @@ import type {
   ServiceStatus,
   SseMessage,
   SseQuery,
+  TreasuryResponse,
   ConfirmMissionResponse,
   UpdateRequestBody,
   UpdateRequestResponse,
@@ -94,6 +95,8 @@ export interface OverflowApi {
   listControllerRequests(query?: ControllerRequestsQuery): Promise<ControllerRequestsResponse>;
 
   getLedger(query?: LedgerQuery): Promise<LedgerResponse>;
+  /** Onchain treasury balance and reservedTotal at one block (null with a reason when no RPC is wired) plus the USDC the open escrows hold. */
+  getTreasury(): Promise<TreasuryResponse>;
   getReconciliation(): Promise<ReconciliationResponse>;
   runReconciliation(): Promise<RunReconciliationResponse>;
 

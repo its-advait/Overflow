@@ -1,4 +1,4 @@
-import { CHAIN_ID } from "@overflow/schemas";
+import { CHAIN_ID, overflowTreasuryAbi } from "@overflow/schemas";
 import { createPublicClient, erc20Abi, http, numberToHex, type Address, type Hex, type Log } from "viem";
 import { baseSepolia } from "viem/chains";
 
@@ -41,6 +41,11 @@ export interface BalanceReader {
   balanceOf(token: Address, holder: Address, blockNumber?: bigint): Promise<bigint>;
 }
 
+/** OverflowTreasury view reads for the overview: `reservedTotal()` is USDC promised to open reservations. */
+export interface TreasuryReader {
+  reservedTotal(treasury: Address, blockNumber?: bigint): Promise<bigint>;
+}
+
 type RpcLog = Log<bigint, number, false>;
 
 function toRawLog(l: RpcLog): RawLog {
@@ -55,8 +60,8 @@ function toRawLog(l: RpcLog): RawLog {
   };
 }
 
-/** viem-backed LogSource + BalanceReader for Base Sepolia. `assertChain()` fails loudly on the wrong network. */
-export function createLogSource(rpcUrl: string): LogSource & BalanceReader & { assertChain(): Promise<void> } {
+/** viem-backed LogSource + BalanceReader + TreasuryReader for Base Sepolia. `assertChain()` fails loudly on the wrong network. */
+export function createLogSource(rpcUrl: string): LogSource & BalanceReader & TreasuryReader & { assertChain(): Promise<void> } {
   const client = createPublicClient({ chain: baseSepolia, transport: http(rpcUrl) });
   const timestamps = new Map<string, bigint>();
   return {
@@ -112,6 +117,14 @@ export function createLogSource(rpcUrl: string): LogSource & BalanceReader & { a
         abi: erc20Abi,
         functionName: "balanceOf",
         args: [holder],
+        ...(blockNumber !== undefined ? { blockNumber } : {}),
+      });
+    },
+    async reservedTotal(treasury, blockNumber) {
+      return client.readContract({
+        address: treasury,
+        abi: overflowTreasuryAbi,
+        functionName: "reservedTotal",
         ...(blockNumber !== undefined ? { blockNumber } : {}),
       });
     },

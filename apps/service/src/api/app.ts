@@ -21,6 +21,7 @@ import { ledgerRoutes } from "./routes/ledger.js";
 import { missionRoutes } from "./routes/missions.js";
 import { purchaseRoutes } from "./routes/purchases.js";
 import { resourceRoutes } from "./routes/resources.js";
+import { treasuryRoutes } from "./routes/treasury.js";
 import { resolveSession, type Session } from "./session.js";
 
 export interface CreateAppOptions {
@@ -88,8 +89,10 @@ export function createApp(opts: CreateAppOptions) {
       adapters: opts.ports?.adapters ?? base.adapters,
       policy: opts.ports?.policy ?? base.policy,
       reconciliation: opts.ports?.reconciliation ?? base.reconciliation,
+      treasury: opts.ports?.treasury ?? base.treasury,
     },
     session: opts.session ?? resolveSession(),
+    treasury: opts.treasury ?? null,
   };
 
   const app = new Hono<ApiEnv>();
@@ -122,6 +125,7 @@ export function createApp(opts: CreateAppOptions) {
   app.route("/api/exceptions", exceptionRoutes(deps));
   app.route("/api/controller-requests", controllerRequestRoutes(deps));
   app.route("/api", ledgerRoutes(deps));
+  app.route("/api/treasury", treasuryRoutes(deps));
   app.route("/events", eventsRoutes(deps));
 
   return { app, deps };

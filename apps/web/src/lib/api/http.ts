@@ -24,6 +24,7 @@ import {
   RunMissionResponseSchema,
   RunReconciliationResponseSchema,
   ServiceStatusSchema,
+  TreasuryResponseSchema,
   UpdateRequestResponseSchema,
   type SseMessage,
   type SseQuery,
@@ -122,6 +123,7 @@ export function createHttpApi(base: string = API_BASE): OverflowApi {
       request(base, ControllerRequestsResponseSchema, `/api/controller-requests${qs(query)}`),
 
     getLedger: (query = {}) => request(base, LedgerResponseSchema, `/api/ledger${qs(query)}`),
+    getTreasury: () => request(base, TreasuryResponseSchema, "/api/treasury"),
     getReconciliation: () => request(base, ReconciliationResponseSchema, "/api/reconciliation"),
     runReconciliation: () => request(base, RunReconciliationResponseSchema, "/api/reconciliation/run", { method: "POST" }),
 

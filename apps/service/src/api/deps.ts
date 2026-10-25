@@ -1,4 +1,5 @@
 import type { Db, Repositories } from "@overflow/database";
+import type { Address } from "@overflow/schemas";
 import type { ActivityBus, IndexerStatus } from "../chain/bus.js";
 import type { ExceptionService } from "../exceptions/service.js";
 import type { PurchaseService } from "../orchestration/purchase-service.js";
@@ -18,4 +19,6 @@ export interface ApiDeps {
   bus: ActivityBus;
   /** Real indexer state for GET /events and GET /; idle with a reason when no indexer runs. */
   indexerStatus: () => IndexerStatus;
+  /** The deployed treasury, or null when no deployment is configured. Never invented. */
+  treasury: Address | null;
 }

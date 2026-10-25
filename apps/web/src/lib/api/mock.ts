@@ -1,5 +1,6 @@
 import {
   ActivityEventSchema,
+  ESCROW_TRANSITIONS,
   MissionRecordSchema,
   ResourceRequestRecordSchema,
   ResourceRequestSchema,
@@ -395,6 +396,38 @@ export function createMockApi(): OverflowApi {
       return delay({ entries: entries.slice(0, query.limit ?? 1000), ...sumBalances(fx.ledgerEntries), allocations: allocationBreakdown(fx.ledgerEntries) });
     },
     getReconciliation: () => delay({ lastRun: reconState.lastRun, openExceptions: openExceptions(), note: `${fx.MOCK_LABEL}: fixture run` }),
+    // MOCK chain reading: the balance the fixture reconciliation run recorded at its block; reservedTotal is what the
+    // treasury would hold for signed, unsettled coinbase-facilitator payments (the fixtures have none, so 0).
+    // Escrow commitment is the fixture escrows that mirror a confirmed OrderFunded.
+    getTreasury: () => {
+      const open = fx.escrows.filter((e) => ESCROW_TRANSITIONS[e.status].length > 0);
+      const funded = open.filter((e) => e.status === "Funded" || e.status === "Revealed");
+      const reserved = [...purchaseStore.values()]
+        .filter((p) => p.paymentPath === "coinbase-facilitator" && (p.status === "RESERVED" || p.status === "PAYMENT_PENDING"))
+        .reduce((sum, p) => sum + atomicToBigInt(p.amountAtomic), 0n);
+      return delay({
+        treasury: fx.TREASURY_ADDRESS,
+        chain: {
+          blockNumber: fx.reconciliationRun.blockNumber,
+          balanceAtomic: fx.reconciliationRun.treasuryChainAtomic,
+          reservedTotalAtomic: reserved.toString(),
+          usdc: fx.USDC_ADDRESS,
+          readAt: new Date().toISOString(),
+        },
+        escrow: {
+          openOrders: open.length,
+          fundedOrders: funded.length,
+          committedAtomic: funded.reduce((sum, e) => sum + atomicToBigInt(e.amountAtomic), 0n).toString(),
+          orders: open.map((e) => ({
+            purchaseId: e.purchaseId,
+            escrowAddress: e.escrowAddress,
+            status: e.status,
+            amountAtomic: e.amountAtomic,
+            funded: e.status === "Funded" || e.status === "Revealed",
+          })),
+        },
+      });
+    },
     // MOCK: a run "finds" the planted 0.50 USDC treasury difference and opens its exception once (an open subject is never duplicated).
     runReconciliation: () => {
       const run: ReconciliationRun = { ...fx.reconciliationRunPlanted, ranAt: new Date().toISOString() };

@@ -1,6 +1,7 @@
 import { MergeDecisionSchema } from "@overflow/fusion";
 import {
   ActivityEventSchema,
+  AddressSchema,
   AgentRecordSchema,
   AtomicAmountSchema,
   Bytes32Schema,
@@ -9,6 +10,7 @@ import {
   ControllerRequestStatusSchema,
   DateRangeSchema,
   EscrowOrderSchema,
+  EscrowStatusSchema,
   ExceptionDecisionSchema,
   ExceptionRecordSchema,
   ExceptionStatusSchema,
@@ -25,6 +27,7 @@ import {
   ResourceRequestRecordSchema,
   ResourceRequestSchema,
   SignedAtomicSchema,
+  UintStringSchema,
   type AgentRecord,
 } from "@overflow/schemas";
 import { z } from "zod";
@@ -328,6 +331,45 @@ export const ReconciliationResponseSchema = z.object({
 export type ReconciliationResponse = z.infer<typeof ReconciliationResponseSchema>;
 export const RunReconciliationResponseSchema = z.object({ run: ReconciliationRunSchema });
 export type RunReconciliationResponse = z.infer<typeof RunReconciliationResponseSchema>;
+
+// GET /api/treasury (apps/service/src/api/routes/treasury.ts): the overview's money cards. The chain part is read
+// at one block (USDC balanceOf(treasury), reservedTotal()) and is null, with the reason, when no RPC is wired; the
+// escrow part is the escrow_orders table, which mirrors confirmed escrow events.
+export const TreasuryChainSnapshotSchema = z.object({
+  blockNumber: UintStringSchema,
+  /** USDC.balanceOf(treasury). */
+  balanceAtomic: AtomicAmountSchema,
+  /** OverflowTreasury.reservedTotal(): promised to open reservations; the floor check counts it. */
+  reservedTotalAtomic: AtomicAmountSchema,
+  usdc: AddressSchema,
+  readAt: IsoDateTimeSchema,
+});
+export type TreasuryChainSnapshot = z.infer<typeof TreasuryChainSnapshotSchema>;
+export const OpenEscrowSchema = z.object({
+  purchaseId: IdSchema,
+  escrowAddress: AddressSchema,
+  status: EscrowStatusSchema,
+  amountAtomic: AtomicAmountSchema,
+  /** True once OrderFunded was indexed (Funded or Revealed): the USDC sits in the escrow contract. */
+  funded: z.boolean(),
+});
+export type OpenEscrow = z.infer<typeof OpenEscrowSchema>;
+export const TreasuryResponseSchema = z.object({
+  treasury: AddressSchema.nullable(),
+  chain: TreasuryChainSnapshotSchema.nullable(),
+  /** Why `chain` is null. Absent when `chain` is set. */
+  chainUnavailable: z.string().optional(),
+  escrow: z.object({
+    /** Orders not yet Settled or Refunded, including Created ones that hold no USDC yet. */
+    openOrders: z.number().int().min(0),
+    /** Open orders the chain has funded (Funded, Revealed). */
+    fundedOrders: z.number().int().min(0),
+    /** Σ amount over funded open orders: USDC held by escrow contracts, bonds excluded. */
+    committedAtomic: AtomicAmountSchema,
+    orders: z.array(OpenEscrowSchema),
+  }),
+});
+export type TreasuryResponse = z.infer<typeof TreasuryResponseSchema>;
 
 // GET /events (SSE)
 export const SseQuerySchema = z.object({
