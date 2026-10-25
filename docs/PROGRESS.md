@@ -454,3 +454,21 @@ The public x402 facilitator verifies the EIP-3009 signature offchain by recoveri
 ### Notes
 - A confirmed payment maps to ESCROW_FUNDED on both paths (the spec machine's only post-payment state); for a third-party seller there is no escrow, and `PaymentStatus.path` says so.
 - A `settle` that reverts after the purchase was already PAYMENT_UNKNOWN maps to FAILED_BEFORE_FUNDING (the machine forbids UNKNOWN → REJECTED); from PAYMENT_PENDING it is REJECTED with the decoded error.
+
+## 2026-10-25: spike, Coinbase facilitator with a policy-wallet payer
+
+### Built (throwaway, labeled SPIKE)
+- `apps/service/src/sellers/spike/server.ts` (`pnpm spike:seller`): one paid route on `@x402/hono` 2.28.0 + `@x402/evm` `ExactEvmScheme`, facilitator CDP (`@coinbase/x402` auth from `CDP_API_KEY_ID`/`CDP_API_KEY_SECRET`) or public (`SPIKE_FACILITATOR=public`).
+- `scripts/coinbase-spike.ts` (`pnpm spike:coinbase`): signs `from = treasury`, tries `/reserve`, then the paid route; cases (a) reserve, (b) no reserve, (c) expired; writes `docs/coinbase-feedback.md` with verbatim requests and responses (signatures redacted).
+
+### Verified (real output, 2026-10-25)
+| Check | Result |
+|---|---|
+| CDP facilitator, cases (a)/(b) | 402 `invalid_payload: contract call failed: unable to call contract: execution reverted` |
+| CDP facilitator, case (c) | 402 `invalid_exact_evm_payload_authorization_valid_before: valid before expired: 1792901015` |
+| public x402.org, all cases | 402 `invalid_exact_evm_signature` |
+| CDP `/verify`, EOA valid sig with 0 USDC | same `invalid_payload … execution reverted` (so CDP simulates the transfer onchain) |
+| `pnpm typecheck` / `pnpm lint` | exit 0 / exit 0 |
+| case (a) with a live reservation | **not provable**: service cannot boot (no `RELAYER_PASSWORD_FILE`), live treasury has no `reserve()` and 0 USDC; no deploy in this task |
+
+Verdict: Coinbase adapter stays BLOCKED, labeled; demo runs the Overflow path. Details and the one ask for Coinbase in `docs/coinbase-feedback.md`.

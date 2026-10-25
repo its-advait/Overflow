@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "gas": "tsx gas-report.ts",
     "demo-facilitator": "tsx facilitator-demo.ts",
-    "demo-adapters": "tsx adapter-demo.ts"
+    "demo-adapters": "tsx adapter-demo.ts",
+    "coinbase-spike": "tsx coinbase-spike.ts"
   },
   "dependencies": {
     "@overflow/payment-client": "workspace:*",

@@ -22,6 +22,8 @@
     "demo:adapters": "pnpm --filter @overflow/scripts demo-adapters",
     "demo:facilitator": "pnpm --filter @overflow/scripts demo-facilitator",
     "service": "pnpm --filter @overflow/service dev",
+    "spike:seller": "pnpm --filter @overflow/service spike:seller",
+    "spike:coinbase": "pnpm --filter @overflow/scripts coinbase-spike",
     "status": "pnpm --filter @overflow/scripts status",
     "dev:fund": "pnpm --filter @overflow/scripts dev-fund"
   },
