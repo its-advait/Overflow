@@ -32,6 +32,8 @@ export interface CreateSellerAppOptions {
   facilitator: Facilitator | null;
   facilitatorUnavailableReason?: string | undefined;
   provider?: SearchProvider | undefined;
+  /** SIMULATED Recourse sellers (escrow-backed dataset delivery); omitted when SELLER_KEYS is empty. */
+  recourse?: { routes: Hono<SellerEnv>; summary: () => unknown } | undefined;
 }
 
 const SearchQuery = z.object({ q: z.string().trim().min(1).max(500).default("US EV registrations by state 2024-2026") });
@@ -61,7 +63,7 @@ export function createSellerApp(opts: CreateSellerAppOptions) {
     "*",
     cors({
       origin: "*",
-      allowMethods: ["GET", "OPTIONS"],
+      allowMethods: ["GET", "POST", "PUT", "OPTIONS"],
       allowHeaders: ["content-type", X402_HEADERS.paymentSignature, FORCE_BROADCAST_HEADER],
       exposeHeaders: [X402_HEADERS.paymentRequired, X402_HEADERS.paymentResponse],
     }),
@@ -87,8 +89,11 @@ export function createSellerApp(opts: CreateSellerAppOptions) {
       forceBroadcastAllowed: config.allowForceBroadcast,
       prices: { search: SEARCH_PRICE_ATOMIC, scrape: SCRAPE_PRICE_ATOMIC, premiumIntel: PREMIUM_INTEL_PRICE_ATOMIC },
       routes: ["/api/search", "/api/scrape", LISTING_PATH, PREMIUM_INTEL_PATH, MISMATCHED_QUOTE_PATH],
+      recourse: opts.recourse ? opts.recourse.summary() : { simulated: true, enabled: false, reason: "SELLER_KEYS is empty" },
     }),
   );
+
+  if (opts.recourse) app.route("/", opts.recourse.routes);
 
   // Free fixture page (SIMULATED, contains the injection).
   app.get(LISTING_PATH, (c) => c.html(listingHtml(config.sellerUrl)));

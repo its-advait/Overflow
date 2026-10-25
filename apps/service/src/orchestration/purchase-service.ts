@@ -18,6 +18,7 @@ import {
   type PurchaseStatus,
 } from "@overflow/schemas";
 import { z } from "zod";
+import type { EscrowTermsForRow } from "./oracle-port.js";
 
 // ---------------------------------------------------------------------------
 // PurchaseService: the one code path that moves a purchase along the state
@@ -136,6 +137,8 @@ export interface ProposeInput {
   purchase: PurchaseInsert;
   /** Fusion merge of two or more requests: a purchase_groups row is written in the same transaction and linked. */
   group?: { payingNodeId: number; requestIds: string[]; mergeReason: string } | undefined;
+  /** The seller's verified terms: an escrow_orders row (status `Created`) is written in the same transaction. */
+  escrow?: EscrowTermsForRow | undefined;
   reason: string;
   source: TransitionSource;
   agentId?: string | undefined;
@@ -169,7 +172,8 @@ export function createPurchaseService(db: Executor, options: PurchaseServiceOpti
             const events = await repos.activityEvents.listByPurchase(existing.id);
             const event = events.find((e) => e.kind === "purchase.proposed") ?? events[0];
             if (!event) throw new NotFoundError("activity_events", existing.id);
-            return { purchase: existing, event, replayed: true };
+            const escrow = await repos.escrowOrders.getByPurchase(existing.id);
+            return { purchase: existing, event, escrow, replayed: true };
           }
           let purchaseGroupId = input.purchase.purchaseGroupId;
           if (input.group) {
@@ -183,6 +187,8 @@ export function createPurchaseService(db: Executor, options: PurchaseServiceOpti
             purchaseGroupId = group.id;
           }
           const purchase = await repos.purchases.create({ ...input.purchase, ...(purchaseGroupId ? { purchaseGroupId } : {}) });
+          // The seller's terms mirror; it enters Funded/Revealed/Settled/Refunded only through confirmed chain events.
+          const escrow = input.escrow ? await repos.escrowOrders.insert({ ...input.escrow, purchaseId: purchase.id }) : undefined;
           const event = await repos.activityEvents.insert({
             kind: "purchase.proposed",
             message: `proposed ${purchase.amountAtomic} atomic USDC for resource ${purchase.resourceId}: ${input.reason} [${source.kind}:${source.reference}]`,
@@ -191,7 +197,7 @@ export function createPurchaseService(db: Executor, options: PurchaseServiceOpti
             ...(input.agentId ? { agentId: input.agentId } : {}),
             simulated: input.simulated ?? false,
           });
-          return { purchase, event };
+          return { purchase, event, escrow };
         });
       } catch (e) {
         if (isUniqueViolation(e)) {

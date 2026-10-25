@@ -3,7 +3,8 @@ import { serve } from "@hono/node-server";
 import { createDatabase, seed } from "@overflow/database";
 import { oracleModelFromEnv } from "@overflow/oracle";
 import { resolveSigner } from "@overflow/payment-client/keystore";
-import { CHAIN_ID, loadDeployments, PACKAGE_NAME as SCHEMAS } from "@overflow/schemas";
+import { CHAIN_ID, formatUsdc, loadDeployments, PACKAGE_NAME as SCHEMAS, type Address } from "@overflow/schemas";
+import { erc20Abi } from "viem";
 import { createApp } from "./api/index.js";
 import { verifyBoot } from "./chain/boot";
 import { viemChainClient } from "./chain/client";
@@ -18,6 +19,7 @@ import { createReconciliation, type Reconciliation } from "./ledger/index.js";
 import {
   AGENT_KEYS_LIMITATION,
   createMissionRunner,
+  createSellerOrderTerms,
   orchestrationStatus,
   relayViaApp,
   resolveAgentKeys,
@@ -25,9 +27,14 @@ import {
   seedCatalog,
   type MissionRunner,
   type OracleModel,
+  type OrderTermsPort,
 } from "./orchestration/index.js";
 import { createSweepReconciler, MemoryExceptions, MemoryLedger, MemoryPurchaseIndex } from "./reconciliation/sweeps";
 import { createSellerApp, resolveSellerConfig, sellersStatus } from "./sellers/index.js";
+import { viemRecourseChain, viemRecourseReads } from "./sellers/recourse/chain.js";
+import { resolveRecourseConfig } from "./sellers/recourse/config.js";
+import { loadRecourseCatalog } from "./sellers/recourse/datasets.js";
+import { createRecourseSellers } from "./sellers/recourse/index.js";
 
 const log = (line: string) => console.log(`${new Date().toISOString()} ${line}`);
 
@@ -135,10 +142,72 @@ async function main(): Promise<void> {
   // SIMULATED sellers on their own port (SELLER_URL). They settle through the facilitator app in-process, so the
   // relayer key has one nonce manager. The attacker payee is never allowlisted.
   const sellerConfig = resolveSellerConfig();
+  const facilitator = facilitatorViaApp(facilitatorApp, { demoToken: config.demoToken, log });
+
+  // RECOURSE WIRING: the SIMULATED Recourse sellers (per-order escrow, reveal, challenge) and the buyer-side
+  // OrderTermsPort that verifies their POST /orders answer against the factory. Needs the escrow factory from
+  // deployments and SELLER_KEYS; each seller key holds gas ETH and bond USDC only, nothing of the treasury's.
+  // One ChainClient + relayer per distinct seller address, so every key has exactly one nonce manager.
+  const recourseConfig = resolveRecourseConfig();
+  let recourse: ReturnType<typeof createRecourseSellers> | undefined;
+  let orderTerms: OrderTermsPort | undefined;
+  let recourseStatus: string;
+  if (!boot.escrowFactory) recourseStatus = "idle: no escrowFactory in deployments";
+  else if (!recourseConfig.ok) recourseStatus = `idle: ${recourseConfig.reason}`;
+  else {
+    const factory = boot.escrowFactory;
+    const catalog = await loadRecourseCatalog();
+    const chains = new Map<string, ReturnType<typeof viemRecourseChain>>();
+    for (const key of recourseConfig.config.sellers.values()) {
+      const addr = key.account.address.toLowerCase();
+      if (chains.has(addr)) continue;
+      const sellerClient = viemChainClient(config.rpcUrl, key.account);
+      const relayer = createRelayer({ client: sellerClient, address: key.account.address, log });
+      chains.set(addr, viemRecourseChain({ client: sellerClient, relayer, factory, usdc: deployments.usdc }));
+    }
+    const chainFor = (seller: Address) => {
+      const chain = chains.get(seller.toLowerCase());
+      if (!chain) throw new Error(`no chain client for seller ${seller}; SELLER_KEYS does not hold its key`);
+      return chain;
+    };
+    recourse = createRecourseSellers({
+      config: recourseConfig.config,
+      listings: catalog.listings,
+      chainFor,
+      facilitator,
+      sellerUrl: sellerConfig.sellerUrl,
+      allowForceBroadcast: sellerConfig.allowForceBroadcast,
+      intervalMs: config.eventsPollMs,
+      log,
+    });
+    recourseStatus = recourse.status();
+    for (const [addr] of chains) {
+      const [eth, usdc] = await Promise.all([
+        client.getBalance(addr as Address),
+        client.readContract({ address: deployments.usdc, abi: erc20Abi, functionName: "balanceOf", args: [addr] }) as Promise<bigint>,
+      ]);
+      log(`[sellers:recourse:SIMULATED] seller key ${addr} holds ${eth} wei gas, ${formatUsdc(usdc)} USDC for bonds (never treasury funds)`);
+      if (eth === 0n) log(`[sellers:recourse:SIMULATED] WARNING: seller ${addr} has no ETH; create/reveal/finalize will fail`);
+    }
+  }
+  log(`[sellers:recourse:SIMULATED] ${recourseStatus}`);
+
   const sellerApp = createSellerApp({
     config: sellerConfig,
-    facilitator: facilitatorViaApp(facilitatorApp, { demoToken: config.demoToken, log }),
+    facilitator,
+    ...(recourse ? { recourse } : {}),
   });
+  if (recourse && boot.escrowFactory) {
+    // Buyer side: propose() asks the seller app in-process for an order and verifies it against the factory.
+    orderTerms = createSellerOrderTerms({
+      sellerUrl: sellerConfig.sellerUrl,
+      fetch: (url, init) => Promise.resolve(sellerApp.request(url, init)),
+      reads: viemRecourseReads(client, boot.escrowFactory, deployments.usdc),
+      treasury: boot.treasury,
+      log,
+    });
+  }
+  // END RECOURSE WIRING
 
   // Mission runner: the orchestrator (AGENT_ROOT_KEY) signs CreateChild/PauseChild for the three sub-agents
   // (AGENT_KEYS) and relays them through the facilitator app in-process. Agents never send transactions.
@@ -175,6 +244,7 @@ async function main(): Promise<void> {
     treasury: boot.treasury,
     oracle,
     ...(runner ? { runner } : {}),
+    ...(orderTerms ? { orderTerms } : {}),
     indexerStatus: () => indexer?.status() ?? { state: "idle", reason: indexerConfig.ok ? "not started" : indexerConfig.reason },
     status: {
       treasury: boot.treasury,
@@ -182,9 +252,9 @@ async function main(): Promise<void> {
       database: { dialect: database.dialect, migrationsFolder: database.migrationsFolder, migrated: true },
       modules: {
         api: "ready",
-        orchestration: `${orchestrationStatus({ model: oracle?.model ?? null, treasury: boot.treasury, orderTermsWired: false })}; mission runner ${runnerStatus}`,
+        orchestration: `${orchestrationStatus({ model: oracle?.model ?? null, treasury: boot.treasury, orderTermsWired: orderTerms !== undefined })}; mission runner ${runnerStatus}`,
         facilitator: `live: relayer ${account.address} (${signer.source}); routes at / and /facilitator`,
-        sellers: sellersStatus(sellerConfig, true),
+        sellers: sellersStatus(sellerConfig, true, recourseStatus),
         chain: chainStatus,
         ledger: ledgerStatus,
         sweeps: boot.escrowFactory ? `reconciling late arrivals and sweeps for factory ${boot.escrowFactory}` : "disabled: no escrow factory in deployments",
@@ -219,13 +289,16 @@ async function main(): Promise<void> {
   const server = serve({ fetch: app.fetch, port: config.port }, (info) =>
     log(`[service] chain ${CHAIN_ID} API + facilitator listening on http://localhost:${info.port}`),
   );
-  const sellerServer = serve({ fetch: sellerApp.fetch, port: sellerConfig.port }, (info) =>
-    log(`[sellers] SIMULATED sellers listening on http://localhost:${info.port} (${sellerConfig.sellerUrl})`),
-  );
+  const sellerServer = serve({ fetch: sellerApp.fetch, port: sellerConfig.port }, (info) => {
+    log(`[sellers] SIMULATED sellers listening on http://localhost:${info.port} (${sellerConfig.sellerUrl})`);
+    // RECOURSE WIRING: the sellers' worker (markFunded / revealKey / finalizePayout per behavior) starts once the app serves.
+    recourse?.worker.start();
+  });
   await indexer?.start();
 
   const shutdown = (): void => {
     poller.stop();
+    recourse?.worker.stop();
     sellerServer.close();
     server.close(() => {
       void (indexer ? indexer.stop() : Promise.resolve())

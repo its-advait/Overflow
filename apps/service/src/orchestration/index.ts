@@ -7,6 +7,7 @@
 export * from "./purchase-service";
 export * from "./catalog";
 export * from "./oracle-port";
+export * from "./seller-order-terms";
 export * from "./agent-keys.js";
 export * from "./agent-loop.js";
 export * from "./delegation.js";

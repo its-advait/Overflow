@@ -630,7 +630,7 @@ Amounts are integer atomic units. `idempotencyKey` is unique.
 | `PUT /api/missions/:id/requests/:requestId`, `POST /api/missions/:id/confirm` | The owner edits one extracted requirement (only while `planning` and `open`); confirms the set (`planning` → `confirmed`). Propose and run answer 409 `requirements_unconfirmed` while a mission is `planning` |
 | `GET /api/missions`, `GET /api/missions/:id` | List missions; a mission with its requests, purchases and Fusion groups |
 | `GET /api/resources` | Candidates with coverage |
-| `POST /api/purchases/propose` | Oracle plus Fusion proposal |
+| `POST /api/purchases/propose` | Oracle plus Fusion proposal; with a Recourse seller wired, the seller's `POST /orders` answer is verified (hashes recomputed, treasury/USDC/price/manifest checked, escrow = `factory.predict`) and mirrored as an `escrow_orders` row in the same transaction; a failed check answers 502 `seller_terms_rejected` and writes nothing |
 | `POST /api/purchases/:id/authorize` | Agent signs; the adapter submits |
 | `GET /api/purchases/:id`, `GET /api/escrow/:id` | Order, chain and escrow state |
 | `GET /api/agents`, `POST /api/agents/:id/pause` | Tree; pause opens a controller approval |
@@ -639,7 +639,7 @@ Amounts are integer atomic units. `idempotencyKey` is unique.
 | `GET /api/reconciliation`, `POST /api/reconciliation/run` | Last run (treasury and every escrow check, differences, materiality) with open exceptions; on-demand run |
 | `GET /api/treasury` | Overview money cards: USDC `balanceOf(treasury)` and `reservedTotal()` read at one block (null with the reason when no RPC is wired) plus the USDC the open, funded escrows hold |
 | `GET /api/exceptions?status`, `POST /api/exceptions/:id/decide` | Exceptions with their prepared controller request; the controller's offchain decision (onchain types: reject only) |
-| Seller: `GET /r/:id` (402), `POST /orders`, `GET /orders/:id/cipher`, `POST /orders/:id/sample` | Recourse seller protocol |
+| Seller: `GET /r/:id?order=` (402, payee = the per-order escrow), `GET /r/:id/manifest`, `POST /orders`, `GET /orders/:id`, `GET /orders/:id/cipher`, `POST /orders/:id/sample`, `GET /sellers`, `GET`/`PUT /sellers/:id/behavior` | Recourse seller protocol (SIMULATED sellers; behavior honest, swap or ghost) |
 
 There is no generic `/api/execute`.
 

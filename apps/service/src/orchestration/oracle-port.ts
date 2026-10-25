@@ -1,4 +1,4 @@
-import { createRepositories, type Db } from "@overflow/database";
+import { createRepositories, type Db, type EscrowOrderInsert } from "@overflow/database";
 import { allocate, checkMerge, fuse, MergeDecisionSchema, payingNode, type AgentTreeNode, type MergeDecision } from "@overflow/fusion";
 import {
   coverageRejections,
@@ -65,6 +65,9 @@ export interface OrderTermsInput {
   requestIds: string[];
 }
 
+/** The seller's delivery terms as the escrow_orders row stores them; the purchase id and status are added at insert. */
+export type EscrowTermsForRow = Omit<EscrowOrderInsert, "purchaseId" | "status" | "id" | "createdAt" | "updatedAt" | "revealedKey" | "refundReason">;
+
 export interface OrderTerms {
   sellerAddress: Address;
   /** factory.predict(orderId, termsHash): the escrow is the order. */
@@ -74,6 +77,8 @@ export interface OrderTerms {
   authorizationExpiresAt: string;
   /** True when the terms came from a simulated seller. */
   simulated: boolean;
+  /** Full terms for the escrow_orders mirror, when the port verified a created escrow (status stays `Created` until a chain event). */
+  escrow?: EscrowTermsForRow | undefined;
 }
 
 /** Spec step 3: the seller's order fixes seller, escrow, termsHash and orderId. Implemented by the Recourse seller client. */
@@ -404,6 +409,7 @@ export function createOraclePort(opts: OraclePortOptions): OrchestrationPort {
             oracleReason,
           },
           ...(requests.length > 1 ? { group: { payingNodeId: payer.nodeId, requestIds, mergeReason: reason } } : {}),
+          ...(terms.escrow ? { escrow: terms.escrow } : {}),
           reason,
           source: { kind: "oracle", reference: requestIds.join(",") },
           agentId: participatingAgentIds[0],

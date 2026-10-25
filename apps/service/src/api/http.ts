@@ -8,6 +8,7 @@ import { z, ZodError } from "zod";
 import { ExceptionAlreadyDecidedError, OnchainApprovalRequiredError, SelfResolutionError } from "../exceptions/service.js";
 import { NoOpenRequestsError, OracleUnavailableError, RequirementsUnconfirmedError } from "../orchestration/oracle-port.js";
 import { ActivePurchaseExistsError, TransitionEvidenceError } from "../orchestration/purchase-service.js";
+import { SellerTermsError } from "../orchestration/seller-order-terms.js";
 import { NotWiredError } from "./ports.js";
 import type { Session } from "./session.js";
 
@@ -71,6 +72,10 @@ export function toApiError(e: unknown): ApiError {
     return new ApiError(502, "oracle_extraction_failed", e.message, { issues: e.issues, modelCalls: e.modelCalls });
   }
   if (e instanceof NoOpenRequestsError) return new ApiError(409, "no_open_requests", e.message, { missionId: e.missionId });
+  if (e instanceof SellerTermsError) {
+    // The seller's order failed a check (hash, buyer, amount, escrow prediction) or the seller did not answer: no purchase was written.
+    return new ApiError(502, "seller_terms_rejected", e.message, { reason: e.reason, ...(e.details !== undefined ? { details: e.details } : {}) });
+  }
   if (e instanceof RequirementsUnconfirmedError) {
     return new ApiError(409, "requirements_unconfirmed", e.message, { missionId: e.missionId });
   }
