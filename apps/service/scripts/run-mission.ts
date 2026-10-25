@@ -1,6 +1,7 @@
 /**
  * Live mission run against a running service (pnpm --filter @overflow/service dev):
- *   pnpm --filter @overflow/service mission:run -- [--budget 5] [--goal "..."] [--force-injection-beat] [--timeout 600]
+ *   pnpm --filter @overflow/service mission:run -- [--budget 5] [--goal "..."] [--force-injection-beat] [--timeout 600] [--root-node <id>]
+ * --root-node names the treasury root node explicitly (a fresh Anvil fork: the seeded orchestrator has no node yet).
  * Creates a mission, starts the run, then polls the activity feed and prints what the chain and the API confirmed.
  * Exit code 0 only when three child nodes were created (or reused), one agent paid /api/search, and a
  * /premium-intel attempt was refused with PayeeNotAllowed. Nothing here signs or sends.
@@ -22,6 +23,7 @@ const budgetAtomic = toAtomic(opt("budget", "5"));
 const goal = opt("goal", "Research the US EV registrations market for a product launch: find the dataset that best covers state-level monthly registrations 2024-2026 for company use, within budget.");
 const forceInjectionBeat = args.includes("--force-injection-beat");
 const timeoutMs = Number(opt("timeout", "600")) * 1000;
+const rootNode = opt("root-node", "");
 
 type Ev = { id: string; at: string; kind: string; message: string; agentId?: string; txHash?: string; decodedRevert?: string; simulated: boolean };
 
@@ -31,7 +33,7 @@ async function post(path: string, body: unknown): Promise<{ status: number; json
 }
 
 async function main() {
-  const created = await post("/api/missions", { goal, budgetAtomic });
+  const created = await post("/api/missions", { goal, budgetAtomic, ...(rootNode ? { rootNodeId: Number(rootNode) } : {}) });
   if (created.status !== 201) throw new Error(`POST /api/missions answered ${created.status}: ${JSON.stringify(created.json)}`);
   const mission = created.json["mission"] as { id: string; rootNodeId?: number };
   console.log(`[mission] ${mission.id} root node ${mission.rootNodeId ?? "?"} budget ${budgetAtomic} atomic`);

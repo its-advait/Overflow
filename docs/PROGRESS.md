@@ -1495,8 +1495,49 @@ Prompt: an audit view with refusals in their own lane; DONE WHEN the injection a
 | `app.test.ts` | `kind=policy.blocked` alone and with `agentId`; unknown kind 400 |
 | `mission-runner.test.ts` | the forced `/premium-intel` refusal message carries `[reverted onchain] [facilitator:<digest>]` |
 
-### Not yet run
-- The live Anvil run (anvil-up, provision, service with `DEMO_MODE`, `pnpm demo:facilitator`, `mission:run --force-injection-beat`) and the web Blocked lane. Both are the next commit's DONE WHEN check; nothing here claims they passed.
+### Not yet run (at this commit)
+- The live Anvil run (anvil-up, provision, service with `DEMO_MODE`, `pnpm demo:facilitator`, `mission:run --force-injection-beat`) and the web Blocked lane. Both are the next commit's DONE WHEN check; nothing here claims they passed. They ran with the next commit; see the section below.
 
 ### Limits
 - Refusals from callers outside the service that hit `/settle` or `/verify` directly (e.g. `facilitator-demo.ts` step 2b) have no agent to attribute and still appear only on `GET /facilitator/events`. Follow-up: attribute by recovered payer -> node -> agent.
+
+## 2026-10-25: activity and Blocked lane (web)
+
+Prompt: an audit view of everything that happened, with refusals in their own lane as in the Leash demo. DONE WHEN the injection and bypass refusals appear in the Blocked lane with correct reasons, live. Met on the local Anvil fork (user's choice; nothing broadcast on Base Sepolia).
+
+### Built
+- `apps/web/src/lib/activity/`: `TYPE_GROUPS` (every `ActivityKind` in exactly one filter group, checked against the schema enum), `filterActivity` / `matchesFilter` (the service's predicate, applied to the page and to live frames), `serverQueryFor` (one scope, mission over agent, plus `kind=policy.blocked` for the lane), `mergeLive` (dedupe by id, newest first). Attribution reads only the shapes the service writes: trailing `[kind:reference]` tokens, `N USDC`, `to 0x…`, `for <url>`, the Oracle's `promptHash=… outputHash=…`. A purchase-linked event takes amount and seller from the stored purchase. Anything else shows a dash, never a guess. `refusalEvidence` gives the decoded revert, the SPEC's Blocked-lane meaning, a family (USDC's `Error(FiatTokenV2: invalid signature)` is the bypass), the stage (refused before signing, refused in simulation, reverted onchain, rejected by USDC), tx, digest and binding node.
+- `apps/web/src/components/activity/`: `ActivityView` (URL `view`, `missionId`, `agentId`, `type`; one page from `GET /api/activity`, live frames from `/events` merged in, a 30 s re-read as a safety net), `ActivityFeed` (time, type, agent, action, amount, counterparty, tx; blocked rows tinted), `BlockedLane` (family counts, one card per refusal), `EventDrawer` (who, mission, full message, refusal, source reference with the indexed logs and their log index from `GET /api/purchases/:id`, "no log" for a reverted tx, digest, model-call hashes; related purchase with status, escrow, resource, seller and links). `/activity` replaces its placeholder.
+- Mock fixtures gain the service-shaped injection refusal, bypass refusal, a `QuoteMismatchError`, a `PayeeFlagged` refusal and an `oracle.model_call` row, all labelled SIMULATED.
+- `apps/service/scripts/run-mission.ts --root-node <id>`: a fresh fork's seeded orchestrator has no node, so mission creation needs the root explicitly.
+
+### Verified (real output)
+| Check | Result |
+| --- | --- |
+| `pnpm -r typecheck` | exit 0 |
+| `pnpm lint` | exit 0 |
+| `pnpm test` | 93 files passed, 1 skipped; 764 tests passed, 1 skipped |
+| `pnpm contracts:test` | 194 passed, 1 skipped |
+| `NEXT_PUBLIC_USE_MOCKS=1 pnpm --filter @overflow/web build` | exit 0, `/activity` static |
+| Chrome, mocks | feed rows with agent, amount, counterparty, tx; agent, mission and type filters change the rows and the URL; lane lists PayeeNotAllowed, USDC bypass, OverBudget, PayeeFlagged, QuoteMismatch with the right stages; the SIMULATED treasury's live refusal arrived without reload; drawer shows `Accepted · log 0` / `PaidOut · log 1`, the related purchase, the digest and the model-call hashes; 0 console errors |
+
+Live run on the Anvil fork (treasury `0x9d1bc2c1…`, root node 1, service on `:4010`, web on `:3100`, `CLAUDE_MODEL=claude-sonnet-5-5`). `/activity?view=blocked` was opened with an empty lane before either attack, then:
+
+| Step | Result |
+| --- | --- |
+| `mission:run --force-injection-beat --budget 5 --root-node 1` | "RESULT: all DONE WHEN conditions observed": 3 child nodes (reused 2, 3, 4), 2 paid `/api/search`, `/premium-intel` refused with `PayeeNotAllowed(0)`. The live model ignored the injected text, so the labelled SIMULATED probe made the attempt; `settle()` was broadcast and reverted (status 0, no logs) |
+| `pnpm demo:facilitator` | 1 settle success, 2a verify `PayeeNotAllowed(0)`, 2b forced settle reverted, 3 bypass `rejected: true` with `Error(FiatTokenV2: invalid signature)`, 4 replay 409 |
+| Blocked lane, same page, no reload | injection card `PayeeNotAllowed(0)` · reverted onchain · agent research · 0.05 USDC to `/premium-intel` after 38 s; bypass card `Error(FiatTokenV2: invalid signature)` · rejected by USDC · no agent after 65 s; 0 console errors |
+| Drawers | both say "no log: a reverted transaction emits none" and show the tx and the authorization digest |
+| Attacker USDC `balanceOf` | 0 |
+
+### Problems found and handled during the live run
+- The first mission run failed with `401 invalid x-api-key`. The shell had its own `ANTHROPIC_API_KEY`, and the service lets shell values win over `.env`. The rerun unset it so the service read `.env`. Documented in the README.
+- The first facilitator demo failed at step 1 with "Authorization not yet valid": Anvil mines only on a transaction, so the latest block was 143 s old. An empty block every 2 s fixed it. Documented in the README.
+- `pnpm demo:facilitator` wrote `docs/demo-facilitator.md` with Basescan links for local hashes; deleted, not committed.
+
+### Limits
+- Transaction and address links point at Basescan even when the service runs on the fork, where those hashes do not exist.
+- The forced `/settle` from `facilitator-demo.ts` step 2b is a direct caller outside the agents; it stays on `/facilitator/events` and is not in the lane (by design, see the service section above).
+- A mission created after the page loaded shows its id, not its goal, in the drawer until the page is reloaded.
+- Seen in the live run, not fixed here: the agents' `request_sample` tool fails with ENOENT because it looks for datasets under `apps/service/data/` instead of the repo's `data/`.

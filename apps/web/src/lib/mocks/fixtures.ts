@@ -406,7 +406,18 @@ const TX = {
   revealSwap: b32("7a000a"),
   complainSwap: b32("7a000b"),
   ownerFunding: b32("7a0000"),
+  // The two attack demos' reverted transactions (no logs: a reverted tx emits none).
+  injectionRevert: b32("7a00c1"),
+  bypassRevert: b32("7a00c2"),
 } as const;
+
+/** Authorization digests the facilitator refused ([facilitator:<digest>] in the refusal messages). */
+const DIGEST = {
+  injection: b32("d19e51"),
+  bypass: b32("d19e52"),
+} as const;
+/** SIMULATED attacker payee behind the injected /premium-intel listing (never allowlisted). */
+const ATTACKER = addr("a77ac4e2");
 
 const ESCROWS = {
   merged: addr("e5c0001"),
@@ -899,6 +910,65 @@ export const activity: ActivityEvent[] = parseAll(ActivityEventSchema, [
   { id: "ev-16c", at: T5, kind: "seller.flagged", message: "CheatProven(seller, 3) confirmed: Voltara (SIMULATED swap seller) flagged on the escrow factory.", missionId: mission.id, purchaseId: "pur-ev-swap", txHash: TX.complainSwap, simulated: true },
   { id: "ev-16d", at: T5, kind: "escrow.refunded", message: "Refunded 6.50 USDC + 1.00 USDC bond to the treasury: mismatch proven onchain.", missionId: mission.id, purchaseId: "pur-ev-swap", txHash: TX.complainSwap, simulated: true },
   { id: "ev-17", at: T5, kind: "reconciliation.ok", message: "Reconciliation at block 49850420: chain and ledger agree (226.50 USDC).", missionId: mission.id },
+  // Audit and attack-demo shapes, written exactly as the service writes them (oracle extract.ts, orchestration/tools.ts,
+  // facilitator/activity-bridge.ts) so the Blocked lane and the drawer exercise every source reference.
+  {
+    id: "ev-18",
+    at: "2026-10-24T17:04:00.000Z",
+    kind: "oracle.model_call",
+    message: `oracle extraction attempt=1 model=claude-sonnet-5-5 promptHash=${b32("9a0001")} outputHash=${b32("9a0002")} outcome=parsed`,
+    missionId: mission.id,
+    simulated: true,
+  },
+  {
+    id: "ev-19",
+    at: "2026-10-24T17:31:00.000Z",
+    kind: "payment.authorized",
+    message: `agent-research signed authorization ${DIGEST.injection} for 0.05 USDC to ${ATTACKER} (http://localhost:4100/premium-intel); the treasury decides`,
+    missionId: mission.id,
+    agentId: "agent-research",
+    simulated: true,
+  },
+  {
+    id: "ev-20",
+    at: "2026-10-24T17:31:02.000Z",
+    kind: "policy.blocked",
+    message: `treasury refused 0.05 USDC for http://localhost:4100/premium-intel: PayeeNotAllowed(0) (Recipient is not approved for anyone) [reverted onchain] [facilitator:${DIGEST.injection}]`,
+    missionId: mission.id,
+    agentId: "agent-research",
+    decodedRevert: "PayeeNotAllowed(0)",
+    txHash: TX.injectionRevert,
+    simulated: true,
+  },
+  {
+    id: "ev-21",
+    at: "2026-10-24T17:33:00.000Z",
+    kind: "policy.blocked",
+    message: `SIMULATED attacker bypass: USDC refused transferWithAuthorization sent outside settle(): USDC rejected the signature: it is only valid inside treasury.settle() or a live reservation [facilitator:${DIGEST.bypass}]`,
+    decodedRevert: "Error(FiatTokenV2: invalid signature)",
+    txHash: TX.bypassRevert,
+    simulated: true,
+  },
+  {
+    id: "ev-22",
+    at: "2026-10-24T17:36:00.000Z",
+    kind: "policy.blocked",
+    message: "refused to sign for http://localhost:4100/fixtures/mismatched-quote: quote mismatch on amount: expected 20000, got 200000",
+    missionId: mission.id,
+    agentId: "agent-research-scraper",
+    decodedRevert: "QuoteMismatchError",
+    simulated: true,
+  },
+  {
+    id: "ev-23",
+    at: "2026-10-24T18:10:00.000Z",
+    kind: "policy.blocked",
+    message: `treasury refused 6.50 USDC to ${SELLERS.voltara.address}: PayeeFlagged(${SELLERS.voltara.address}) (Seller has a proven cheat on record) [simulation]`,
+    missionId: mission.id,
+    agentId: "agent-finance",
+    decodedRevert: `PayeeFlagged(${SELLERS.voltara.address})`,
+    simulated: true,
+  },
 ]);
 
 // Recourse evidence (golden vectors) ------------------------------------------
