@@ -11,7 +11,8 @@
     "test": "vitest run",
     "spike:seller": "tsx src/sellers/spike/server.ts",
     "sellers:demo": "tsx scripts/sellers-demo.ts",
-    "mission:run": "tsx scripts/run-mission.ts"
+    "mission:run": "tsx scripts/run-mission.ts",
+    "preflight": "tsx scripts/preflight.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
